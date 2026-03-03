@@ -21,7 +21,7 @@ A pipeline that ingests a codebase — every file, function, class, and module �
 │                                                         │
 │  1. File walker + language-aware chunker                 │
 │  2. AST parser (tree-sitter) → functions, classes, etc  │
-│  3. Local embeddings (LM Studio / Qwen3-Embedding)       │
+│  3. Local embeddings (Ollama / nomic-embed-text)         │
 │  4. Intent classifier (OpenAI-compatible LLM proxy)     │
 │  5. Dependency graph extraction                         │
 │  6. Store everything in PostgreSQL + pgvector            │
@@ -41,7 +41,7 @@ A pipeline that ingests a codebase — every file, function, class, and module �
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│              MCP Server (local, stdio)                   │
+│              MCP Server (local, HTTP)                    │
 │                                                         │
 │  Tools exposed:                                         │
 │  • semantic_search — find code by meaning               │
@@ -125,45 +125,38 @@ The ingestion pipeline:
 
 ---
 
-## Step 4: Build the MCP Server
+## Step 4: Build and Run the MCP Server
 
 ```bash
 npm install
 npm run build   # tsc → dist/
+npm start       # Streamable HTTP on http://127.0.0.1:3001/mcp
 ```
 
-The server lives at `index.ts` in the repo root and compiles to `dist/index.js`.
+The server lives at `index.ts` in the repo root and compiles to `dist/index.js`. By default it starts a Streamable HTTP MCP endpoint at `http://127.0.0.1:3001/mcp` and a health check at `http://127.0.0.1:3001/healthz`.
 
-### Connect to Claude Desktop
+Clients that support MCP over HTTP should connect to:
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on Mac):
-
-```json
-{
-  "mcpServers": {
-    "codebrain": {
-      "command": "node",
-      "args": ["/absolute/path/to/GrayMatter/dist/index.js"],
-      "env": {
-        "DATABASE_URL": "postgresql://codebrain:codebrain_local@localhost:5433/codebrain"
-      }
-    }
-  }
-}
+```text
+http://127.0.0.1:3001/mcp
 ```
 
-### Connect to Claude Code
+### Legacy stdio mode
+
+If you still need the old stdio transport for a client that does not support MCP over HTTP:
 
 ```bash
-claude mcp add codebrain \
-  --transport stdio \
-  -- node /absolute/path/to/GrayMatter/dist/index.js
+MCP_TRANSPORT=stdio node dist/index.js
 ```
 
 The MCP server reads these environment variables (all have sensible defaults):
 
 | Variable | Default |
 |----------|---------|
+| `MCP_TRANSPORT` | `http` |
+| `MCP_HTTP_HOST` | `127.0.0.1` |
+| `MCP_HTTP_PORT` | `3001` |
+| `MCP_ALLOWED_HOSTS` | unset |
 | `DATABASE_URL` | `postgresql://codebrain:codebrain_local@localhost:5433/codebrain` |
 | `EMBED_API_STYLE` | `ollama` |
 | `EMBED_BASE_URL` | `http://localhost:11434` |
@@ -251,6 +244,22 @@ docker compose run --rm --profile tools ingestor /repos/myrepo
 # With flags
 docker compose run --rm --profile tools ingestor /repos/myrepo --force --workers 8
 ```
+
+## Running the MCP Server via Docker
+
+Build the image:
+
+```bash
+docker compose build mcp
+```
+
+Run the HTTP MCP server in the background:
+
+```bash
+docker compose up -d mcp
+```
+
+The container publishes the MCP endpoint at `http://localhost:3001/mcp` and the health check at `http://localhost:3001/healthz`.
 
 ---
 

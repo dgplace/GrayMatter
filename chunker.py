@@ -62,6 +62,11 @@ SYMBOL_NODE_TYPES = {
         "enum_specifier": "enum",
         "namespace_definition": "namespace",
     },
+    "swift": {
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "protocol_declaration": "interface",
+    },
 }
 
 # Patterns for extracting imports by language
@@ -94,6 +99,9 @@ IMPORT_PATTERNS = {
     "cpp": [
         (r'#include\s+[<"]([^>"]+)[>"]', "import"),
     ],
+    "swift": [
+        (r"^import\s+([\w.]+)", "import"),
+    ],
 }
 
 # Map language names to tree-sitter language modules
@@ -125,6 +133,8 @@ def _get_ts_language(lang: str):
                 import tree_sitter_c as tsl
             elif lang == "cpp":
                 import tree_sitter_cpp as tsl
+            elif lang == "swift":
+                import tree_sitter_swift as tsl
             else:
                 return None
             LANGUAGE_MODULES[lang] = tree_sitter.Language(tsl.language())
@@ -214,7 +224,7 @@ class ASTChunker:
 
             # Extract symbol metadata
             sym_name = self._extract_name(sym_node, language)
-            sym_type = symbol_types.get(sym_node.type, "unknown")
+            sym_type = self._resolve_symbol_type(sym_node, language, symbol_types)
             if sym_node.type == "decorated_definition":
                 for sub in sym_node.children:
                     if sub.type in symbol_types:
@@ -252,15 +262,23 @@ class ASTChunker:
     def _sub_chunk_class(self, class_node, lines, language, file_path, class_name) -> list[dict]:
         """Break a large class into per-method chunks."""
         chunks = []
-        method_types = {"function_definition", "method_definition", "function_declaration",
-                        "method_declaration", "function_item", "public_method_definition"}
+        method_types = {
+            "function_definition",
+            "method_definition",
+            "function_declaration",
+            "method_declaration",
+            "function_item",
+            "public_method_definition",
+            "protocol_function_declaration",
+        }
+        body_node_types = {"body", "class_body", "protocol_body", "enum_class_body"}
 
         for child in class_node.children:
             if child.type in method_types or (
-                child.type == "body" and hasattr(child, "children")
+                child.type in body_node_types and hasattr(child, "children")
             ):
                 # If it's a body node, look inside for methods
-                if child.type == "body":
+                if child.type in body_node_types:
                     for sub in child.children:
                         if sub.type in method_types:
                             self._add_method_chunk(sub, lines, language, file_path, class_name, chunks)
@@ -288,10 +306,20 @@ class ASTChunker:
     def _extract_name(self, node, language: str) -> Optional[str]:
         """Extract the name identifier from a syntax node."""
         for child in node.children:
-            if child.type in ("identifier", "property_identifier", "type_identifier"):
+            if child.type in (
+                "identifier",
+                "property_identifier",
+                "type_identifier",
+                "simple_identifier",
+                "user_type",
+            ):
                 return child.text.decode("utf-8")
             if child.type == "name":
                 return child.text.decode("utf-8")
+        for child in node.children:
+            nested = self._extract_name(child, language) if child.children else None
+            if nested:
+                return nested
         return None
 
     def _extract_docstring(self, node, content: str, language: str) -> Optional[str]:
@@ -327,6 +355,9 @@ class ASTChunker:
             return "public"
         if language == "python" and name.startswith("_"):
             return "private" if name.startswith("__") and not name.endswith("__") else "protected"
+        if language == "swift":
+            modifier = self._find_swift_visibility(node)
+            return modifier or "internal"
         if language in ("typescript", "javascript"):
             # Check for access modifiers in children
             for child in node.children:
@@ -337,6 +368,8 @@ class ASTChunker:
         return "public"
 
     def _is_exported(self, node, language: str) -> bool:
+        if language == "swift":
+            return self._find_swift_visibility(node) in {"public", "open"}
         if language in ("typescript", "javascript", "tsx", "jsx"):
             if node.type == "export_statement":
                 return True
@@ -344,6 +377,34 @@ class ASTChunker:
             if parent and parent.type == "export_statement":
                 return True
         return False
+
+    def _resolve_symbol_type(self, node, language: str, symbol_types: dict[str, str]) -> str:
+        sym_type = symbol_types.get(node.type, "unknown")
+        if language != "swift" or node.type != "class_declaration":
+            return sym_type
+
+        keyword_map = {
+            "class": "class",
+            "struct": "class",
+            "extension": "class",
+            "enum": "enum",
+        }
+        for child in node.children:
+            if child.type in keyword_map:
+                return keyword_map[child.type]
+        return sym_type
+
+    def _find_swift_visibility(self, node) -> Optional[str]:
+        for child in node.children:
+            if child.type != "modifiers":
+                continue
+            for modifier in child.children:
+                if modifier.type != "visibility_modifier":
+                    continue
+                for token in modifier.children:
+                    if token.type in {"open", "public", "internal", "fileprivate", "private"}:
+                        return token.type
+        return None
 
     def _fallback_chunk(self, content: str, file_path: str) -> list[dict]:
         """Simple line-based chunking for unsupported languages."""

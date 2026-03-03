@@ -2,12 +2,17 @@
 /**
  * CodeBrain MCP Server
  *
- * Exposes local codebase intelligence over MCP (stdio transport).
+ * Exposes local codebase intelligence over MCP (Streamable HTTP by default, stdio optional).
  * Tools: semantic_search, find_symbol, trace_dependencies, get_file_map, get_intent, codebase_stats
  */
 
+import { randomUUID } from "node:crypto";
+import { createServer as createHttpServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import pg from "pg";
 
@@ -24,6 +29,12 @@ const EMBED_BASE_URL = (
 const EMBED_MODEL = process.env.EMBED_MODEL || "nomic-embed-text";
 const EMBED_DIMENSIONS = Number(process.env.EMBED_DIMENSIONS || "768");
 const EMBED_API_KEY = process.env.EMBED_API_KEY;
+const MCP_TRANSPORT = (process.env.MCP_TRANSPORT || "http").toLowerCase();
+const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
+const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3001");
+const MCP_ALLOWED_HOSTS = process.env.MCP_ALLOWED_HOSTS
+  ? process.env.MCP_ALLOWED_HOSTS.split(",").map((host) => host.trim()).filter(Boolean)
+  : undefined;
 
 // ── Database ──────────────────────────────────────────────
 
@@ -91,11 +102,7 @@ function vecLiteral(v: number[]): string {
 
 // ── MCP Server ────────────────────────────────────────────
 
-const server = new McpServer({
-  name: "codebrain",
-  version: "1.0.0",
-});
-
+function registerTools(server: McpServer) {
 // Tool 1: Semantic Search
 server.tool(
   "semantic_search",
@@ -377,16 +384,144 @@ server.tool(
     return { content: [{ type: "text", text: output }] };
   }
 );
+}
+
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: "codebrain",
+    version: "1.0.0",
+  });
+  registerTools(server);
+  return server;
+}
 
 // ── Start ─────────────────────────────────────────────────
 
-async function main() {
+async function startStdioServer() {
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("CodeBrain MCP server running (stdio)");
 }
 
+async function startHttpTransport() {
+  const app = createMcpExpressApp({
+    host: MCP_HTTP_HOST,
+    allowedHosts: MCP_ALLOWED_HOSTS,
+  });
+  const sessions: Record<string, { server: McpServer; transport: StreamableHTTPServerTransport }> = {};
+  const listener = createHttpServer(app);
+
+  app.get("/healthz", (_req: any, res: any) => {
+    res.status(200).json({ ok: true });
+  });
+
+  app.all("/mcp", async (req: any, res: any) => {
+    try {
+      const header = req.headers["mcp-session-id"];
+      const sessionId = Array.isArray(header) ? header[0] : header;
+      const session = sessionId ? sessions[sessionId] : undefined;
+
+      if (session) {
+        await session.transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      if (!sessionId && req.method === "POST" && isInitializeRequest(req.body)) {
+        const server = createServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            sessions[newSessionId] = { server, transport };
+          },
+        });
+
+        transport.onclose = () => {
+          const activeSessionId = transport.sessionId;
+          if (activeSessionId && sessions[activeSessionId]) {
+            delete sessions[activeSessionId];
+          }
+          void server.close();
+        };
+        transport.onerror = (error) => {
+          console.error("MCP transport error:", error);
+        };
+
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      if (sessionId) {
+        res.status(404).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32001,
+            message: "Session not found",
+          },
+          id: null,
+        });
+        return;
+      }
+
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: initialize via POST /mcp first",
+        },
+        id: null,
+      });
+    } catch (error) {
+      console.error("Error handling MCP request:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal server error",
+          },
+          id: null,
+        });
+      }
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(MCP_HTTP_PORT, MCP_HTTP_HOST, () => {
+      listener.off("error", reject);
+      console.error(`CodeBrain MCP server running (http) at http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}/mcp`);
+      resolve();
+    });
+  });
+
+  const shutdown = async (signal: string) => {
+    console.error(`Received ${signal}, shutting down...`);
+    for (const sessionId of Object.keys(sessions)) {
+      await sessions[sessionId].transport.close().catch(() => undefined);
+      await sessions[sessionId].server.close().catch(() => undefined);
+      delete sessions[sessionId];
+    }
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    await pool.end().catch(() => undefined);
+    process.exit(0);
+  };
+
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+}
+
+async function main() {
+  if (MCP_TRANSPORT === "stdio") {
+    await startStdioServer();
+    return;
+  }
+  await startHttpTransport();
+}
+
 main().catch((err) => {
   console.error("Fatal error:", err);
+  void pool.end().catch(() => undefined);
   process.exit(1);
 });
