@@ -52,7 +52,7 @@ psql "postgresql://codebrain:codebrain_local@localhost:5433/codebrain" -f schema
 ```
 Codebase files
   → chunker.py (tree-sitter AST chunking)
-  → embedder.py (Ollama /api/embed → 768-dim vectors)
+  → embedder.py (configurable embedding endpoint → 1024-dim vectors)
   → classifier.py (LLM proxy /v1/chat/completions → intent + summary)
   → PostgreSQL via ingest.py
   → MCP server (index.ts) queries DB at runtime
@@ -63,20 +63,20 @@ Codebase files
 |------|------|
 | `ingest.py` | CLI entrypoint; orchestrates the pipeline |
 | `chunker.py` | AST-aware chunking via tree-sitter; falls back to line-based for unsupported languages |
-| `embedder.py` | Wraps Ollama `/api/embed`; all embeddings are 768-dim (nomic-embed-text) |
+| `embedder.py` | Wraps LM Studio/OpenAI-compatible `/v1/embeddings` or Ollama `/api/embed`; all embeddings are 1024-dim by default |
 | `classifier.py` | Wraps OpenAI-compatible `/v1/chat/completions` for intent classification and file summarization |
 | `index.ts` | MCP server; re-embeds queries at runtime to do cosine similarity search |
 | `schema.sql` | Full DB schema + stored functions (`search_code`, `find_symbol`, `trace_dependencies`) |
 | `codebrain.toml` | Single config file for all components |
 
 ### Configuration (`codebrain.toml`)
-- `[embeddings]` — Ollama model + URL (used by `embedder.py` and `index.ts`)
+- `[embeddings]` — embedding provider config, model, dimensions, and URL (used by `embedder.py`)
 - `[classifier]` — OpenAI-compatible model + `base_url` (used by `classifier.py`); currently points to `http://localhost:3000`
 - `[database]` — PostgreSQL connection string (port 5433)
 - `[ingestion]` — chunk size, overlap, worker count, exclude patterns
 
 ### LLM endpoints (split)
-- **Embeddings**: Ollama at `http://localhost:11434` via `/api/embed` — not available on the local proxy
+- **Embeddings**: LM Studio/OpenAI-compatible at `http://localhost:1234` via `/v1/embeddings` by default, with Ollama `/api/embed` still supported
 - **Text generation**: OpenAI-compatible proxy at `http://localhost:3000` via `/v1/chat/completions`
 
 ### Database schema

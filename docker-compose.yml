@@ -39,6 +39,10 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
+      EMBED_API_STYLE: ollama
+      EMBED_BASE_URL: http://host.docker.internal:11434
+      EMBED_MODEL: nomic-embed-text
+      EMBED_DIMENSIONS: "768"
     stdin_open: true
     tty: true
     profiles:

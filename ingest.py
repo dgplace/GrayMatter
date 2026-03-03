@@ -27,7 +27,7 @@ except ImportError:
 
 from chunker import ASTChunker
 from classifier import IntentClassifier
-from embedder import OllamaEmbedder
+from embedder import EmbeddingClient
 
 console = Console()
 
@@ -93,10 +93,11 @@ def process_file(
     repo_root: Path,
     repo_name: str,
     config: dict,
-    embedder: OllamaEmbedder,
+    embedder: EmbeddingClient,
     classifier: IntentClassifier,
     chunker: ASTChunker,
     db_pool: psycopg2.pool.ThreadedConnectionPool,
+    force: bool = False,
     no_classify: bool = False,
 ) -> dict:
     """Process a single file: parse, chunk, embed, classify, store."""
@@ -115,7 +116,7 @@ def process_file(
             (repo_name, rel_path)
         )
         existing = cur.fetchone()
-        if existing and existing[1] == file_hash:
+        if existing and existing[1] == file_hash and not force:
             return {"status": "skipped", "path": rel_path}
 
         # Read file content
@@ -265,7 +266,7 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
     console.print(f"  Workers: {n_workers}")
 
     # Shared HTTP clients (thread-safe); one chunker per thread created below
-    embedder = OllamaEmbedder(cfg)
+    embedder = EmbeddingClient(cfg)
     classifier = IntentClassifier(cfg)
 
     # Connection pool — one connection slot per worker plus a couple spare
@@ -302,7 +303,18 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
         return thread_chunkers[tid]
 
     def process(fpath: Path) -> dict:
-        return process_file(fpath, repo_root, repo_name, cfg, embedder, classifier, get_chunker(), db_pool, no_classify)
+        return process_file(
+            fpath,
+            repo_root,
+            repo_name,
+            cfg,
+            embedder,
+            classifier,
+            get_chunker(),
+            db_pool,
+            force=force,
+            no_classify=no_classify,
+        )
 
     with Progress(
         SpinnerColumn(),

@@ -15,8 +15,15 @@ const DATABASE_URL =
   process.env.DATABASE_URL ||
   "postgresql://codebrain:codebrain_local@localhost:5433/codebrain";
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+const EMBED_API_STYLE = (process.env.EMBED_API_STYLE || "ollama").toLowerCase();
+const EMBED_BASE_URL = (
+  process.env.EMBED_BASE_URL ||
+  process.env.OLLAMA_URL ||
+  (EMBED_API_STYLE === "ollama" ? "http://localhost:11434" : "http://localhost:11435")
+).replace(/\/+$/, "");
 const EMBED_MODEL = process.env.EMBED_MODEL || "nomic-embed-text";
+const EMBED_DIMENSIONS = Number(process.env.EMBED_DIMENSIONS || "768");
+const EMBED_API_KEY = process.env.EMBED_API_KEY;
 
 // ── Database ──────────────────────────────────────────────
 
@@ -34,14 +41,48 @@ async function query(text: string, params?: any[]) {
 // ── Embedding ─────────────────────────────────────────────
 
 async function embed(text: string): Promise<number[]> {
-  const res = await fetch(`${OLLAMA_URL}/api/embed`, {
+  const endpoint = EMBED_API_STYLE === "openai" ? "/v1/embeddings" : "/api/embed";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (EMBED_API_STYLE === "openai" && EMBED_API_KEY) {
+    headers.Authorization = `Bearer ${EMBED_API_KEY}`;
+  }
+
+  const payload =
+    EMBED_API_STYLE === "openai"
+      ? {
+          model: EMBED_MODEL,
+          input: text,
+          encoding_format: "float",
+          dimensions: EMBED_DIMENSIONS,
+        }
+      : {
+          model: EMBED_MODEL,
+          input: text,
+        };
+
+  const res = await fetch(`${EMBED_BASE_URL}${endpoint}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
+    headers,
+    body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`Ollama embed failed: ${res.statusText}`);
-  const data = (await res.json()) as { embeddings: number[][] };
-  return data.embeddings[0];
+  if (!res.ok) throw new Error(`Embedding request failed: ${res.status} ${res.statusText}`);
+
+  let embedding: number[];
+  if (EMBED_API_STYLE === "openai") {
+    const data = (await res.json()) as { data: Array<{ embedding: number[] }> };
+    embedding = data.data[0]?.embedding;
+  } else {
+    const data = (await res.json()) as { embeddings: number[][] };
+    embedding = data.embeddings[0];
+  }
+
+  if (!embedding) {
+    throw new Error("Embedding provider returned no vectors");
+  }
+  if (embedding.length !== EMBED_DIMENSIONS) {
+    throw new Error(`Expected ${EMBED_DIMENSIONS} dimensions, got ${embedding.length}`);
+  }
+  return embedding;
 }
 
 function vecLiteral(v: number[]): string {

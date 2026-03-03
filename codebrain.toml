@@ -4,11 +4,12 @@ url = "postgresql://codebrain:codebrain_local@localhost:5433/codebrain"
 [embeddings]
 model = "nomic-embed-text"
 dimensions = 768
-ollama_url = "http://localhost:11434"
+api_style = "ollama"
+base_url = "http://localhost:11434"
 
 [classifier]
-model = "mistralai/mistral-small-2506"
-base_url = "http://localhost:3000"
+model = "qwen2.5-coder-7b-instruct"
+base_url = "http://localhost:11435"
 
 [ingestion]
 chunk_size = 512
