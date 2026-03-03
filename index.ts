@@ -100,13 +100,168 @@ function vecLiteral(v: number[]): string {
   return `[${v.join(",")}]`;
 }
 
+function summarizeArgs(args: Record<string, unknown>): string {
+  const entries = Object.entries(args).map(([key, value]) => {
+    if (typeof value === "string") {
+      const compact = value.length > 120 ? `${value.slice(0, 117)}...` : value;
+      return `${key}=${JSON.stringify(compact)}`;
+    }
+    return `${key}=${JSON.stringify(value)}`;
+  });
+  return entries.join(", ");
+}
+
+function logToolInvocation(name: string, args: Record<string, unknown> = {}): void {
+  const summary = summarizeArgs(args);
+  console.error(`[mcp] tool=${name}${summary ? ` args: ${summary}` : ""}`);
+}
+
+type SearchRow = {
+  chunk_id: number;
+  file_path: string;
+  language: string | null;
+  content: string;
+  symbol_name: string | null;
+  symbol_type: string | null;
+  intent: string | null;
+  intent_detail: string | null;
+  start_line: number;
+  end_line: number;
+  similarity: number | null;
+  keyword_score?: number | null;
+};
+
+function extractKeywordTerms(text: string): string[] {
+  const stopwords = new Set([
+    "a", "an", "and", "bar", "by", "code", "config", "configuration", "file", "for", "how",
+    "in", "is", "of", "or", "the", "to", "with",
+  ]);
+  const seen = new Set<string>();
+  const terms: string[] = [];
+
+  for (const raw of text.toLowerCase().split(/[^a-z0-9_]+/)) {
+    const term = raw.trim();
+    if (term.length < 3 || stopwords.has(term) || seen.has(term)) {
+      continue;
+    }
+    seen.add(term);
+    terms.push(term);
+  }
+
+  return terms.slice(0, 6);
+}
+
+function formatSearchResults(rows: SearchRow[]): string {
+  return rows
+    .map((r, i) => {
+      const matchSource =
+        r.similarity != null && (r.keyword_score || 0) > 0
+          ? "hybrid"
+          : r.similarity != null
+            ? "semantic"
+            : "keyword";
+
+      return [
+        `### Result ${i + 1} — ${r.file_path}:${r.start_line}-${r.end_line}`,
+        r.similarity != null ? `**Similarity:** ${(r.similarity * 100).toFixed(1)}%` : "",
+        r.keyword_score ? `**Keyword Score:** ${r.keyword_score}` : "",
+        `**Match:** ${matchSource}`,
+        r.symbol_name ? `**Symbol:** ${r.symbol_type} \`${r.symbol_name}\`` : "",
+        r.intent ? `**Intent:** ${r.intent}` : "",
+        r.intent_detail ? `**Description:** ${r.intent_detail}` : "",
+        "```",
+        r.content,
+        "```",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n---\n\n");
+}
+
+async function keywordSearch(
+  searchQuery: string,
+  limit: number,
+  intent?: string,
+  language?: string,
+  pathPrefix?: string,
+): Promise<SearchRow[]> {
+  const terms = extractKeywordTerms(searchQuery);
+  if (terms.length === 0) {
+    return [];
+  }
+
+  const params: any[] = [];
+  const termSql: string[] = [];
+  const scoreParts: string[] = [];
+
+  for (const term of terms) {
+    const pattern = `%${term.replace(/[%_\\]/g, "\\$&")}%`;
+
+    params.push(pattern);
+    const contentIndex = params.length;
+    params.push(pattern);
+    const symbolIndex = params.length;
+    params.push(pattern);
+    const pathIndex = params.length;
+
+    termSql.push(
+      `(cc.content ILIKE $${contentIndex} ESCAPE '\\' OR COALESCE(cc.symbol_name, '') ILIKE $${symbolIndex} ESCAPE '\\' OR f.path ILIKE $${pathIndex} ESCAPE '\\')`
+    );
+    scoreParts.push(
+      `(CASE WHEN cc.content ILIKE $${contentIndex} ESCAPE '\\' THEN 1 ELSE 0 END + CASE WHEN COALESCE(cc.symbol_name, '') ILIKE $${symbolIndex} ESCAPE '\\' THEN 3 ELSE 0 END + CASE WHEN f.path ILIKE $${pathIndex} ESCAPE '\\' THEN 2 ELSE 0 END)`
+    );
+  }
+
+  let filterSql = "";
+  if (intent) {
+    params.push(intent);
+    filterSql += ` AND cc.intent = $${params.length}`;
+  }
+  if (language) {
+    params.push(language);
+    filterSql += ` AND f.language = $${params.length}`;
+  }
+  if (pathPrefix) {
+    params.push(`${pathPrefix}%`);
+    filterSql += ` AND f.path LIKE $${params.length}`;
+  }
+
+  params.push(Math.max(limit * 3, 20));
+
+  const sql = `
+    SELECT
+      cc.id AS chunk_id,
+      f.path AS file_path,
+      f.language,
+      cc.content,
+      cc.symbol_name,
+      cc.symbol_type,
+      cc.intent,
+      cc.intent_detail,
+      cc.start_line,
+      cc.end_line,
+      NULL::float AS similarity,
+      ${scoreParts.join(" + ")} AS keyword_score
+    FROM code_chunks cc
+    JOIN files f ON cc.file_id = f.id
+    WHERE (${termSql.join(" OR ")})
+      ${filterSql}
+    ORDER BY keyword_score DESC, f.path, cc.start_line
+    LIMIT $${params.length}
+  `;
+
+  const result = await query(sql, params);
+  return result.rows as SearchRow[];
+}
+
 // ── MCP Server ────────────────────────────────────────────
 
 function registerTools(server: McpServer) {
 // Tool 1: Semantic Search
 server.tool(
   "semantic_search",
-  "Search codebase by meaning. Finds code related to a concept even without keyword matches.",
+  "Hybrid search across the codebase. Uses semantic similarity first, then keyword matching to recover exact names and sparse terms.",
   {
     query: z.string().describe("Natural language description of what you're looking for"),
     limit: z.number().optional().default(10).describe("Max results (default 10)"),
@@ -123,37 +278,55 @@ server.tool(
     threshold: z.number().optional().default(0.3).describe("Similarity threshold 0-1 (default 0.3)"),
   },
   async ({ query: searchQuery, limit, intent, language, path_prefix, threshold }) => {
+    logToolInvocation("semantic_search", { query: searchQuery, limit, intent, language, path_prefix, threshold });
     const embedding = await embed(searchQuery);
 
-    const result = await query(
+    const semanticResult = await query(
       `SELECT * FROM search_code($1::vector, $2, $3, $4, $5, NULL, $6)`,
       [vecLiteral(embedding), limit, intent || null, language || null, path_prefix || null, threshold]
     );
+    const keywordResult = await keywordSearch(searchQuery, limit, intent, language, path_prefix);
 
-    if (result.rows.length === 0) {
+    const merged = new Map<number, SearchRow>();
+
+    for (const row of semanticResult.rows as SearchRow[]) {
+      merged.set(row.chunk_id, { ...row, keyword_score: 0 });
+    }
+
+    for (const row of keywordResult) {
+      const existing = merged.get(row.chunk_id);
+      if (existing) {
+        existing.keyword_score = Math.max(existing.keyword_score || 0, row.keyword_score || 0);
+      } else {
+        merged.set(row.chunk_id, row);
+      }
+    }
+
+    const rows = Array.from(merged.values())
+      .sort((a, b) => {
+        const aSemantic = a.similarity ?? -1;
+        const bSemantic = b.similarity ?? -1;
+        if (bSemantic !== aSemantic) {
+          return bSemantic - aSemantic;
+        }
+
+        const aKeyword = a.keyword_score ?? 0;
+        const bKeyword = b.keyword_score ?? 0;
+        if (bKeyword !== aKeyword) {
+          return bKeyword - aKeyword;
+        }
+
+        return a.file_path.localeCompare(b.file_path) || a.start_line - b.start_line;
+      })
+      .slice(0, limit);
+
+    if (rows.length === 0) {
       return {
-        content: [{ type: "text", text: "No results found. Try broadening your query or lowering the threshold." }],
+        content: [{ type: "text", text: "No results found. Try broadening your query, lowering the threshold, or using more specific symbol names." }],
       };
     }
 
-    const formatted = result.rows
-      .map((r: any, i: number) => {
-        return [
-          `### Result ${i + 1} — ${r.file_path}:${r.start_line}-${r.end_line}`,
-          `**Similarity:** ${(r.similarity * 100).toFixed(1)}%`,
-          r.symbol_name ? `**Symbol:** ${r.symbol_type} \`${r.symbol_name}\`` : "",
-          r.intent ? `**Intent:** ${r.intent}` : "",
-          r.intent_detail ? `**Description:** ${r.intent_detail}` : "",
-          "```",
-          r.content,
-          "```",
-        ]
-          .filter(Boolean)
-          .join("\n");
-      })
-      .join("\n\n---\n\n");
-
-    return { content: [{ type: "text", text: formatted }] };
+    return { content: [{ type: "text", text: formatSearchResults(rows) }] };
   }
 );
 
@@ -170,6 +343,7 @@ server.tool(
     file: z.string().optional().describe("Filter by filename (partial match)"),
   },
   async ({ name, kind, file }) => {
+    logToolInvocation("find_symbol", { name, kind, file });
     const result = await query(`SELECT * FROM find_symbol($1, $2, $3)`, [
       name,
       kind || null,
@@ -212,6 +386,7 @@ server.tool(
     max_depth: z.number().optional().default(3).describe("How many levels deep to trace (default 3)"),
   },
   async ({ path, direction, max_depth }) => {
+    logToolInvocation("trace_dependencies", { path, direction, max_depth });
     const result = await query(`SELECT * FROM trace_dependencies($1, $2, $3)`, [
       path,
       direction,
@@ -246,6 +421,7 @@ server.tool(
     repo: z.string().optional().describe("Repository name (if multiple repos indexed)"),
   },
   async ({ path_prefix, repo }) => {
+    logToolInvocation("get_file_map", { path_prefix, repo });
     let sql = `
       SELECT f.path, f.language, f.line_count, f.role, f.summary,
              array_agg(DISTINCT s.name || ' (' || s.kind || ')') FILTER (WHERE s.name IS NOT NULL) AS symbols
@@ -294,6 +470,7 @@ server.tool(
     path: z.string().describe("File path to analyze"),
   },
   async ({ path }) => {
+    logToolInvocation("get_intent", { path });
     const fileResult = await query(
       `SELECT f.summary, f.role FROM files f WHERE f.path LIKE '%' || $1 || '%' LIMIT 1`,
       [path]
@@ -338,6 +515,7 @@ server.tool(
   "Get high-level metrics about the indexed codebase(s): file counts, languages, symbol distribution.",
   {},
   async () => {
+    logToolInvocation("codebase_stats");
     const result = await query(`
       SELECT
         f.repo,
@@ -421,6 +599,13 @@ async function startHttpTransport() {
       const header = req.headers["mcp-session-id"];
       const sessionId = Array.isArray(header) ? header[0] : header;
       const session = sessionId ? sessions[sessionId] : undefined;
+      const rpcMethod = req.body?.method;
+      const requestedTool = rpcMethod === "tools/call" ? req.body?.params?.name : undefined;
+      console.error(
+        `[mcp] request method=${req.method} rpc=${rpcMethod || "unknown"} session=${sessionId || "new"}${
+          requestedTool ? ` tool=${requestedTool}` : ""
+        }`
+      );
 
       if (session) {
         await session.transport.handleRequest(req, res, req.body);
