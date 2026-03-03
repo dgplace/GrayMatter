@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: codebrain
+      POSTGRES_USER: codebrain
+      POSTGRES_PASSWORD: codebrain_local
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codebrain -d codebrain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingestor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./codebrain.docker.toml:/app/codebrain.toml:ro
+      # Mount repos to ingest here, e.g.:
+      # - /path/to/your/repo:/repos/myrepo:ro
+    profiles:
+      - tools
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
+    stdin_open: true
+    tty: true
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
