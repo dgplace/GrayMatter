@@ -257,13 +257,59 @@ async function keywordSearch(
 
 // ── MCP Server ────────────────────────────────────────────
 
+const CODEBRAIN_USAGE_URI = "codebrain://usage";
+const CODEBRAIN_USAGE_TEXT = [
+  "# CodeBrain Usage",
+  "",
+  "Use CodeBrain as the discovery layer before broad shell-based exploration.",
+  "",
+  "Recommended workflow:",
+  "1. Start with `codebase_stats` for a quick high-level overview.",
+  "2. Use `find_symbol` first when you know any part of an identifier name.",
+  "3. Use `get_file_map` to understand a subsystem before opening many files.",
+  "4. Use `trace_dependencies` before manually following imports or call chains.",
+  "5. Use `get_intent` before editing a file you have not read yet.",
+  "6. Use `semantic_search` when the exact symbol name is unknown.",
+  "",
+  "Search tips:",
+  "- Prefer short technical phrases over long conversational questions.",
+  "- Include framework names, APIs, or domain terms when possible.",
+  "- If `semantic_search` is weak, retry with more specific terms or a lower threshold.",
+  "- Use shell search after CodeBrain narrows the likely files or when exact text matching is required.",
+  "",
+  "Reliability rules:",
+  "- Always inspect the actual files before editing.",
+  "- Treat CodeBrain as guidance for discovery, not the final source of truth.",
+].join("\n");
+
+function registerResources(server: McpServer) {
+  server.registerResource(
+    "usage",
+    CODEBRAIN_USAGE_URI,
+    {
+      title: "CodeBrain Usage",
+      description: "Read this first for the recommended CodeBrain workflow and search strategy.",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.toString(),
+          mimeType: "text/markdown",
+          text: CODEBRAIN_USAGE_TEXT,
+        },
+      ],
+    })
+  );
+}
+
 function registerTools(server: McpServer) {
 // Tool 1: Semantic Search
 server.tool(
   "semantic_search",
-  "Hybrid search across the codebase. Uses semantic similarity first, then keyword matching to recover exact names and sparse terms.",
+  "Use for concept-based discovery when the exact symbol name is unknown. Runs hybrid retrieval: semantic similarity first, then keyword matching for exact names and sparse terms.",
   {
-    query: z.string().describe("Natural language description of what you're looking for"),
+    query: z.string().describe("Short technical search phrase. Prefer 2-8 words with framework names, APIs, or domain terms."),
     limit: z.number().optional().default(10).describe("Max results (default 10)"),
     intent: z
       .enum([
@@ -272,10 +318,10 @@ server.tool(
         "integration", "orchestration", "type-definition", "middleware", "migration",
       ])
       .optional()
-      .describe("Filter by code intent category"),
-    language: z.string().optional().describe("Filter by language (python, typescript, etc.)"),
-    path_prefix: z.string().optional().describe("Filter by file path prefix (e.g. src/api/)"),
-    threshold: z.number().optional().default(0.3).describe("Similarity threshold 0-1 (default 0.3)"),
+      .describe("Optional intent filter when you already know the kind of code you want."),
+    language: z.string().optional().describe("Optional language filter (python, typescript, swift, etc.)."),
+    path_prefix: z.string().optional().describe("Optional path prefix to focus search on a subsystem (for example src/api/)."),
+    threshold: z.number().optional().default(0.3).describe("Semantic similarity threshold 0-1. Lower this when the codebase uses sparse or exact terminology."),
   },
   async ({ query: searchQuery, limit, intent, language, path_prefix, threshold }) => {
     logToolInvocation("semantic_search", { query: searchQuery, limit, intent, language, path_prefix, threshold });
@@ -333,14 +379,14 @@ server.tool(
 // Tool 2: Find Symbol
 server.tool(
   "find_symbol",
-  "Locate functions, classes, types, interfaces by name. Supports partial matching.",
+  "Use first when you know part of a symbol name. Faster and more precise than semantic search for identifiers, classes, functions, methods, types, structs, and protocols.",
   {
-    name: z.string().describe("Symbol name to search for (partial match supported)"),
+    name: z.string().describe("Partial or exact symbol name. Start here before broad text search when you know the identifier."),
     kind: z
       .enum(["function", "class", "interface", "type", "method", "variable", "constant", "enum", "impl", "namespace"])
       .optional()
-      .describe("Filter by symbol kind"),
-    file: z.string().optional().describe("Filter by filename (partial match)"),
+      .describe("Optional symbol kind filter to narrow ambiguous names."),
+    file: z.string().optional().describe("Optional filename filter when the symbol is likely in a known file or module."),
   },
   async ({ name, kind, file }) => {
     logToolInvocation("find_symbol", { name, kind, file });
@@ -375,15 +421,15 @@ server.tool(
 // Tool 3: Trace Dependencies
 server.tool(
   "trace_dependencies",
-  "Follow import and dependency chains to/from a file or module. Answers 'what depends on X?' and 'what does X depend on?'",
+  "Use before manually tracing imports or call chains. Follows dependency edges to answer what depends on X, what X depends on, or both.",
   {
-    path: z.string().describe("File path or partial path to trace"),
+    path: z.string().describe("File path or distinctive partial path to trace."),
     direction: z
       .enum(["inbound", "outbound", "both"])
       .optional()
       .default("both")
-      .describe("inbound = what depends on this, outbound = what this depends on"),
-    max_depth: z.number().optional().default(3).describe("How many levels deep to trace (default 3)"),
+      .describe("Use inbound for reverse dependencies, outbound for direct dependencies, both for a quick graph walk."),
+    max_depth: z.number().optional().default(3).describe("Depth limit for the graph walk (default 3). Use 1-2 for focused tracing."),
   },
   async ({ path, direction, max_depth }) => {
     logToolInvocation("trace_dependencies", { path, direction, max_depth });
@@ -415,10 +461,10 @@ server.tool(
 // Tool 4: File Map
 server.tool(
   "get_file_map",
-  "Get an architectural overview of files in a directory. Shows each file's role, summary, and key symbols.",
+  "Use before opening many files. Gives an architectural map of a directory or subsystem, including each file's role, summary, and exported symbols.",
   {
-    path_prefix: z.string().optional().default("").describe("Directory path prefix to filter (e.g. src/api/)"),
-    repo: z.string().optional().describe("Repository name (if multiple repos indexed)"),
+    path_prefix: z.string().optional().default("").describe("Directory or path prefix to inspect first (for example src/api/ or App/Views/)."),
+    repo: z.string().optional().describe("Optional repository name when multiple repositories are indexed."),
   },
   async ({ path_prefix, repo }) => {
     logToolInvocation("get_file_map", { path_prefix, repo });
@@ -465,9 +511,9 @@ server.tool(
 // Tool 5: Get Intent
 server.tool(
   "get_intent",
-  "Understand what a specific file or code section is trying to accomplish.",
+  "Use before editing an unfamiliar file. Summarizes what the file is for and what its indexed code sections are doing.",
   {
-    path: z.string().describe("File path to analyze"),
+    path: z.string().describe("File path or distinctive partial path to inspect before modifying it."),
   },
   async ({ path }) => {
     logToolInvocation("get_intent", { path });
@@ -512,7 +558,7 @@ server.tool(
 // Tool 6: Codebase Stats
 server.tool(
   "codebase_stats",
-  "Get high-level metrics about the indexed codebase(s): file counts, languages, symbol distribution.",
+  "Use first for a quick overview. Returns high-level metrics for the indexed codebase, including file counts, languages, chunk counts, and symbol distribution.",
   {},
   async () => {
     logToolInvocation("codebase_stats");
@@ -569,6 +615,7 @@ function createServer(): McpServer {
     name: "codebrain",
     version: "1.0.0",
   });
+  registerResources(server);
   registerTools(server);
   return server;
 }
@@ -626,7 +673,6 @@ async function startHttpTransport() {
           if (activeSessionId && sessions[activeSessionId]) {
             delete sessions[activeSessionId];
           }
-          void server.close();
         };
         transport.onerror = (error) => {
           console.error("MCP transport error:", error);
@@ -683,10 +729,9 @@ async function startHttpTransport() {
 
   const shutdown = async (signal: string) => {
     console.error(`Received ${signal}, shutting down...`);
-    for (const sessionId of Object.keys(sessions)) {
-      await sessions[sessionId].transport.close().catch(() => undefined);
-      await sessions[sessionId].server.close().catch(() => undefined);
+    for (const [sessionId, session] of Object.entries(sessions)) {
       delete sessions[sessionId];
+      await session.server.close().catch(() => undefined);
     }
     await new Promise<void>((resolve) => listener.close(() => resolve()));
     await pool.end().catch(() => undefined);

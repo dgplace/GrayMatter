@@ -6,9 +6,11 @@ Walks a codebase, parses with tree-sitter, embeds with Ollama, classifies intent
 
 import hashlib
 import os
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +69,62 @@ def should_exclude(path: Path, repo_root: Path, excludes: list[str]) -> bool:
     return False
 
 
+@lru_cache(maxsize=32)
+def get_git_root(repo_root: str) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    git_root = result.stdout.strip()
+    return Path(git_root).resolve() if git_root else None
+
+
+def filter_gitignored_paths(paths: list[Path], repo_root: Path) -> list[Path]:
+    """Drop paths ignored by Git, preserving input order."""
+    if not paths:
+        return paths
+
+    git_root = get_git_root(str(repo_root))
+    if git_root is None:
+        return paths
+
+    rel_paths = [path.relative_to(git_root).as_posix() for path in paths]
+    payload = ("\0".join(rel_paths) + "\0").encode()
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(git_root), "check-ignore", "--stdin", "-z"],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return paths
+
+    if result.returncode not in (0, 1):
+        return paths
+
+    ignored = {
+        rel_path
+        for rel_path in result.stdout.decode("utf-8", errors="ignore").split("\0")
+        if rel_path
+    }
+    return [path for path in paths if path.relative_to(git_root).as_posix() not in ignored]
+
+
+def is_gitignored(path: Path, repo_root: Path) -> bool:
+    return len(filter_gitignored_paths([path], repo_root)) == 0
+
+
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
     """Walk the repository, respecting excludes and .gitignore."""
     excludes = config.get("ingestion", {}).get("exclude", [])
@@ -85,7 +143,7 @@ def walk_repo(repo_root: Path, config: dict) -> list[Path]:
             fpath = root_path / fname
             if fpath.suffix in supported_exts and not should_exclude(fpath, repo_root, excludes):
                 files.append(fpath)
-    return files
+    return filter_gitignored_paths(files, repo_root)
 
 
 def process_file(
@@ -374,7 +432,10 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
             def on_modified(self, event):
                 if not event.is_directory:
                     fpath = Path(event.src_path)
-                    if not should_exclude(fpath, repo_root, cfg.get("ingestion", {}).get("exclude", [])):
+                    if (
+                        not should_exclude(fpath, repo_root, cfg.get("ingestion", {}).get("exclude", []))
+                        and not is_gitignored(fpath, repo_root)
+                    ):
                         lang = detect_language(fpath, cfg)
                         if lang:
                             console.print(f"  [dim]Re-indexing {fpath.name}...[/]")
