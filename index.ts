@@ -18,13 +18,13 @@ import pg from "pg";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
-  "postgresql://codebrain:codebrain_local@localhost:5433/codebrain";
+  "postgresql://codebrain:codebrain_local@applepi3:5433/codebrain";
 
 const EMBED_API_STYLE = (process.env.EMBED_API_STYLE || "ollama").toLowerCase();
 const EMBED_BASE_URL = (
   process.env.EMBED_BASE_URL ||
   process.env.OLLAMA_URL ||
-  (EMBED_API_STYLE === "ollama" ? "http://localhost:11434" : "http://localhost:11435")
+  (EMBED_API_STYLE === "ollama" ? "http://applepi3:11434" : "http://applepi3:11435")
 ).replace(/\/+$/, "");
 const EMBED_MODEL = process.env.EMBED_MODEL || "nomic-embed-text";
 const EMBED_DIMENSIONS = Number(process.env.EMBED_DIMENSIONS || "768");

@@ -1,17 +1,16 @@
 [database]
-url = "postgresql://codebrain:codebrain_local@postgres:5432/codebrain"
+url = "postgresql://codebrain:codebrain_local@applepi3:5433/codebrain"
 
 [embeddings]
 model = "nomic-embed-text"
 dimensions = 768
 api_style = "ollama"
-base_url = "http://host.docker.internal:11434"
+base_url = "http://applepi3:11434"
 
 [classifier]
 model = "qwen2.5-coder-7b-instruct"
-# Point this at your OpenAI-compatible proxy.
-# From inside Docker, use host.docker.internal to reach the host machine.
-base_url = "http://host.docker.internal:11435"
+# Point this at your OpenAI-compatible proxy on the network host.
+base_url = "http://applepi3:11435"
 
 [ingestion]
 chunk_size = 512
