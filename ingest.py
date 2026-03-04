@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!./.venv/bin/python3
 """
 CodeBrain Ingestion Pipeline
 Walks a codebase, parses with tree-sitter, embeds with Ollama, classifies intent, stores in PostgreSQL.
