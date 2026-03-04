@@ -16,22 +16,6 @@ services:
       timeout: 5s
       retries: 10
 
-  ingestor:
-    build:
-      context: .
-      dockerfile: Dockerfile.ingestor
-    depends_on:
-      postgres:
-        condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./codebrain.docker.toml:/app/codebrain.toml:ro
-      # Mount repos to ingest here, e.g.:
-      # - /path/to/your/repo:/repos/myrepo:ro
-    profiles:
-      - tools
-
   mcp:
     build:
       context: .

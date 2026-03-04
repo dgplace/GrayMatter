@@ -6,6 +6,7 @@ Walks a codebase, parses with tree-sitter, embeds with Ollama, classifies intent
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -125,6 +126,144 @@ def is_gitignored(path: Path, repo_root: Path) -> bool:
     return len(filter_gitignored_paths([path], repo_root)) == 0
 
 
+SCHEMA_PATCHES = [
+    """
+    ALTER TABLE symbols
+    ADD COLUMN IF NOT EXISTS container_symbol TEXT
+    """,
+    """
+    ALTER TABLE symbols
+    ADD COLUMN IF NOT EXISTS declared_in_extension BOOLEAN NOT NULL DEFAULT FALSE
+    """,
+    """
+    ALTER TABLE symbols
+    ADD COLUMN IF NOT EXISTS is_primary_declaration BOOLEAN NOT NULL DEFAULT TRUE
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS symbol_references (
+        id SERIAL PRIMARY KEY,
+        source_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        source_chunk_id INTEGER REFERENCES code_chunks(id) ON DELETE CASCADE,
+        source_symbol_name TEXT,
+        target_name TEXT NOT NULL,
+        reference_kind TEXT NOT NULL,
+        line_no INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbols_container
+    ON symbols(container_symbol)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbols_primary
+    ON symbols(is_primary_declaration)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_file
+    ON symbol_references(source_file_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_chunk
+    ON symbol_references(source_chunk_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name
+    ON symbol_references(target_name)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_kind
+    ON symbol_references(reference_kind)
+    """,
+]
+
+REFERENCE_PATTERNS = [
+    (re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b"), "type_reference"),
+    (re.compile(r"(?<![.\w])([a-z_][A-Za-z0-9_]*)\s*\("), "call"),
+    (re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\("), "member_call"),
+]
+
+REFERENCE_STOPWORDS = {
+    "as", "catch", "class", "defer", "else", "enum", "extension", "for", "func",
+    "guard", "if", "import", "init", "in", "let", "private", "protocol", "public",
+    "return", "struct", "subscript", "switch", "throw", "try", "var", "where", "while",
+}
+
+
+def ensure_schema(conn) -> None:
+    cur = conn.cursor()
+    try:
+        for statement in SCHEMA_PATCHES:
+            cur.execute(statement)
+        conn.commit()
+    finally:
+        cur.close()
+
+
+def insert_symbol(cur, file_id: int, chunk_id: Optional[int], symbol: dict, embedding, parent_id: Optional[int] = None) -> int:
+    cur.execute(
+        """INSERT INTO symbols
+           (file_id, chunk_id, name, qualified_name, kind, signature, docstring,
+            start_line, end_line, parent_id, container_symbol, visibility, is_exported,
+            declared_in_extension, is_primary_declaration, embedding)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        (
+            file_id,
+            chunk_id,
+            symbol["name"],
+            symbol.get("qualified_name"),
+            symbol.get("kind", "unknown"),
+            symbol.get("signature"),
+            symbol.get("docstring"),
+            symbol["start_line"],
+            symbol["end_line"],
+            parent_id,
+            symbol.get("container_symbol"),
+            symbol.get("visibility", "public"),
+            symbol.get("is_exported", False),
+            symbol.get("declared_in_extension", False),
+            symbol.get("is_primary_declaration", True),
+            embedding,
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def extract_symbol_references(chunks: list[dict]) -> list[dict]:
+    references = []
+
+    for chunk_index, chunk in enumerate(chunks):
+        source_symbol_name = chunk.get("symbol_name") or chunk.get("parent_symbol")
+        seen = set()
+
+        for offset, line in enumerate(chunk["content"].split("\n")):
+            line_no = chunk["start_line"] + offset
+            for pattern, ref_kind in REFERENCE_PATTERNS:
+                for match in pattern.finditer(line):
+                    target_name = match.group(1)
+                    if (
+                        not target_name
+                        or target_name in REFERENCE_STOPWORDS
+                        or target_name == source_symbol_name
+                    ):
+                        continue
+
+                    key = (line_no, target_name, ref_kind)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    references.append({
+                        "chunk_index": chunk_index,
+                        "source_symbol_name": source_symbol_name,
+                        "target_name": target_name,
+                        "reference_kind": ref_kind,
+                        "line_no": line_no,
+                    })
+
+    return references
+
+
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
     """Walk the repository, respecting excludes and .gitignore."""
     excludes = config.get("ingestion", {}).get("exclude", [])
@@ -205,6 +344,7 @@ def process_file(
             cur.execute("DELETE FROM code_chunks WHERE file_id = %s", (file_id,))
             cur.execute("DELETE FROM symbols WHERE file_id = %s", (file_id,))
             cur.execute("DELETE FROM dependencies WHERE source_file_id = %s", (file_id,))
+            cur.execute("DELETE FROM symbol_references WHERE source_file_id = %s", (file_id,))
         else:
             cur.execute(
                 """INSERT INTO files (repo, path, language, size_bytes, line_count, hash, summary, role, embedding)
@@ -243,6 +383,8 @@ def process_file(
 
         chunk_count = 0
         symbol_count = 0
+        chunk_ids = {}
+        container_symbol_ids: dict[str, int] = {}
 
         for i, chunk in enumerate(chunks):
             intent, intent_detail = chunk_classifications[i]
@@ -257,21 +399,63 @@ def process_file(
                  intent, intent_detail, chunk_embeddings[i])
             )
             chunk_id = cur.fetchone()[0]
+            chunk_ids[i] = chunk_id
             chunk_count += 1
 
             if chunk.get("symbol_name") and i in symbol_embedding_map:
-                cur.execute(
-                    """INSERT INTO symbols
-                       (file_id, chunk_id, name, qualified_name, kind, signature, docstring,
-                        start_line, end_line, visibility, is_exported, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (file_id, chunk_id, chunk["symbol_name"], chunk.get("qualified_name"),
-                     chunk.get("symbol_type", "unknown"), chunk.get("signature"),
-                     chunk.get("docstring"), chunk["start_line"], chunk["end_line"],
-                     chunk.get("visibility", "public"), chunk.get("is_exported", False),
-                     symbol_embedding_map[i])
+                parent_qname = (
+                    f"{rel_path}:{chunk['parent_symbol']}"
+                    if chunk.get("parent_symbol")
+                    else None
                 )
+                symbol_id = insert_symbol(
+                    cur,
+                    file_id,
+                    chunk_id,
+                    {
+                        "name": chunk["symbol_name"],
+                        "qualified_name": chunk.get("qualified_name"),
+                        "kind": chunk.get("symbol_type", "unknown"),
+                        "signature": chunk.get("signature"),
+                        "docstring": chunk.get("docstring"),
+                        "start_line": chunk["start_line"],
+                        "end_line": chunk["end_line"],
+                        "container_symbol": chunk.get("container_symbol") or chunk.get("parent_symbol"),
+                        "visibility": chunk.get("visibility", "public"),
+                        "is_exported": chunk.get("is_exported", False),
+                        "declared_in_extension": chunk.get("declared_in_extension", False),
+                        "is_primary_declaration": chunk.get("is_primary_declaration", True),
+                    },
+                    symbol_embedding_map[i],
+                    parent_id=container_symbol_ids.get(parent_qname) if parent_qname else None,
+                )
+                if chunk.get("qualified_name"):
+                    container_symbol_ids[chunk["qualified_name"]] = symbol_id
                 symbol_count += 1
+
+                for member_symbol in chunk.get("member_symbols", []):
+                    insert_symbol(
+                        cur,
+                        file_id,
+                        chunk_id,
+                        {
+                            "name": member_symbol["symbol_name"],
+                            "qualified_name": member_symbol.get("qualified_name"),
+                            "kind": member_symbol.get("symbol_type", "unknown"),
+                            "signature": member_symbol.get("signature"),
+                            "docstring": member_symbol.get("docstring"),
+                            "start_line": member_symbol["start_line"],
+                            "end_line": member_symbol["end_line"],
+                            "container_symbol": member_symbol.get("container_symbol"),
+                            "visibility": member_symbol.get("visibility", "public"),
+                            "is_exported": member_symbol.get("is_exported", False),
+                            "declared_in_extension": member_symbol.get("declared_in_extension", False),
+                            "is_primary_declaration": False,
+                        },
+                        chunk_embeddings[i],
+                        parent_id=symbol_id,
+                    )
+                    symbol_count += 1
 
         # Extract and store dependencies
         deps = chunker.extract_dependencies(content, language, rel_path)
@@ -280,6 +464,22 @@ def process_file(
                 """INSERT INTO dependencies (source_file_id, kind, external_module)
                    VALUES (%s, %s, %s)""",
                 (file_id, dep["kind"], dep["module"])
+            )
+
+        # Extract and store lexical/call references for later symbol resolution.
+        for reference in extract_symbol_references(chunks):
+            cur.execute(
+                """INSERT INTO symbol_references
+                   (source_file_id, source_chunk_id, source_symbol_name, target_name, reference_kind, line_no)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    file_id,
+                    chunk_ids.get(reference["chunk_index"]),
+                    reference.get("source_symbol_name"),
+                    reference["target_name"],
+                    reference["reference_kind"],
+                    reference["line_no"],
+                ),
             )
 
         conn.commit()
@@ -334,6 +534,7 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
 
     # Create ingestion run
     setup_conn = get_db(cfg)
+    ensure_schema(setup_conn)
     cur = setup_conn.cursor()
     cur.execute(
         "INSERT INTO ingestion_runs (repo) VALUES (%s) RETURNING id",

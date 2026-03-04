@@ -3,7 +3,7 @@
  * CodeBrain MCP Server
  *
  * Exposes local codebase intelligence over MCP (Streamable HTTP by default, stdio optional).
- * Tools: semantic_search, find_symbol, trace_dependencies, get_file_map, get_intent, codebase_stats
+ * Tools: semantic_search, find_symbol, exact_symbol_search, find_references, trace_dependencies, get_file_map, get_intent, codebase_stats
  */
 
 import { randomUUID } from "node:crypto";
@@ -39,6 +39,32 @@ const MCP_ALLOWED_HOSTS = process.env.MCP_ALLOWED_HOSTS
 // ── Database ──────────────────────────────────────────────
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
+const SYMBOL_KIND_VALUES = [
+  "function", "class", "struct", "protocol", "interface", "type",
+  "method", "property", "variable", "constant", "enum", "impl", "namespace", "extension",
+] as const;
+
+const SCHEMA_PATCHES = [
+  `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS container_symbol TEXT`,
+  `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS declared_in_extension BOOLEAN NOT NULL DEFAULT FALSE`,
+  `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS is_primary_declaration BOOLEAN NOT NULL DEFAULT TRUE`,
+  `CREATE TABLE IF NOT EXISTS symbol_references (
+      id SERIAL PRIMARY KEY,
+      source_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      source_chunk_id INTEGER REFERENCES code_chunks(id) ON DELETE CASCADE,
+      source_symbol_name TEXT,
+      target_name TEXT NOT NULL,
+      reference_kind TEXT NOT NULL,
+      line_no INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+  `CREATE INDEX IF NOT EXISTS idx_symbols_container ON symbols(container_symbol)`,
+  `CREATE INDEX IF NOT EXISTS idx_symbols_primary ON symbols(is_primary_declaration)`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_file ON symbol_references(source_file_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_chunk ON symbol_references(source_chunk_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name ON symbol_references(target_name)`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_refs_kind ON symbol_references(reference_kind)`,
+] as const;
 
 async function query(text: string, params?: any[]) {
   const client = await pool.connect();
@@ -46,6 +72,12 @@ async function query(text: string, params?: any[]) {
     return await client.query(text, params);
   } finally {
     client.release();
+  }
+}
+
+async function ensureSchema(): Promise<void> {
+  for (const statement of SCHEMA_PATCHES) {
+    await query(statement);
   }
 }
 
@@ -131,6 +163,30 @@ type SearchRow = {
   keyword_score?: number | null;
 };
 
+type SymbolRow = {
+  symbol_id: number;
+  name: string;
+  qualified_name: string | null;
+  kind: string;
+  signature: string | null;
+  docstring: string | null;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  is_exported: boolean;
+  container_symbol: string | null;
+  declared_in_extension: boolean;
+  is_primary_declaration: boolean;
+};
+
+type ReferenceRow = {
+  source_path: string;
+  line_no: number;
+  reference_kind: string;
+  source_symbol_name: string | null;
+  target_paths: string[] | null;
+};
+
 function extractKeywordTerms(text: string): string[] {
   const stopwords = new Set([
     "a", "an", "and", "bar", "by", "code", "config", "configuration", "file", "for", "how",
@@ -177,6 +233,38 @@ function formatSearchResults(rows: SearchRow[]): string {
         .join("\n");
     })
     .join("\n\n---\n\n");
+}
+
+function formatSymbolResults(rows: SymbolRow[]): string {
+  return rows
+    .map((r) => [
+      `**${r.kind}** \`${r.qualified_name || r.name}\``,
+      `  File: ${r.file_path}:${r.start_line}-${r.end_line}`,
+      r.container_symbol ? `  Container: \`${r.container_symbol}\`` : "",
+      r.signature ? `  Signature: \`${r.signature}\`` : "",
+      r.docstring ? `  Doc: ${r.docstring.slice(0, 200)}` : "",
+      r.is_primary_declaration ? "  ✓ Primary declaration" : "  • Secondary declaration",
+      r.declared_in_extension ? "  • Declared in extension" : "",
+      r.is_exported ? "  ✓ Exported" : "",
+    ]
+      .filter(Boolean)
+      .join("\n"))
+    .join("\n\n");
+}
+
+function formatReferenceResults(rows: ReferenceRow[], name: string): string {
+  return rows
+    .map((r) => {
+      const targets = r.target_paths?.length ? ` -> ${r.target_paths.join(", ")}` : "";
+      return [
+        `**${r.source_path}:${r.line_no}**`,
+        r.source_symbol_name ? `  Source Symbol: \`${r.source_symbol_name}\`` : "",
+        `  Kind: ${r.reference_kind}${targets}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n") || `No references found for "${name}".`;
 }
 
 async function keywordSearch(
@@ -265,11 +353,13 @@ const CODEBRAIN_USAGE_TEXT = [
   "",
   "Recommended workflow:",
   "1. Start with `codebase_stats` for a quick high-level overview.",
-  "2. Use `find_symbol` first when you know any part of an identifier name.",
-  "3. Use `get_file_map` to understand a subsystem before opening many files.",
-  "4. Use `trace_dependencies` before manually following imports or call chains.",
-  "5. Use `get_intent` before editing a file you have not read yet.",
-  "6. Use `semantic_search` when the exact symbol name is unknown.",
+  "2. Use `exact_symbol_search` for exact identifier lookups, especially methods and extension members.",
+  "3. Use `find_symbol` when you know any part of an identifier name.",
+  "4. Use `find_references` for concrete usage sites of an exact symbol.",
+  "5. Use `get_file_map` to understand a subsystem before opening many files.",
+  "6. Use `trace_dependencies` before manually following imports or call chains.",
+  "7. Use `get_intent` before editing a file you have not read yet.",
+  "8. Use `semantic_search` when the exact symbol name is unknown.",
   "",
   "Search tips:",
   "- Prefer short technical phrases over long conversational questions.",
@@ -382,43 +472,173 @@ server.tool(
   "Use first when you know part of a symbol name. Faster and more precise than semantic search for identifiers, classes, functions, methods, types, structs, and protocols.",
   {
     name: z.string().describe("Partial or exact symbol name. Start here before broad text search when you know the identifier."),
-    kind: z
-      .enum(["function", "class", "interface", "type", "method", "variable", "constant", "enum", "impl", "namespace"])
-      .optional()
-      .describe("Optional symbol kind filter to narrow ambiguous names."),
+    kind: z.enum(SYMBOL_KIND_VALUES).optional().describe("Optional symbol kind filter to narrow ambiguous names."),
     file: z.string().optional().describe("Optional filename filter when the symbol is likely in a known file or module."),
   },
   async ({ name, kind, file }) => {
     logToolInvocation("find_symbol", { name, kind, file });
-    const result = await query(`SELECT * FROM find_symbol($1, $2, $3)`, [
-      name,
-      kind || null,
-      file || null,
-    ]);
+    const result = await query(
+      `
+      SELECT
+        s.id AS symbol_id,
+        s.name,
+        s.qualified_name,
+        s.kind,
+        s.signature,
+        s.docstring,
+        f.path AS file_path,
+        s.start_line,
+        s.end_line,
+        s.is_exported,
+        s.container_symbol,
+        s.declared_in_extension,
+        s.is_primary_declaration
+      FROM symbols s
+      JOIN files f ON s.file_id = f.id
+      WHERE (
+          s.name ILIKE '%' || $1 || '%'
+          OR COALESCE(s.qualified_name, '') ILIKE '%' || $1 || '%'
+          OR COALESCE(s.signature, '') ILIKE '%' || $1 || '%'
+      )
+        AND ($2::text IS NULL OR s.kind = $2)
+        AND ($3::text IS NULL OR f.path LIKE '%' || $3 || '%')
+      ORDER BY
+        CASE
+          WHEN s.name = $1 THEN 0
+          WHEN lower(s.name) = lower($1) THEN 1
+          WHEN COALESCE(s.qualified_name, '') = $1 THEN 2
+          WHEN COALESCE(s.qualified_name, '') ILIKE '%:' || $1 THEN 3
+          WHEN COALESCE(s.signature, '') ILIKE $1 || '%' THEN 4
+          WHEN s.name ILIKE $1 || '%' THEN 5
+          WHEN COALESCE(s.qualified_name, '') ILIKE '%' || $1 || '%' THEN 6
+          WHEN COALESCE(s.signature, '') ILIKE '%' || $1 || '%' THEN 7
+          ELSE 8
+        END,
+        CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+        CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+        CASE WHEN s.kind IN ('class', 'struct', 'protocol', 'interface', 'enum', 'extension') THEN 0 ELSE 1 END,
+        s.is_exported DESC,
+        f.path,
+        s.start_line
+      LIMIT 25
+      `,
+      [name, kind || null, file || null]
+    );
 
     if (result.rows.length === 0) {
       return { content: [{ type: "text", text: `No symbols found matching "${name}".` }] };
     }
 
-    const formatted = result.rows
-      .map((r: any) => {
-        return [
-          `**${r.kind}** \`${r.qualified_name || r.name}\``,
-          `  File: ${r.file_path}:${r.start_line}-${r.end_line}`,
-          r.signature ? `  Signature: \`${r.signature}\`` : "",
-          r.docstring ? `  Doc: ${r.docstring.slice(0, 200)}` : "",
-          r.is_exported ? "  ✓ Exported" : "",
-        ]
-          .filter(Boolean)
-          .join("\n");
-      })
-      .join("\n\n");
-
-    return { content: [{ type: "text", text: formatted }] };
+    return { content: [{ type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) }] };
   }
 );
 
-// Tool 3: Trace Dependencies
+// Tool 3: Exact Symbol Search
+server.tool(
+  "exact_symbol_search",
+  "Use for exact identifier lookups when you need grep-like precision over indexed symbols. Best for method names, extension members, and exact API names.",
+  {
+    name: z.string().describe("Exact symbol or method name to match. Case-insensitive exact matching is preferred."),
+    kind: z.enum(SYMBOL_KIND_VALUES).optional().describe("Optional symbol kind filter to narrow exact matches."),
+    file: z.string().optional().describe("Optional file filter when the declaration is expected in a known module or file."),
+  },
+  async ({ name, kind, file }) => {
+    logToolInvocation("exact_symbol_search", { name, kind, file });
+    const result = await query(
+      `
+      SELECT
+        s.id AS symbol_id,
+        s.name,
+        s.qualified_name,
+        s.kind,
+        s.signature,
+        s.docstring,
+        f.path AS file_path,
+        s.start_line,
+        s.end_line,
+        s.is_exported,
+        s.container_symbol,
+        s.declared_in_extension,
+        s.is_primary_declaration
+      FROM symbols s
+      JOIN files f ON s.file_id = f.id
+      WHERE (
+          lower(s.name) = lower($1)
+          OR COALESCE(s.qualified_name, '') ILIKE '%' || $1
+          OR COALESCE(s.signature, '') ILIKE $1 || '%'
+      )
+        AND ($2::text IS NULL OR s.kind = $2)
+        AND ($3::text IS NULL OR f.path LIKE '%' || $3 || '%')
+      ORDER BY
+        CASE WHEN lower(s.name) = lower($1) THEN 0 ELSE 1 END,
+        CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+        CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+        s.is_exported DESC,
+        f.path,
+        s.start_line
+      LIMIT 25
+      `,
+      [name, kind || null, file || null]
+    );
+
+    if (result.rows.length === 0) {
+      return { content: [{ type: "text", text: `No exact symbol matches found for "${name}".` }] };
+    }
+
+    return { content: [{ type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) }] };
+  }
+);
+
+// Tool 4: Find References
+server.tool(
+  "find_references",
+  "Use for concrete usage sites. Finds indexed lexical and call references to an exact symbol name across the codebase.",
+  {
+    name: z.string().describe("Exact symbol name to find references for."),
+    file: z.string().optional().describe("Optional target declaration file filter to disambiguate common names."),
+    limit: z.number().optional().default(25).describe("Max references to return (default 25)."),
+  },
+  async ({ name, file, limit }) => {
+    logToolInvocation("find_references", { name, file, limit });
+    const result = await query(
+      `
+      SELECT
+        sf.path AS source_path,
+        sr.line_no,
+        sr.reference_kind,
+        sr.source_symbol_name,
+        array_remove(array_agg(DISTINCT tf.path), NULL) AS target_paths
+      FROM symbol_references sr
+      JOIN files sf ON sf.id = sr.source_file_id
+      LEFT JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+      LEFT JOIN files tf ON tf.id = s.file_id
+      WHERE lower(sr.target_name) = lower($1)
+        AND (
+          $2::text IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM symbols s2
+            JOIN files tf2 ON tf2.id = s2.file_id
+            WHERE lower(s2.name) = lower(sr.target_name)
+              AND tf2.path LIKE '%' || $2 || '%'
+          )
+        )
+      GROUP BY sf.path, sr.line_no, sr.reference_kind, sr.source_symbol_name
+      ORDER BY sf.path, sr.line_no
+      LIMIT $3
+      `,
+      [name, file || null, limit]
+    );
+
+    if (result.rows.length === 0) {
+      return { content: [{ type: "text", text: `No references found for "${name}".` }] };
+    }
+
+    return { content: [{ type: "text", text: formatReferenceResults(result.rows as ReferenceRow[], name) }] };
+  }
+);
+
+// Tool 5: Trace Dependencies
 server.tool(
   "trace_dependencies",
   "Use before manually tracing imports or call chains. Follows dependency edges to answer what depends on X, what X depends on, or both.",
@@ -433,11 +653,103 @@ server.tool(
   },
   async ({ path, direction, max_depth }) => {
     logToolInvocation("trace_dependencies", { path, direction, max_depth });
-    const result = await query(`SELECT * FROM trace_dependencies($1, $2, $3)`, [
-      path,
-      direction,
-      max_depth,
-    ]);
+    const result = await query(
+      `
+      WITH RECURSIVE target_files AS (
+        SELECT id, path
+        FROM files
+        WHERE path LIKE '%' || $1 || '%'
+      ),
+      target_symbol_names AS (
+        SELECT DISTINCT s.name
+        FROM symbols s
+        JOIN target_files tf ON tf.id = s.file_id
+      ),
+      edges AS (
+        SELECT
+          d.source_file_id,
+          d.target_file_id,
+          d.kind AS dep_kind,
+          ss.name AS source_symbol,
+          ts.name AS target_symbol,
+          d.external_module,
+          NULL::integer AS line_no
+        FROM dependencies d
+        LEFT JOIN symbols ss ON ss.id = d.source_symbol_id
+        LEFT JOIN symbols ts ON ts.id = d.target_symbol_id
+
+        UNION ALL
+
+        SELECT
+          sr.source_file_id,
+          s.file_id AS target_file_id,
+          sr.reference_kind AS dep_kind,
+          sr.source_symbol_name AS source_symbol,
+          s.name AS target_symbol,
+          NULL::text AS external_module,
+          sr.line_no
+        FROM symbol_references sr
+        JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+      ),
+      dep_tree AS (
+        SELECT
+          sf.path AS source_path,
+          COALESCE(tf.path, e.external_module) AS target_path_out,
+          e.dep_kind,
+          e.source_symbol,
+          e.target_symbol,
+          e.external_module,
+          1 AS depth,
+          e.target_file_id
+        FROM edges e
+        JOIN files sf ON sf.id = e.source_file_id
+        LEFT JOIN files tf ON tf.id = e.target_file_id
+        WHERE (
+            $2 IN ('outbound', 'both')
+            AND e.source_file_id IN (SELECT id FROM target_files)
+          )
+          OR (
+            $2 IN ('inbound', 'both')
+            AND (
+              e.target_file_id IN (SELECT id FROM target_files)
+              OR (
+                e.target_file_id IS NOT NULL
+                AND e.target_symbol IN (SELECT name FROM target_symbol_names)
+              )
+            )
+          )
+
+        UNION ALL
+
+        SELECT
+          sf.path AS source_path,
+          COALESCE(tf.path, e.external_module) AS target_path_out,
+          e.dep_kind,
+          e.source_symbol,
+          e.target_symbol,
+          e.external_module,
+          dt.depth + 1 AS depth,
+          e.target_file_id
+        FROM dep_tree dt
+        JOIN edges e ON e.source_file_id = dt.target_file_id
+        JOIN files sf ON sf.id = e.source_file_id
+        LEFT JOIN files tf ON tf.id = e.target_file_id
+        WHERE dt.depth < $3
+      )
+      SELECT DISTINCT
+        source_path,
+        target_path_out,
+        dep_kind,
+        source_symbol,
+        target_symbol,
+        external_module,
+        depth
+      FROM dep_tree
+      ORDER BY depth, source_path, target_path_out
+      LIMIT 200
+      `,
+      [path, direction, max_depth]
+    );
 
     if (result.rows.length === 0) {
       return { content: [{ type: "text", text: `No dependencies found for "${path}".` }] };
@@ -563,16 +875,40 @@ server.tool(
   async () => {
     logToolInvocation("codebase_stats");
     const result = await query(`
+      WITH repo_file_stats AS (
+        SELECT
+          f.repo,
+          COUNT(*) AS total_files,
+          COALESCE(SUM(f.line_count), 0) AS total_lines
+        FROM files f
+        GROUP BY f.repo
+      ),
+      repo_chunk_stats AS (
+        SELECT
+          f.repo,
+          COUNT(*) AS total_chunks
+        FROM code_chunks cc
+        JOIN files f ON cc.file_id = f.id
+        GROUP BY f.repo
+      ),
+      repo_symbol_stats AS (
+        SELECT
+          f.repo,
+          COUNT(*) AS total_symbols
+        FROM symbols s
+        JOIN files f ON s.file_id = f.id
+        GROUP BY f.repo
+      )
       SELECT
-        f.repo,
-        COUNT(DISTINCT f.id) AS total_files,
-        SUM(f.line_count) AS total_lines,
-        COUNT(DISTINCT cc.id) AS total_chunks,
-        COUNT(DISTINCT s.id) AS total_symbols
-      FROM files f
-      LEFT JOIN code_chunks cc ON cc.file_id = f.id
-      LEFT JOIN symbols s ON s.file_id = f.id
-      GROUP BY f.repo
+        rfs.repo,
+        rfs.total_files,
+        rfs.total_lines,
+        COALESCE(rcs.total_chunks, 0) AS total_chunks,
+        COALESCE(rss.total_symbols, 0) AS total_symbols
+      FROM repo_file_stats rfs
+      LEFT JOIN repo_chunk_stats rcs ON rcs.repo = rfs.repo
+      LEFT JOIN repo_symbol_stats rss ON rss.repo = rfs.repo
+      ORDER BY rfs.repo
     `);
 
     const langResult = await query(`
@@ -743,6 +1079,7 @@ async function startHttpTransport() {
 }
 
 async function main() {
+  await ensureSchema();
   if (MCP_TRANSPORT === "stdio") {
     await startStdioServer();
     return;

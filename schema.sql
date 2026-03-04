@@ -67,8 +67,11 @@ CREATE TABLE symbols (
     start_line      INTEGER NOT NULL,
     end_line        INTEGER NOT NULL,
     parent_id       INTEGER REFERENCES symbols(id),  -- for methods inside classes
+    container_symbol TEXT,                            -- enclosing type for methods / extension members
     visibility      TEXT,                             -- public, private, protected, internal
     is_exported     BOOLEAN DEFAULT FALSE,
+    declared_in_extension BOOLEAN NOT NULL DEFAULT FALSE,
+    is_primary_declaration BOOLEAN NOT NULL DEFAULT TRUE,
     embedding       vector(768),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -77,7 +80,28 @@ CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_name ON symbols(name);
 CREATE INDEX idx_symbols_kind ON symbols(kind);
 CREATE INDEX idx_symbols_qualified ON symbols(qualified_name) WHERE qualified_name IS NOT NULL;
+CREATE INDEX idx_symbols_container ON symbols(container_symbol) WHERE container_symbol IS NOT NULL;
+CREATE INDEX idx_symbols_primary ON symbols(is_primary_declaration);
 CREATE INDEX idx_symbols_embedding ON symbols USING ivfflat (embedding vector_cosine_ops) WITH (lists = 50);
+
+-- ============================================================
+-- Symbol references: lexical/call references extracted from chunks
+-- ============================================================
+CREATE TABLE symbol_references (
+    id              SERIAL PRIMARY KEY,
+    source_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    source_chunk_id INTEGER REFERENCES code_chunks(id) ON DELETE CASCADE,
+    source_symbol_name TEXT,
+    target_name     TEXT NOT NULL,
+    reference_kind  TEXT NOT NULL,                    -- call, member_call, type_reference
+    line_no         INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_symbol_refs_source_file ON symbol_references(source_file_id);
+CREATE INDEX idx_symbol_refs_source_chunk ON symbol_references(source_chunk_id);
+CREATE INDEX idx_symbol_refs_target_name ON symbol_references(target_name);
+CREATE INDEX idx_symbol_refs_kind ON symbol_references(reference_kind);
 
 -- ============================================================
 -- Dependencies: directed graph of imports and calls

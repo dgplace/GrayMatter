@@ -65,7 +65,8 @@ SYMBOL_NODE_TYPES = {
     "swift": {
         "function_declaration": "function",
         "class_declaration": "class",
-        "protocol_declaration": "interface",
+        "protocol_declaration": "protocol",
+        "enum_declaration": "enum",
     },
 }
 
@@ -237,10 +238,34 @@ class ASTChunker:
             signature = self._extract_signature(sym_node, lines, language)
             visibility = self._infer_visibility(sym_name, sym_node, language)
             is_exported = self._is_exported(sym_node, language)
+            declared_in_extension = self._is_swift_extension(sym_node)
+            member_symbols = []
 
-            # If chunk is too large, sub-chunk by methods
-            if len(chunk_content.split()) > self.chunk_size * 1.5 and sym_type == "class":
-                sub_chunks = self._sub_chunk_class(sym_node, lines, language, file_path, sym_name)
+            if sym_type in {"class", "struct", "extension", "protocol", "interface"} and sym_name:
+                member_symbols = self._extract_member_symbols(
+                    sym_node,
+                    lines,
+                    language,
+                    file_path,
+                    sym_name,
+                    declared_in_extension=declared_in_extension,
+                )
+
+            # If chunk is too large, keep a compact declaration chunk and sub-chunk members
+            if len(chunk_content.split()) > self.chunk_size * 1.5 and sym_type in {"class", "struct", "extension", "protocol", "interface"}:
+                sub_chunks = self._sub_chunk_container(
+                    sym_node,
+                    lines,
+                    language,
+                    file_path,
+                    sym_name,
+                    sym_type,
+                    docstring,
+                    signature,
+                    visibility,
+                    is_exported,
+                    declared_in_extension,
+                )
                 chunks.extend(sub_chunks)
             else:
                 chunks.append({
@@ -253,58 +278,163 @@ class ASTChunker:
                     "docstring": docstring,
                     "signature": signature,
                     "qualified_name": f"{file_path}:{sym_name}" if sym_name else None,
+                    "container_symbol": None,
                     "visibility": visibility,
                     "is_exported": is_exported,
+                    "declared_in_extension": declared_in_extension,
+                    "is_primary_declaration": not declared_in_extension,
+                    "member_symbols": member_symbols,
                 })
 
         return chunks if chunks else self._fallback_chunk(content, file_path)
 
-    def _sub_chunk_class(self, class_node, lines, language, file_path, class_name) -> list[dict]:
-        """Break a large class into per-method chunks."""
+    def _sub_chunk_container(
+        self,
+        container_node,
+        lines,
+        language,
+        file_path,
+        container_name,
+        container_type,
+        docstring,
+        signature,
+        visibility,
+        is_exported,
+        declared_in_extension,
+    ) -> list[dict]:
+        """Break a large container into a declaration chunk plus per-member chunks."""
         chunks = []
-        method_types = {
-            "function_definition",
-            "method_definition",
-            "function_declaration",
-            "method_declaration",
-            "function_item",
-            "public_method_definition",
-            "protocol_function_declaration",
-        }
-        body_node_types = {"body", "class_body", "protocol_body", "enum_class_body"}
+        start = container_node.start_point[0]
+        declaration_content = signature or lines[start].strip()
+        chunks.append({
+            "content": declaration_content,
+            "start_line": start + 1,
+            "end_line": start + 1,
+            "symbol_name": container_name,
+            "symbol_type": container_type,
+            "parent_symbol": None,
+            "docstring": docstring,
+            "signature": signature,
+            "qualified_name": f"{file_path}:{container_name}" if container_name else None,
+            "container_symbol": None,
+            "visibility": visibility,
+            "is_exported": is_exported,
+            "declared_in_extension": declared_in_extension,
+            "is_primary_declaration": not declared_in_extension,
+            "member_symbols": [],
+        })
 
-        for child in class_node.children:
-            if child.type in method_types or (
-                child.type in body_node_types and hasattr(child, "children")
-            ):
-                # If it's a body node, look inside for methods
-                if child.type in body_node_types:
-                    for sub in child.children:
-                        if sub.type in method_types:
-                            self._add_method_chunk(sub, lines, language, file_path, class_name, chunks)
-                else:
-                    self._add_method_chunk(child, lines, language, file_path, class_name, chunks)
+        for member in self._extract_member_symbols(
+            container_node,
+            lines,
+            language,
+            file_path,
+            container_name,
+            declared_in_extension=declared_in_extension,
+        ):
+            self._add_member_chunk(member, lines, chunks)
 
         return chunks
 
-    def _add_method_chunk(self, node, lines, language, file_path, class_name, chunks):
-        start = node.start_point[0]
-        end = node.end_point[0]
-        name = self._extract_name(node, language)
+    def _add_member_chunk(self, member_symbol: dict, lines: list[str], chunks: list[dict]):
+        start = member_symbol["start_line"] - 1
+        end = member_symbol["end_line"] - 1
         chunks.append({
             "content": "\n".join(lines[start:end + 1]),
-            "start_line": start + 1,
-            "end_line": end + 1,
-            "symbol_name": name,
-            "symbol_type": "method",
-            "parent_symbol": class_name,
-            "qualified_name": f"{file_path}:{class_name}.{name}" if name else None,
-            "visibility": self._infer_visibility(name, node, language),
-            "is_exported": False,
+            "start_line": member_symbol["start_line"],
+            "end_line": member_symbol["end_line"],
+            "symbol_name": member_symbol["symbol_name"],
+            "symbol_type": member_symbol["symbol_type"],
+            "parent_symbol": member_symbol.get("parent_symbol"),
+            "docstring": member_symbol.get("docstring"),
+            "signature": member_symbol.get("signature"),
+            "qualified_name": member_symbol.get("qualified_name"),
+            "container_symbol": member_symbol.get("container_symbol"),
+            "visibility": member_symbol.get("visibility", "public"),
+            "is_exported": member_symbol.get("is_exported", False),
+            "declared_in_extension": member_symbol.get("declared_in_extension", False),
+            "is_primary_declaration": False,
+            "member_symbols": [],
         })
+
+    def _extract_member_symbols(
+        self,
+        container_node,
+        lines,
+        language: str,
+        file_path: str,
+        container_name: str,
+        declared_in_extension: bool = False,
+    ) -> list[dict]:
+        """Extract first-class symbols for methods/properties nested inside a top-level container."""
+        member_symbols = []
+        member_types = {
+            "function_definition": "method",
+            "method_definition": "method",
+            "function_declaration": "method",
+            "method_declaration": "method",
+            "function_item": "method",
+            "public_method_definition": "method",
+            "protocol_function_declaration": "method",
+            "initializer_declaration": "method",
+            "deinitializer_declaration": "method",
+            "subscript_declaration": "method",
+            "property_declaration": "property",
+        }
+        nested_container_types = {
+            "class_declaration",
+            "protocol_declaration",
+            "enum_declaration",
+            "struct_declaration",
+            "extension_declaration",
+            "class_definition",
+            "interface_declaration",
+            "type_declaration",
+            "class_specifier",
+            "struct_specifier",
+            "enum_specifier",
+            "namespace_definition",
+        }
+
+        def visit(node):
+            for child in getattr(node, "children", []):
+                if child.type in member_types:
+                    member_name = self._extract_name(child, language)
+                    if not member_name:
+                        continue
+                    member_symbols.append({
+                        "symbol_name": member_name,
+                        "symbol_type": member_types[child.type],
+                        "parent_symbol": container_name,
+                        "container_symbol": container_name,
+                        "qualified_name": f"{file_path}:{container_name}.{member_name}",
+                        "docstring": self._extract_docstring(child, "\n".join(lines), language),
+                        "signature": self._extract_signature(child, lines, language),
+                        "start_line": child.start_point[0] + 1,
+                        "end_line": child.end_point[0] + 1,
+                        "visibility": self._infer_visibility(member_name, child, language),
+                        "is_exported": self._is_exported(child, language),
+                        "declared_in_extension": declared_in_extension,
+                    })
+                    continue
+
+                if child.type in nested_container_types:
+                    continue
+
+                if getattr(child, "children", None):
+                    visit(child)
+
+        visit(container_node)
+        return member_symbols
 
     def _extract_name(self, node, language: str) -> Optional[str]:
         """Extract the name identifier from a syntax node."""
+        if node.type == "initializer_declaration":
+            return "init"
+        if node.type == "deinitializer_declaration":
+            return "deinit"
+        if node.type == "subscript_declaration":
+            return "subscript"
         for child in node.children:
             if child.type in (
                 "identifier",
@@ -385,14 +515,17 @@ class ASTChunker:
 
         keyword_map = {
             "class": "class",
-            "struct": "class",
-            "extension": "class",
+            "struct": "struct",
+            "extension": "extension",
             "enum": "enum",
         }
         for child in node.children:
             if child.type in keyword_map:
                 return keyword_map[child.type]
         return sym_type
+
+    def _is_swift_extension(self, node) -> bool:
+        return any(child.type == "extension" for child in getattr(node, "children", []))
 
     def _find_swift_visibility(self, node) -> Optional[str]:
         for child in node.children:
