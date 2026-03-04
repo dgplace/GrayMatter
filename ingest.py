@@ -189,6 +189,16 @@ REFERENCE_STOPWORDS = {
     "return", "struct", "subscript", "switch", "throw", "try", "var", "where", "while",
 }
 
+SWIFT_TYPED_PROPERTY_RE = re.compile(
+    r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:\w+\s+)*(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>.?[\]]*)",
+    re.MULTILINE,
+)
+SWIFT_INIT_RE = re.compile(r"\binit\s*\((.*?)\)", re.DOTALL)
+SWIFT_PARAM_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>.?[\]]*)"
+)
+SWIFT_MEMBER_CALL_RE = re.compile(r"\b([a-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
 
 def ensure_schema(conn) -> None:
     cur = conn.cursor()
@@ -262,6 +272,133 @@ def extract_symbol_references(chunks: list[dict]) -> list[dict]:
                     })
 
     return references
+
+
+def _line_number_for_offset(content: str, offset: int) -> int:
+    return content.count("\n", 0, offset) + 1
+
+
+def _chunk_for_line(chunks: list[dict], line_no: int) -> Optional[dict]:
+    candidates = [
+        chunk
+        for chunk in chunks
+        if chunk["start_line"] <= line_no <= chunk["end_line"]
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda chunk: chunk["end_line"] - chunk["start_line"])
+
+
+def _clean_swift_type(type_name: str) -> str:
+    cleaned = type_name.strip()
+    cleaned = cleaned.rstrip("?!")
+    cleaned = re.sub(r"<.*?>", "", cleaned)
+    cleaned = cleaned.split(".")[-1]
+    return cleaned
+
+
+def _is_service_like_type(type_name: str) -> bool:
+    if not type_name:
+        return False
+    return type_name.endswith(("Service", "Manager", "Coordinator", "Resolver", "Store"))
+
+
+def extract_swift_service_edges(content: str, chunks: list[dict]) -> list[dict]:
+    """Extract Swift service-style dependency edges from typed properties and initializer injection."""
+    typed_members: dict[str, str] = {}
+    edges = []
+    seen = set()
+
+    for match in SWIFT_TYPED_PROPERTY_RE.finditer(content):
+        member_name = match.group(1)
+        type_name = _clean_swift_type(match.group(2))
+        if not _is_service_like_type(type_name):
+            continue
+        line_no = _line_number_for_offset(content, match.start())
+        owner_chunk = _chunk_for_line(chunks, line_no)
+        source_symbol_name = owner_chunk.get("symbol_name") if owner_chunk else None
+        if owner_chunk and owner_chunk.get("symbol_type") == "method" and owner_chunk.get("parent_symbol"):
+            source_symbol_name = owner_chunk["parent_symbol"]
+        typed_members[member_name] = type_name
+        key = (line_no, source_symbol_name, type_name, "type_reference")
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append({
+            "source_symbol_name": source_symbol_name,
+            "target_name": type_name,
+            "kind": "type_reference",
+            "line_no": line_no,
+        })
+
+    for match in SWIFT_INIT_RE.finditer(content):
+        params = match.group(1)
+        line_no = _line_number_for_offset(content, match.start())
+        owner_chunk = _chunk_for_line(chunks, line_no)
+        source_symbol_name = owner_chunk.get("symbol_name") if owner_chunk else None
+        if owner_chunk and owner_chunk.get("symbol_type") == "method" and owner_chunk.get("parent_symbol"):
+            source_symbol_name = owner_chunk["parent_symbol"]
+
+        for param_match in SWIFT_PARAM_RE.finditer(params):
+            param_name = param_match.group(1)
+            type_name = _clean_swift_type(param_match.group(2))
+            if not _is_service_like_type(type_name):
+                continue
+            typed_members.setdefault(param_name, type_name)
+            key = (line_no, source_symbol_name, type_name, "injection")
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({
+                "source_symbol_name": source_symbol_name,
+                "target_name": type_name,
+                "kind": "injection",
+                "line_no": line_no,
+            })
+
+    for match in SWIFT_MEMBER_CALL_RE.finditer(content):
+        member_name = match.group(1)
+        type_name = typed_members.get(member_name)
+        if not type_name:
+            continue
+        line_no = _line_number_for_offset(content, match.start())
+        owner_chunk = _chunk_for_line(chunks, line_no)
+        source_symbol_name = owner_chunk.get("symbol_name") if owner_chunk else None
+        if owner_chunk and owner_chunk.get("parent_symbol"):
+            source_symbol_name = owner_chunk["parent_symbol"]
+        key = (line_no, source_symbol_name, type_name, "service_usage")
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append({
+            "source_symbol_name": source_symbol_name,
+            "target_name": type_name,
+            "kind": "service_usage",
+            "line_no": line_no,
+        })
+
+    return edges
+
+
+def resolve_target_symbol(cur, target_name: str) -> tuple[Optional[int], Optional[int]]:
+    cur.execute(
+        """
+        SELECT s.id, s.file_id
+        FROM symbols s
+        WHERE lower(s.name) = lower(%s)
+        ORDER BY
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+            s.is_exported DESC,
+            s.start_line
+        LIMIT 1
+        """,
+        (target_name,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None, None
+    return row[0], row[1]
 
 
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
@@ -385,6 +522,7 @@ def process_file(
         symbol_count = 0
         chunk_ids = {}
         container_symbol_ids: dict[str, int] = {}
+        file_symbol_ids: dict[str, int] = {}
 
         for i, chunk in enumerate(chunks):
             intent, intent_detail = chunk_classifications[i]
@@ -431,10 +569,11 @@ def process_file(
                 )
                 if chunk.get("qualified_name"):
                     container_symbol_ids[chunk["qualified_name"]] = symbol_id
+                file_symbol_ids.setdefault(chunk["symbol_name"], symbol_id)
                 symbol_count += 1
 
                 for member_symbol in chunk.get("member_symbols", []):
-                    insert_symbol(
+                    member_id = insert_symbol(
                         cur,
                         file_id,
                         chunk_id,
@@ -455,6 +594,7 @@ def process_file(
                         chunk_embeddings[i],
                         parent_id=symbol_id,
                     )
+                    file_symbol_ids.setdefault(member_symbol["symbol_name"], member_id)
                     symbol_count += 1
 
         # Extract and store dependencies
@@ -465,6 +605,23 @@ def process_file(
                    VALUES (%s, %s, %s)""",
                 (file_id, dep["kind"], dep["module"])
             )
+
+        if language == "swift":
+            for edge in extract_swift_service_edges(content, chunks):
+                target_symbol_id, target_file_id = resolve_target_symbol(cur, edge["target_name"])
+                cur.execute(
+                    """INSERT INTO dependencies
+                       (source_file_id, target_file_id, source_symbol_id, target_symbol_id, kind, external_module)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (
+                        file_id,
+                        target_file_id,
+                        file_symbol_ids.get(edge.get("source_symbol_name", "")),
+                        target_symbol_id,
+                        edge["kind"],
+                        edge["target_name"],
+                    ),
+                )
 
         # Extract and store lexical/call references for later symbol resolution.
         for reference in extract_symbol_references(chunks):

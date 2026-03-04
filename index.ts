@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -128,11 +129,11 @@ async function embed(text: string): Promise<number[]> {
   return embedding;
 }
 
-function vecLiteral(v: number[]): string {
+export function vecLiteral(v: number[]): string {
   return `[${v.join(",")}]`;
 }
 
-function summarizeArgs(args: Record<string, unknown>): string {
+export function summarizeArgs(args: Record<string, unknown>): string {
   const entries = Object.entries(args).map(([key, value]) => {
     if (typeof value === "string") {
       const compact = value.length > 120 ? `${value.slice(0, 117)}...` : value;
@@ -187,7 +188,7 @@ type ReferenceRow = {
   target_paths: string[] | null;
 };
 
-function extractKeywordTerms(text: string): string[] {
+export function extractKeywordTerms(text: string): string[] {
   const stopwords = new Set([
     "a", "an", "and", "bar", "by", "code", "config", "configuration", "file", "for", "how",
     "in", "is", "of", "or", "the", "to", "with",
@@ -668,15 +669,28 @@ server.tool(
       edges AS (
         SELECT
           d.source_file_id,
-          d.target_file_id,
+          COALESCE(d.target_file_id, resolved_target.file_id) AS target_file_id,
           d.kind AS dep_kind,
           ss.name AS source_symbol,
-          ts.name AS target_symbol,
+          COALESCE(ts.name, resolved_target.name) AS target_symbol,
           d.external_module,
           NULL::integer AS line_no
         FROM dependencies d
         LEFT JOIN symbols ss ON ss.id = d.source_symbol_id
         LEFT JOIN symbols ts ON ts.id = d.target_symbol_id
+        LEFT JOIN LATERAL (
+          SELECT s.id, s.file_id, s.name
+          FROM symbols s
+          WHERE d.target_symbol_id IS NULL
+            AND d.external_module IS NOT NULL
+            AND lower(s.name) = lower(d.external_module)
+          ORDER BY
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+            s.is_exported DESC,
+            s.start_line
+          LIMIT 1
+        ) resolved_target ON TRUE
 
         UNION ALL
 
@@ -745,7 +759,19 @@ server.tool(
         external_module,
         depth
       FROM dep_tree
-      ORDER BY depth, source_path, target_path_out
+      ORDER BY
+        depth,
+        CASE dep_kind
+          WHEN 'service_usage' THEN 0
+          WHEN 'injection' THEN 1
+          WHEN 'member_call' THEN 2
+          WHEN 'call' THEN 3
+          WHEN 'type_reference' THEN 4
+          WHEN 'import' THEN 9
+          ELSE 5
+        END,
+        source_path,
+        target_path_out
       LIMIT 200
       `,
       [path, direction, max_depth]
@@ -1087,8 +1113,14 @@ async function main() {
   await startHttpTransport();
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  void pool.end().catch(() => undefined);
-  process.exit(1);
-});
+const isEntrypoint = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isEntrypoint) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    void pool.end().catch(() => undefined);
+    process.exit(1);
+  });
+}
