@@ -6,3 +6,4 @@
 2026-03-04 Consolidated shared guidance into AGENTS.md, reduced CLAUDE.md and GEMINI.md to client-only notes, and removed obsolete Docker ingestor files.
 2026-03-04 Restored CLAUDE.md and GEMINI.md as symlinks to AGENTS.md and corrected the documentation map to reflect the alias setup.
 2026-03-05 Added baseline Python and TypeScript unit tests plus test runner setup to support safe refactoring.
+2026-03-05 Refactored MCP server into src modules, enforced mandatory repo-scoped query tools, added list_repositories plus repo-scoped stats, and shipped an embedded /ui semantic graph browser.

@@ -6,7 +6,7 @@ CodeBrain is a local-first code intelligence system for indexing source reposito
 
 It has two primary runtime concerns:
 - ingestion: parse code, classify intent, embed content, and persist structured knowledge
-- serving: query the persisted knowledge through MCP tools for discovery and navigation
+- serving: query persisted knowledge through MCP tools and a lightweight HTTP UI
 
 ## High-level Components
 
@@ -29,22 +29,29 @@ Responsibilities:
 
 Design pattern:
 - pipeline orchestration with explicit stages
-- each stage has a narrow concern: chunking, embedding, classification, persistence
+- narrow stages for chunking, embedding, classification, and persistence
 
-### 2. Query Server (TypeScript MCP)
+### 2. Query Server (TypeScript MCP + HTTP UI)
 
-Core file:
-- `index.ts`
+Core modules:
+- `index.ts` (entrypoint + stable utility re-exports)
+- `src/server.ts` (transport bootstrap)
+- `src/mcp/*` (tool/resource/logging/search formatting)
+- `src/repositories/store.ts` (repo-scoped read model queries)
+- `src/web/*` (embedded browser UI and JSON endpoints)
 
 Responsibilities:
 - expose MCP resources and tools
-- run semantic and hybrid search over indexed content
-- provide symbol lookup, file mapping, intent summaries, dependency tracing, and repository stats
-- format query results for MCP clients
+- enforce mandatory repository scope for query tools
+- run hybrid search (semantic + keyword) within a selected repository
+- provide symbol lookup, references, dependency tracing, file map, and intent summaries
+- expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
+- host `/ui` for semantic graph browsing and per-repo stats
 
 Design pattern:
-- thin transport layer over a database-backed query service
-- tool handlers are request adapters around SQL-backed lookups and ranking logic
+- transport layer (`src/server.ts`) delegates to tool and route modules
+- data access centralized in repo-store queries, presentation in formatter/UI modules
+- shared utilities (embedding, DB, logging) isolated from tool handlers
 
 ### 3. Persistence Layer (PostgreSQL + pgvector)
 
@@ -63,10 +70,11 @@ Responsibilities:
 - store normalized indexed code metadata
 - store vector embeddings for semantic retrieval
 - store lexical and structural relationships for exact and dependency-style queries
+- support repo-scoped query-time filtering across tools and UI APIs
 
 Design pattern:
-- relational core with vector search support
-- write-heavy ingestion, read-heavy query serving
+- relational core with vector similarity support
+- write-heavy ingestion, read-heavy serving
 
 ## Data Flow
 
@@ -79,101 +87,59 @@ Design pattern:
 5. `classifier.py` summarizes files and classifies chunk intent.
 6. `embedder.py` generates file and chunk embeddings.
 7. `ingest.py` stores normalized records in PostgreSQL.
-8. Additional symbol references and dependency edges are derived during ingestion.
+8. Symbol references and dependency edges are derived and persisted.
 
-### Query flow
+### MCP query flow
 
-1. MCP client calls a tool on `index.ts`.
-2. If needed, the server embeds the incoming query.
-3. SQL queries run against the indexed database.
-4. Result ranking and formatting happen in the MCP layer.
-5. Structured text responses are returned to the client.
+1. MCP client calls `list_repositories` to discover indexed repos.
+2. Client calls repo-scoped tools with a required `repo` argument.
+3. For semantic tools, server embeds query text.
+4. SQL runs with explicit repository filtering.
+5. MCP formatter modules produce text responses.
+
+### UI flow
+
+1. Browser opens `/ui`.
+2. UI fetches `/ui/api/repos` to populate the repo selector.
+3. UI fetches `/ui/api/repos/:repo/stats` and `/ui/api/repos/:repo/graph`.
+4. Client-side rendering displays metrics and a browsable graph projection.
 
 ## Core Design Patterns
 
+### Mandatory repo scope at query time
+
+MCP query tools require a `repo` parameter, preventing accidental cross-repo mixing during search, symbol lookup, references, dependency tracing, and file intent workflows.
+
 ### Separation of concerns
 
-- `chunker.py` should only understand source structure and extraction.
-- `embedder.py` should only talk to embedding providers.
-- `classifier.py` should only talk to text-generation/classification providers.
-- `ingest.py` should orchestrate and persist, not own language-specific parsing logic.
-- `index.ts` should query and present, not reimplement ingestion behavior.
+- `src/server.ts` handles lifecycle and transport wiring.
+- `src/mcp/tools.ts` owns tool schemas, validation flow, and orchestration.
+- `src/repositories/store.ts` owns repository read-model SQL.
+- `src/mcp/formatters.ts` owns textual response formatting.
+- `src/web/routes.ts` and `src/web/ui.ts` own HTTP UI concerns.
+- ingestion modules remain separate from MCP serving modules.
 
 ### Hybrid retrieval
 
-The query server uses hybrid retrieval:
-- semantic vector search for conceptual matches
-- keyword/symbol matching for exact or sparse terminology
+Semantic search combines vector similarity with keyword fallback and result fusion, scoped to a selected repository.
 
-This avoids relying on either pure embeddings or pure text matching alone.
+### Explicit metadata over query-time inference
 
-### Progressive precision
-
-The intended lookup strategy is:
-- use exact or symbol-oriented tools when identifiers are known
-- use hybrid semantic search when only the concept is known
-- use dependency and reference tools once the target symbol/file is identified
-
-### Language-specific extraction on top of generic infrastructure
-
-The system uses a generic ingestion/query framework, but extraction quality is language-dependent.
-Language-specific improvements should be added inside the extraction layer rather than by scattering special cases across the entire system.
-
-### Explicit metadata over inference at query time
-
-Whenever possible, useful relationships should be extracted during ingestion and stored explicitly.
-Query-time reconstruction should be limited to ranking, disambiguation, and formatting.
-
-## Current Architectural Boundaries
-
-### What belongs in ingestion
-
-- AST parsing
-- symbol extraction
-- reference extraction
-- dependency edge generation
-- file/chunk embeddings
-- chunk/file classification
-
-### What belongs in MCP query handling
-
-- search orchestration
-- ranking and result fusion
-- exact-match fallbacks
-- human-readable formatting
-- transport/session handling
-
-### What should not be mixed
-
-- transport code should not contain parsing logic
-- classifier prompt logic should not contain database concerns
-- schema evolution should not be hidden inside unrelated ranking code
-
-## Swift-specific Notes
-
-Swift is an important target language for this repository.
-The current architecture supports:
-- top-level symbol extraction
-- extension-aware symbol metadata
-- nested member symbol indexing
-- Swift service-style dependency edges from typed properties, initializer injection, and member-call usage
-
-This is still lighter than full semantic analysis. It is designed as a practical indexing layer, not a compiler-grade reference resolver.
+Dependencies, references, and symbols are extracted during ingestion and stored explicitly so query-time work is focused on filtering, ranking, and formatting.
 
 ## Operational Topology
 
-The system can run split across machines.
 Typical deployment:
-- PostgreSQL on a network host
-- embedding provider on a network host
-- classifier on a network host
-- MCP server on a network host
-- ingestion run locally against remote services
+- PostgreSQL on local or network host
+- embedding provider on local or network host
+- classifier provider on local or network host
+- MCP server exposing `/mcp`, `/ui`, and `/healthz`
+- ingestion run locally against configured services
 
-This means config defaults and host allowlists matter operationally and must be updated when topology changes.
+Containerized MCP service publishes HTTP-only endpoints and includes the embedded UI.
 
 ## Documentation Maintenance Rules
 
-- Update this document when adding new tables, new MCP tools, new major extraction logic, or deployment topology changes.
+- Update this document when adding/removing MCP tools, UI endpoints, major query behavior, schema behavior, or deployment topology.
 - Keep `LOG.md` to one line per substantive change or commit.
 - Keep `AGENTS.md` focused on working rules; keep this file focused on system structure and design.

@@ -147,7 +147,8 @@ CREATE OR REPLACE FUNCTION search_code(
     filter_language TEXT DEFAULT NULL,
     filter_path     TEXT DEFAULT NULL,
     filter_symbol   TEXT DEFAULT NULL,
-    similarity_threshold FLOAT DEFAULT 0.3
+    similarity_threshold FLOAT DEFAULT 0.3,
+    filter_repo     TEXT DEFAULT NULL
 )
 RETURNS TABLE (
     chunk_id        INTEGER,
@@ -183,6 +184,7 @@ BEGIN
       AND (filter_language IS NULL OR f.language = filter_language)
       AND (filter_path IS NULL OR f.path LIKE filter_path || '%')
       AND (filter_symbol IS NULL OR cc.symbol_type = filter_symbol)
+      AND (filter_repo IS NULL OR f.repo = filter_repo)
     ORDER BY cc.embedding <=> query_embedding
     LIMIT match_count;
 END;
