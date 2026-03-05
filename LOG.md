@@ -7,3 +7,7 @@
 2026-03-04 Restored CLAUDE.md and GEMINI.md as symlinks to AGENTS.md and corrected the documentation map to reflect the alias setup.
 2026-03-05 Added baseline Python and TypeScript unit tests plus test runner setup to support safe refactoring.
 2026-03-05 Refactored MCP server into src modules, enforced mandatory repo-scoped query tools, added list_repositories plus repo-scoped stats, and shipped an embedded /ui semantic graph browser.
+2026-03-05 Fixed ingestion status accounting to count worker errors correctly, added a --debug flag for per-file failures, and surfaced error samples in the CLI summary.
+2026-03-05 Switched local ingestion defaults to 127.0.0.1 endpoints and improved embedding transport errors to include endpoint/model context for timeout diagnosis.
+2026-03-05 Added live `/ui/api/tool-calls` counters and a real-time UI panel showing per-function MCP tool invocation totals.
+2026-03-05 Added full C# ingestion support with `.cs` mapping, tree-sitter-c-sharp parsing, namespace-aware symbol extraction, and C# dependency parsing/tests.

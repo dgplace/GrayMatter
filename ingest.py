@@ -422,6 +422,17 @@ def walk_repo(repo_root: Path, config: dict) -> list[Path]:
     return filter_gitignored_paths(files, repo_root)
 
 
+def normalize_result_status(status: Optional[str]) -> str:
+    """@brief Normalize per-file status to a summary counter key.
+
+    @param status Raw status label returned by a worker result.
+    @return One of `indexed`, `skipped`, or `errors`.
+    """
+    if status in {"indexed", "skipped"}:
+        return status
+    return "errors"
+
+
 def process_file(
     fpath: Path,
     repo_root: Path,
@@ -434,7 +445,20 @@ def process_file(
     force: bool = False,
     no_classify: bool = False,
 ) -> dict:
-    """Process a single file: parse, chunk, embed, classify, store."""
+    """@brief Parse, classify, embed, and persist one file.
+
+    @param fpath Absolute path to the file being indexed.
+    @param repo_root Absolute repository root used for relative path storage.
+    @param repo_name Repository name persisted in database records.
+    @param config Parsed CodeBrain configuration dictionary.
+    @param embedder Shared embedding client.
+    @param classifier Shared classifier client.
+    @param chunker Thread-local chunker instance.
+    @param db_pool Shared database connection pool.
+    @param force Whether to bypass file hash skip checks.
+    @param no_classify Whether to skip classifier calls.
+    @return Result dictionary containing status and optional counters/error details.
+    """
     rel_path = str(fpath.relative_to(repo_root))
     language = detect_language(fpath, config)
     file_hash = sha256_file(fpath)
@@ -664,8 +688,26 @@ def process_file(
 @click.option("--watch", is_flag=True, help="Watch for changes and re-index")
 @click.option("--workers", default=None, type=int, help="Override worker count")
 @click.option("--no-classify", is_flag=True, help="Skip LLM classification (embed only, much faster)")
-def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optional[int], no_classify: bool):
-    """Ingest a codebase into CodeBrain."""
+@click.option("--debug", is_flag=True, help="Print per-file error details during ingestion")
+def main(
+    repo_path: str,
+    config: str,
+    force: bool,
+    watch: bool,
+    workers: Optional[int],
+    no_classify: bool,
+    debug: bool,
+):
+    """@brief Ingest a repository into CodeBrain.
+
+    @param repo_path Repository path to index.
+    @param config Configuration file path.
+    @param force Re-index files even when hashes match.
+    @param watch Keep watching and re-index changed files.
+    @param workers Optional worker override.
+    @param no_classify Skip classifier calls.
+    @param debug Print per-file errors and worker failures.
+    """
     cfg = load_config(config)
     repo_root = Path(repo_path).resolve()
     repo_name = repo_root.name
@@ -679,6 +721,15 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
     console.print(f"  Embedding model: {cfg['embeddings']['model']}")
     console.print(f"  Classifier model: {cfg['classifier']['model'] if not no_classify else '[dim]skipped[/]'}")
     console.print(f"  Workers: {n_workers}")
+    if debug:
+        console.print("  Debug: [bold]enabled[/]")
+        embed_base_url = (
+            cfg.get("embeddings", {}).get("base_url")
+            or cfg.get("embeddings", {}).get("ollama_url")
+            or "http://localhost:11434"
+        )
+        console.print(f"  Embedding base URL: {embed_base_url}")
+        console.print(f"  Classifier base URL: {cfg.get('classifier', {}).get('base_url', '')}")
 
     # Shared HTTP clients (thread-safe); one chunker per thread created below
     embedder = EmbeddingClient(cfg)
@@ -706,6 +757,7 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
     console.print(f"  Found [bold]{len(files)}[/] source files\n")
 
     stats = {"indexed": 0, "skipped": 0, "errors": 0, "chunks": 0, "symbols": 0}
+    error_details: list[tuple[str, str]] = []
 
     # Each thread gets its own ASTChunker (tree-sitter parsers are not thread-safe)
     thread_chunkers: dict[int, ASTChunker] = {}
@@ -745,8 +797,26 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(process, fpath): fpath for fpath in files}
             for future in as_completed(futures):
-                result = future.result()
-                stats[result["status"]] = stats.get(result["status"], 0) + 1
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {
+                        "status": "error",
+                        "path": str(futures[future]),
+                        "error": f"Worker exception: {e}",
+                    }
+
+                status_key = normalize_result_status(result.get("status"))
+                stats[status_key] += 1
+                if status_key == "errors":
+                    error_path = result.get("path", "<unknown>")
+                    if result.get("status") not in {"error", "errors"} and not result.get("error"):
+                        error_msg = f"Unknown status '{result.get('status')}'"
+                    else:
+                        error_msg = result.get("error", "Unknown ingestion failure")
+                    error_details.append((error_path, error_msg))
+                    if debug:
+                        console.print(f"  [red]✗[/] [dim]{error_path}[/]: {error_msg}")
                 if result.get("chunks"):
                     stats["chunks"] += result["chunks"]
                 if result.get("symbols"):
@@ -756,15 +826,23 @@ def main(repo_path: str, config: str, force: bool, watch: bool, workers: Optiona
                     description=f"[dim]{result.get('path', '')[:60]}[/]"
                 )
 
+    if error_details:
+        console.print("\n  [bold red]Error samples:[/]")
+        for error_path, error_msg in error_details[:5]:
+            console.print(f"  [red]✗[/] [dim]{error_path}[/]: {error_msg}")
+        if len(error_details) > 5:
+            console.print(f"  [dim]... and {len(error_details) - 5} more[/]")
+
     # Update ingestion run
     finish_conn = get_db(cfg)
     cur = finish_conn.cursor()
+    files_processed = stats["indexed"] + stats["skipped"] + stats["errors"]
     cur.execute(
         """UPDATE ingestion_runs
            SET completed_at=NOW(), files_processed=%s, chunks_created=%s,
                symbols_found=%s, status='completed'
            WHERE id=%s""",
-        (stats["indexed"], stats["chunks"], stats["symbols"], run_id)
+        (files_processed, stats["chunks"], stats["symbols"], run_id)
     )
     finish_conn.commit()
     finish_conn.close()

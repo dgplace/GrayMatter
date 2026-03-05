@@ -103,6 +103,12 @@ export function renderWebUi(): string {
       grid-template-columns: 320px 1fr;
     }
 
+    .sidebar {
+      display: grid;
+      gap: 1rem;
+      align-content: start;
+    }
+
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -277,12 +283,21 @@ export function renderWebUi(): string {
   </header>
 
   <main>
-    <section class="panel">
-      <h2>Repository Stats</h2>
-      <div class="body" id="statsBody">
-        <p class="warn" id="status">Loading repositories...</p>
-      </div>
-    </section>
+    <div class="sidebar">
+      <section class="panel">
+        <h2>Repository Stats</h2>
+        <div class="body" id="statsBody">
+          <p class="warn" id="status">Loading repositories...</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>MCP Tool Calls</h2>
+        <div class="body" id="toolCallBody">
+          <p class="warn">Waiting for tool calls...</p>
+        </div>
+      </section>
+    </div>
 
     <section class="workspace">
       <div id="graphWrap">
@@ -310,9 +325,11 @@ export function renderWebUi(): string {
     const refreshBtn = document.getElementById('refreshBtn');
     const statsBody = document.getElementById('statsBody');
     const statusEl = document.getElementById('status');
+    const toolCallBody = document.getElementById('toolCallBody');
     const graphEl = document.getElementById('graph');
     const edgeTableBody = document.querySelector('#edgeTable tbody');
     const legend = document.getElementById('legend');
+    let toolCallPollId = null;
 
     function esc(value) {
       return String(value)
@@ -360,6 +377,31 @@ export function renderWebUi(): string {
         '<h3 style="margin:0.2rem 0 0;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.08em;color:#476258;">Symbol Kinds</h3>',
         buildMiniList(stats.symbolKinds.slice(0, 12), 'kind'),
       ].join('');
+    }
+
+    function renderToolCalls(snapshot) {
+      const toolCalls = snapshot.tool_calls || [];
+      const totalCalls = Number(snapshot.total_calls || 0);
+      if (!toolCalls.length) {
+        toolCallBody.innerHTML = '<div class="metric"><span>Total Calls</span><strong>' + totalCalls.toLocaleString() + '</strong></div><p class="warn">No MCP tool calls yet.</p>';
+        return;
+      }
+
+      toolCallBody.innerHTML = [
+        '<div class="metric"><span>Total Calls</span><strong>' + totalCalls.toLocaleString() + '</strong></div>',
+        ...toolCalls.map((toolCall) => (
+          '<div class="metric"><span>' + esc(toolCall.name) + '</span><strong>' + Number(toolCall.count).toLocaleString() + '</strong></div>'
+        )),
+      ].join('');
+    }
+
+    async function refreshToolCalls() {
+      try {
+        const snapshot = await getJson('/ui/api/tool-calls');
+        renderToolCalls(snapshot);
+      } catch (error) {
+        toolCallBody.innerHTML = '<p class="warn">Failed to load tool call counters: ' + esc(error && error.message ? error.message : String(error)) + '</p>';
+      }
     }
 
     function degreeColor(degree, maxDegree) {
@@ -464,6 +506,11 @@ export function renderWebUi(): string {
     }
 
     async function boot() {
+      await refreshToolCalls();
+      toolCallPollId = setInterval(() => {
+        void refreshToolCalls();
+      }, 1500);
+
       try {
         const data = await getJson('/ui/api/repos');
         const repos = data.repositories || [];
@@ -482,6 +529,12 @@ export function renderWebUi(): string {
         updateStatus('Failed to load repositories: ' + (error && error.message ? error.message : String(error)));
       }
     }
+
+    window.addEventListener('beforeunload', () => {
+      if (toolCallPollId) {
+        clearInterval(toolCallPollId);
+      }
+    });
 
     repoSelect.addEventListener('change', async () => {
       if (!repoSelect.value) {

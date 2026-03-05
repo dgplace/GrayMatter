@@ -101,8 +101,9 @@ Design pattern:
 
 1. Browser opens `/ui`.
 2. UI fetches `/ui/api/repos` to populate the repo selector.
-3. UI fetches `/ui/api/repos/:repo/stats` and `/ui/api/repos/:repo/graph`.
-4. Client-side rendering displays metrics and a browsable graph projection.
+3. UI polls `/ui/api/tool-calls` for live MCP tool invocation counters.
+4. UI fetches `/ui/api/repos/:repo/stats` and `/ui/api/repos/:repo/graph`.
+5. Client-side rendering displays metrics and a browsable graph projection.
 
 ## Core Design Patterns
 

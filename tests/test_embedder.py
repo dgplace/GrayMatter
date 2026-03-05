@@ -3,6 +3,8 @@
 @brief Unit tests for the embedding client wrapper.
 """
 
+import httpx
+
 from embedder import EmbeddingClient
 
 
@@ -74,3 +76,33 @@ def test_embed_raises_on_dimension_mismatch(monkeypatch) -> None:
         assert "Expected 3 dimensions, got 2" in str(exc)
     else:
         raise AssertionError("Expected embed() to reject invalid dimensions")
+
+
+def test_embed_raises_with_endpoint_context_on_transport_failure(monkeypatch) -> None:
+    """@brief Verify transport failures include endpoint and model context."""
+    client = EmbeddingClient(
+        {
+            "embeddings": {
+                "model": "embed-model",
+                "dimensions": 3,
+                "api_style": "ollama",
+                "base_url": "http://127.0.0.1:11434",
+            }
+        }
+    )
+
+    def _raise_http_error(*_args, **_kwargs):
+        request = httpx.Request("POST", "http://127.0.0.1:11434/api/embed")
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    monkeypatch.setattr(client.client, "post", _raise_http_error)
+
+    try:
+        client.embed("hello")
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Embedding request transport failed" in message
+        assert "endpoint=http://127.0.0.1:11434/api/embed" in message
+        assert "model=embed-model" in message
+    else:
+        raise AssertionError("Expected embed() to raise RuntimeError on transport failures")

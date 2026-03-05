@@ -48,7 +48,7 @@ class EmbeddingClient:
 
         @param input_data A single text string or batch of text strings.
         @return Parsed JSON response payload.
-        @raises RuntimeError If the provider returns a non-success status.
+        @raises RuntimeError If request transport or provider status fails.
         """
         if self.api_style == "openai":
             payload = {
@@ -62,14 +62,23 @@ class EmbeddingClient:
             payload = {"model": self.model, "input": input_data}
             endpoint = "/api/embed"
 
-        response = self.client.post(
-            f"{self.url}{endpoint}",
-            json=payload,
-            headers=self._headers(),
-        )
+        endpoint_url = f"{self.url}{endpoint}"
+        try:
+            response = self.client.post(
+                endpoint_url,
+                json=payload,
+                headers=self._headers(),
+            )
+        except httpx.HTTPError as e:
+            raise RuntimeError(
+                "Embedding request transport failed "
+                f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}): {e}"
+            ) from e
         if not response.is_success:
             raise RuntimeError(
-                f"Embedding request failed {response.status_code}: {response.text}"
+                "Embedding request failed "
+                f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}, "
+                f"status={response.status_code}): {response.text}"
             )
         return response.json()
 

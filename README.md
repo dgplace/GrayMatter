@@ -13,7 +13,7 @@ CodeBrain is a codebase indexing and MCP query system:
 - An embedding endpoint compatible with the configured embedding client
 - An OpenAI-compatible chat endpoint for classification
 
-The default config in `codebrain.toml` points at network services on `applepi3`.
+The default config in `codebrain.toml` points at local host services (`127.0.0.1`) for ingestion.
 
 ## Configuration
 

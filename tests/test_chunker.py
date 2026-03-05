@@ -3,6 +3,8 @@
 @brief Unit tests for chunking and dependency extraction helpers.
 """
 
+import pytest
+
 from chunker import ASTChunker
 
 
@@ -39,3 +41,58 @@ def test_extract_dependencies_returns_empty_for_unknown_language() -> None:
     chunker = ASTChunker({"ingestion": {"chunk_size": 32, "overlap": 0}})
 
     assert chunker.extract_dependencies("import nowhere", "unknown", "demo.txt") == []
+
+
+def test_extract_dependencies_returns_csharp_using_directives() -> None:
+    """@brief Verify C# using directives are extracted as dependency edges."""
+    chunker = ASTChunker({"ingestion": {"chunk_size": 32, "overlap": 0}})
+
+    deps = chunker.extract_dependencies(
+        "\n".join(
+            [
+                "using System;",
+                "using static System.Math;",
+                "global using Demo.Core;",
+                "using Alias = Demo.Services;",
+                "Console.WriteLine(\"ok\");",
+            ]
+        ),
+        "csharp",
+        "Program.cs",
+    )
+
+    assert deps == [
+        {"module": "System", "kind": "import", "raw": "using System;"},
+        {"module": "System.Math", "kind": "import", "raw": "using static System.Math;"},
+        {"module": "Demo.Core", "kind": "import", "raw": "global using Demo.Core;"},
+        {"module": "Demo.Services", "kind": "import", "raw": "using Alias = Demo.Services;"},
+    ]
+
+
+def test_chunk_file_extracts_csharp_namespace_symbols() -> None:
+    """@brief Verify C# classes and members are extracted under namespace scopes."""
+    pytest.importorskip("tree_sitter_c_sharp")
+
+    chunker = ASTChunker({"ingestion": {"chunk_size": 128, "overlap": 0}})
+    content = "\n".join(
+        [
+            "using System;",
+            "namespace Demo.Services;",
+            "",
+            "public class Greeter",
+            "{",
+            "    public string SayHello(string name)",
+            "    {",
+            "        return $\"Hello {name}\";",
+            "    }",
+            "}",
+        ]
+    )
+
+    chunks = chunker.chunk_file(content, "csharp", "Greeter.cs")
+    class_chunk = next(chunk for chunk in chunks if chunk.get("symbol_name") == "Greeter")
+    member_names = [member["symbol_name"] for member in class_chunk.get("member_symbols", [])]
+
+    assert class_chunk["visibility"] == "public"
+    assert class_chunk["is_exported"] is True
+    assert "SayHello" in member_names

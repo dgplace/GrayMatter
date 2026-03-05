@@ -9,6 +9,7 @@ import {
   listRepositories,
   repositoryExists,
 } from "../repositories/store.js";
+import { getToolCallSnapshot } from "../mcp/toolCallStats.js";
 import { renderWebUi } from "./ui.js";
 
 /**
@@ -29,6 +30,10 @@ export function registerWebRoutes(app: any): void {
       console.error("Failed to list repositories:", error);
       res.status(500).json({ error: "Failed to list repositories." });
     }
+  });
+
+  app.get("/ui/api/tool-calls", (_req: any, res: any) => {
+    res.status(200).json(getToolCallSnapshot());
   });
 
   app.get("/ui/api/repos/:repo/stats", async (req: any, res: any) => {

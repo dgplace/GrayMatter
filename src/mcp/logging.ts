@@ -3,6 +3,8 @@
  * @brief MCP tool invocation logging helpers.
  */
 
+import { recordToolCall } from "./toolCallStats.js";
+
 /**
  * @brief Summarizes tool arguments for compact structured log lines.
  * @param args Tool argument object.
@@ -27,6 +29,7 @@ export function summarizeArgs(args: Record<string, unknown>): string {
  * @returns Void.
  */
 export function logToolInvocation(name: string, args: Record<string, unknown> = {}): void {
+  recordToolCall(name);
   const summary = summarizeArgs(args);
   console.error(`[mcp] tool=${name}${summary ? ` args: ${summary}` : ""}`);
 }

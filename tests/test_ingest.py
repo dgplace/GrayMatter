@@ -39,6 +39,16 @@ def test_filter_gitignored_paths_removes_reported_ignored_files(monkeypatch, tmp
     assert ingest.filter_gitignored_paths(paths, tmp_path) == [kept]
 
 
+def test_normalize_result_status_maps_error_variants_to_errors() -> None:
+    """@brief Verify worker result status values are normalized to summary keys."""
+    assert ingest.normalize_result_status("indexed") == "indexed"
+    assert ingest.normalize_result_status("skipped") == "skipped"
+    assert ingest.normalize_result_status("error") == "errors"
+    assert ingest.normalize_result_status("errors") == "errors"
+    assert ingest.normalize_result_status("unexpected-value") == "errors"
+    assert ingest.normalize_result_status(None) == "errors"
+
+
 def test_extract_swift_service_edges_captures_typed_members_and_usage() -> None:
     """@brief Verify Swift service edges are derived from properties, init injection, and method calls."""
     content = "\n".join(

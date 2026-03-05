@@ -68,6 +68,14 @@ SYMBOL_NODE_TYPES = {
         "protocol_declaration": "protocol",
         "enum_declaration": "enum",
     },
+    "csharp": {
+        "class_declaration": "class",
+        "struct_declaration": "struct",
+        "interface_declaration": "interface",
+        "enum_declaration": "enum",
+        "record_declaration": "class",
+        "delegate_declaration": "function",
+    },
 }
 
 # Patterns for extracting imports by language
@@ -103,6 +111,11 @@ IMPORT_PATTERNS = {
     "swift": [
         (r"^import\s+([\w.]+)", "import"),
     ],
+    "csharp": [
+        (r"^(?:global\s+)?using\s+static\s+([\w.]+)\s*;", "import"),
+        (r"^(?:global\s+)?using\s+\w+\s*=\s*([\w.]+)\s*;", "import"),
+        (r"^(?:global\s+)?using\s+([\w.]+)\s*;", "import"),
+    ],
 }
 
 # Map language names to tree-sitter language modules
@@ -136,6 +149,8 @@ def _get_ts_language(lang: str):
                 import tree_sitter_cpp as tsl
             elif lang == "swift":
                 import tree_sitter_swift as tsl
+            elif lang == "csharp":
+                import tree_sitter_c_sharp as tsl
             else:
                 return None
             LANGUAGE_MODULES[lang] = tree_sitter.Language(tsl.language())
@@ -176,17 +191,7 @@ class ASTChunker:
         symbol_types = SYMBOL_NODE_TYPES.get(language, {})
 
         # Collect top-level symbol nodes
-        symbols = []
-        for child in tree.root_node.children:
-            node_type = child.type
-            if node_type in symbol_types:
-                symbols.append(child)
-            # Handle decorated definitions (Python)
-            elif node_type == "decorated_definition":
-                for sub in child.children:
-                    if sub.type in symbol_types:
-                        symbols.append(child)  # keep the decorator
-                        break
+        symbols = self._collect_top_level_symbols(tree.root_node, symbol_types, language)
 
         if not symbols:
             return self._fallback_chunk(content, file_path)
@@ -288,6 +293,52 @@ class ASTChunker:
 
         return chunks if chunks else self._fallback_chunk(content, file_path)
 
+    def _collect_top_level_symbols(self, root_node, symbol_types: dict[str, str], language: str) -> list:
+        """@brief Collect top-level declarations that should become symbol chunks.
+
+        @param root_node Parsed tree-sitter root node.
+        @param symbol_types Symbol type mapping for the active language.
+        @param language Language name.
+        @return List of tree-sitter nodes representing top-level symbols.
+        """
+        symbols = []
+        if language == "csharp":
+            self._collect_csharp_namespace_symbols(root_node, symbols, symbol_types)
+            return symbols
+
+        for child in root_node.children:
+            node_type = child.type
+            if node_type in symbol_types:
+                symbols.append(child)
+            # Handle decorated definitions (Python)
+            elif node_type == "decorated_definition":
+                for sub in child.children:
+                    if sub.type in symbol_types:
+                        symbols.append(child)  # keep the decorator
+                        break
+        return symbols
+
+    def _collect_csharp_namespace_symbols(self, node, symbols: list, symbol_types: dict[str, str]) -> None:
+        """@brief Collect C# top-level declarations from namespace and file scopes.
+
+        @param node Current tree-sitter node to scan.
+        @param symbols Mutable output list of declaration nodes.
+        @param symbol_types Symbol node types considered first-class declarations.
+        @return None.
+        """
+        namespace_scopes = {
+            "compilation_unit",
+            "namespace_declaration",
+            "file_scoped_namespace_declaration",
+            "declaration_list",
+        }
+        for child in getattr(node, "children", []):
+            if child.type in symbol_types:
+                symbols.append(child)
+                continue
+            if child.type in namespace_scopes:
+                self._collect_csharp_namespace_symbols(child, symbols, symbol_types)
+
     def _sub_chunk_container(
         self,
         container_node,
@@ -373,12 +424,17 @@ class ASTChunker:
             "method_definition": "method",
             "function_declaration": "method",
             "method_declaration": "method",
+            "constructor_declaration": "method",
+            "destructor_declaration": "method",
+            "operator_declaration": "method",
+            "conversion_operator_declaration": "method",
             "function_item": "method",
             "public_method_definition": "method",
             "protocol_function_declaration": "method",
             "initializer_declaration": "method",
             "deinitializer_declaration": "method",
             "subscript_declaration": "method",
+            "indexer_declaration": "method",
             "property_declaration": "property",
         }
         nested_container_types = {
@@ -394,6 +450,9 @@ class ASTChunker:
             "struct_specifier",
             "enum_specifier",
             "namespace_definition",
+            "namespace_declaration",
+            "file_scoped_namespace_declaration",
+            "record_declaration",
         }
 
         def visit(node):
@@ -435,6 +494,10 @@ class ASTChunker:
             return "deinit"
         if node.type == "subscript_declaration":
             return "subscript"
+        if node.type == "indexer_declaration":
+            return "this[]"
+        if node.type in {"operator_declaration", "conversion_operator_declaration"}:
+            return "operator"
         for child in node.children:
             if child.type in (
                 "identifier",
@@ -466,11 +529,11 @@ class ASTChunker:
                             break
                     break
         # JS/TS: look for preceding comment node
-        if language in ("typescript", "javascript", "tsx", "jsx"):
+        if language in ("typescript", "javascript", "tsx", "jsx", "csharp"):
             prev = node.prev_sibling
             if prev and prev.type == "comment":
                 text = prev.text.decode("utf-8")
-                if text.startswith("/**"):
+                if text.startswith("/**") or text.startswith("///"):
                     return text
         return None
 
@@ -488,6 +551,29 @@ class ASTChunker:
         if language == "swift":
             modifier = self._find_swift_visibility(node)
             return modifier or "internal"
+        if language == "csharp":
+            modifier = self._find_csharp_visibility(node)
+            if modifier:
+                return modifier
+
+            if node.type in {
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+                "delegate_declaration",
+            }:
+                return "internal"
+
+            parent = node.parent
+            while parent is not None:
+                if parent.type == "interface_declaration":
+                    return "public"
+                if parent.type in {"class_declaration", "struct_declaration", "record_declaration"}:
+                    return "private"
+                parent = parent.parent
+            return "private"
         if language in ("typescript", "javascript"):
             # Check for access modifiers in children
             for child in node.children:
@@ -500,6 +586,11 @@ class ASTChunker:
     def _is_exported(self, node, language: str) -> bool:
         if language == "swift":
             return self._find_swift_visibility(node) in {"public", "open"}
+        if language == "csharp":
+            visibility = self._find_csharp_visibility(node)
+            if visibility is None:
+                visibility = self._infer_visibility(self._extract_name(node, language), node, language)
+            return visibility in {"public", "protected", "protected internal"}
         if language in ("typescript", "javascript", "tsx", "jsx"):
             if node.type == "export_statement":
                 return True
@@ -537,6 +628,41 @@ class ASTChunker:
                 for token in modifier.children:
                     if token.type in {"open", "public", "internal", "fileprivate", "private"}:
                         return token.type
+        return None
+
+    def _find_csharp_visibility(self, node) -> Optional[str]:
+        """@brief Read C# visibility modifiers from declaration nodes.
+
+        @param node Tree-sitter declaration node.
+        @return Normalized visibility string when present, otherwise None.
+        """
+        modifiers = []
+        visibility_tokens = {"public", "private", "protected", "internal", "file"}
+
+        for child in getattr(node, "children", []):
+            if child.type not in {"modifiers", "modifier"}:
+                continue
+
+            for token in getattr(child, "children", []):
+                token_type = token.type.removesuffix("_keyword")
+                if token_type in visibility_tokens:
+                    modifiers.append(token_type)
+
+        has = set(modifiers)
+        if "private" in has and "protected" in has:
+            return "private protected"
+        if "protected" in has and "internal" in has:
+            return "protected internal"
+        if "public" in has:
+            return "public"
+        if "private" in has:
+            return "private"
+        if "protected" in has:
+            return "protected"
+        if "internal" in has:
+            return "internal"
+        if "file" in has:
+            return "file"
         return None
 
     def _fallback_chunk(self, content: str, file_path: str) -> list[dict]:
