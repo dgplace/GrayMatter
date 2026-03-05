@@ -1,15 +1,15 @@
 [database]
-url = "postgresql://codebrain:codebrain_local@localhost:5433/codebrain"
+url = "postgresql://codebrain:codebrain_local@applepi3:5433/codebrain"
 
 [embeddings]
 model = "nomic-embed-text"
 dimensions = 768
 api_style = "ollama"
-base_url = "http://127.0.0.1:11434"
+base_url = "http://applepi3:11434"
 
 [classifier]
-model = "mistralai/devstral-medium-2507"
-base_url = "http://127.0.0.1:3000"
+model = "qwen2.5-coder-7b-instruct"
+base_url = "http://applepi3:11435"
 
 [ingestion]
 chunk_size = 512
