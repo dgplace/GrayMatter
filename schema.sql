@@ -22,6 +22,7 @@ CREATE TABLE files (
 );
 
 CREATE INDEX idx_files_repo ON files(repo);
+CREATE INDEX idx_files_repo_path ON files(repo, path);
 CREATE INDEX idx_files_language ON files(language);
 CREATE INDEX idx_files_role ON files(role);
 CREATE INDEX idx_files_embedding ON files USING ivfflat (embedding vector_cosine_ops) WITH (lists = 50);
@@ -122,6 +123,7 @@ CREATE INDEX idx_deps_target_file ON dependencies(target_file_id);
 CREATE INDEX idx_deps_source_symbol ON dependencies(source_symbol_id);
 CREATE INDEX idx_deps_target_symbol ON dependencies(target_symbol_id);
 CREATE INDEX idx_deps_kind ON dependencies(kind);
+CREATE INDEX idx_deps_source_target ON dependencies(source_file_id, target_file_id);
 
 -- ============================================================
 -- Ingestion runs: track what was indexed when

@@ -14,13 +14,26 @@ import {
   repositoryExists,
 } from "../repositories/store.js";
 import {
+  formatCouplingAnalysis,
+  formatCycles,
+  formatModularizationSeams,
+  formatModuleInterface,
   formatReferenceResults,
   formatSearchResults,
   formatSymbolResults,
 } from "./formatters.js";
+import { findCycles, rankNodesByCycleParticipation } from "./graph.js";
 import { logToolInvocation } from "./logging.js";
 import { keywordSearch } from "./search.js";
-import type { ReferenceRow, SearchRow, SymbolRow } from "./types.js";
+import type {
+  CouplingEdgeRow,
+  GraphEdge,
+  ModuleInterfaceRow,
+  ReferenceRow,
+  SearchRow,
+  SeamRow,
+  SymbolRow,
+} from "./types.js";
 import { SYMBOL_KIND_VALUES } from "./types.js";
 
 const INTENT_VALUES = [
@@ -389,9 +402,10 @@ export function registerTools(server: McpServer): void {
         .default("both")
         .describe("Use inbound for reverse dependencies, outbound for direct dependencies, both for a quick graph walk."),
       max_depth: z.number().optional().default(3).describe("Depth limit for the graph walk (default 3)."),
+      summary: z.boolean().optional().default(false).describe("When true, returns aggregated counts by file and kind instead of individual edges."),
     },
-    async ({ repo, path, direction, max_depth }) => {
-      logToolInvocation("trace_dependencies", { repo, path, direction, max_depth });
+    async ({ repo, path, direction, max_depth, summary }) => {
+      logToolInvocation("trace_dependencies", { repo, path, direction, max_depth, summary });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) {
@@ -529,6 +543,53 @@ export function registerTools(server: McpServer): void {
 
       if (result.rows.length === 0) {
         return { content: [{ type: "text", text: `No dependencies found for "${path}" in repo \`${repo}\`.` }] };
+      }
+
+      if (summary) {
+        // Aggregate by connected file + kind with counts
+        const groups = new Map<string, { direction: string; file: string; kind: string; count: number; minDepth: number }>();
+        for (const row of result.rows as Array<Record<string, unknown>>) {
+          const sourcePath = String(row.source_path);
+          const targetPath = row.target_path_out ? String(row.target_path_out) : String(row.external_module || "unknown");
+          const kind = String(row.dep_kind);
+          const depth = Number(row.depth);
+          const isOutbound = sourcePath.includes(path);
+          const dir = isOutbound ? "outbound" : "inbound";
+          const connectedFile = isOutbound ? targetPath : sourcePath;
+          const key = `${dir}:${connectedFile}:${kind}`;
+          const existing = groups.get(key);
+          if (existing) {
+            existing.count++;
+            existing.minDepth = Math.min(existing.minDepth, depth);
+          } else {
+            groups.set(key, { direction: dir, file: connectedFile, kind, count: 1, minDepth: depth });
+          }
+        }
+
+        const sorted = Array.from(groups.values()).sort((a, b) => b.count - a.count);
+        const inbound = sorted.filter((g) => g.direction === "inbound");
+        const outbound = sorted.filter((g) => g.direction === "outbound");
+
+        const lines = [`## Dependency Summary for ${path}`, ""];
+        if (inbound.length > 0) {
+          lines.push("### Inbound (what depends on this)", "");
+          lines.push("| File | Kind | Edges | Min Depth |");
+          lines.push("|------|------|-------|-----------|");
+          for (const g of inbound) {
+            lines.push(`| ${g.file} | ${g.kind} | ${g.count} | ${g.minDepth} |`);
+          }
+          lines.push("");
+        }
+        if (outbound.length > 0) {
+          lines.push("### Outbound (what this depends on)", "");
+          lines.push("| File | Kind | Edges | Min Depth |");
+          lines.push("|------|------|-------|-----------|");
+          for (const g of outbound) {
+            lines.push(`| ${g.file} | ${g.kind} | ${g.count} | ${g.minDepth} |`);
+          }
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
       }
 
       const formatted = result.rows
@@ -724,6 +785,432 @@ export function registerTools(server: McpServer): void {
       }
 
       return { content: [{ type: "text", text: output }] };
+    },
+  );
+
+  /* ------------------------------------------------------------------ */
+  /*  Refactoring analysis tools                                        */
+  /* ------------------------------------------------------------------ */
+
+  server.tool(
+    "analyze_coupling",
+    "Quantifies how tightly coupled a subsystem is to the rest of the codebase. Reports afferent/efferent coupling, instability metric, and top cross-boundary file pairs. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().describe("Path prefix identifying the subsystem to analyze (e.g. 'src/payments/')."),
+      top_n: z.number().optional().default(20).describe("Number of top coupling pairs to return (default 20)."),
+    },
+    async ({ repo, path_prefix, top_n }) => {
+      logToolInvocation("analyze_coupling", { repo, path_prefix, top_n });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      // Count internal files
+      const fileCountResult = await query(
+        `SELECT COUNT(*) AS cnt FROM files WHERE repo = $1 AND path LIKE $2 || '%'`,
+        [repo, path_prefix],
+      );
+      const internalFileCount = Number((fileCountResult.rows[0] as Record<string, unknown>).cnt);
+
+      if (internalFileCount === 0) {
+        return { content: [{ type: "text", text: `No files found under \`${path_prefix}\` in repo \`${repo}\`.` }] };
+      }
+
+      // Cross-boundary edges from dependencies + symbol_references
+      const result = await query(
+        `
+        WITH target_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        ),
+        outbound AS (
+          SELECT
+            tf.path AS internal_path,
+            COALESCE(ef.path, d.external_module, '(external)') AS external_path,
+            d.kind,
+            COUNT(*) AS edge_count
+          FROM dependencies d
+          JOIN target_files tf ON tf.id = d.source_file_id
+          LEFT JOIN files ef ON ef.id = d.target_file_id AND ef.repo = $1
+          WHERE (ef.id IS NULL OR ef.path NOT LIKE $2 || '%')
+          GROUP BY tf.path, COALESCE(ef.path, d.external_module, '(external)'), d.kind
+        ),
+        inbound AS (
+          SELECT
+            tf.path AS internal_path,
+            sf.path AS external_path,
+            d.kind,
+            COUNT(*) AS edge_count
+          FROM dependencies d
+          JOIN target_files tf ON tf.id = d.target_file_id
+          JOIN files sf ON sf.id = d.source_file_id AND sf.repo = $1
+          WHERE sf.path NOT LIKE $2 || '%'
+          GROUP BY tf.path, sf.path, d.kind
+        ),
+        ref_outbound AS (
+          SELECT
+            tf.path AS internal_path,
+            ef.path AS external_path,
+            sr.reference_kind AS kind,
+            COUNT(*) AS edge_count
+          FROM symbol_references sr
+          JOIN target_files tf ON tf.id = sr.source_file_id
+          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
+          WHERE ef.path NOT LIKE $2 || '%'
+          GROUP BY tf.path, ef.path, sr.reference_kind
+        ),
+        ref_inbound AS (
+          SELECT
+            tf.path AS internal_path,
+            sf.path AS external_path,
+            sr.reference_kind AS kind,
+            COUNT(*) AS edge_count
+          FROM symbol_references sr
+          JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN target_files tf ON tf.id = s.file_id
+          WHERE sf.path NOT LIKE $2 || '%'
+          GROUP BY tf.path, sf.path, sr.reference_kind
+        )
+        SELECT 'outbound' AS direction, internal_path, external_path, kind, edge_count FROM outbound
+        UNION ALL
+        SELECT 'inbound', internal_path, external_path, kind, edge_count FROM inbound
+        UNION ALL
+        SELECT 'ref_outbound', internal_path, external_path, kind, edge_count FROM ref_outbound
+        UNION ALL
+        SELECT 'ref_inbound', internal_path, external_path, kind, edge_count FROM ref_inbound
+        ORDER BY edge_count DESC
+        `,
+        [repo, path_prefix],
+      );
+
+      const rows = result.rows as CouplingEdgeRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: "text", text: `No cross-boundary dependencies found for \`${path_prefix}\` in repo \`${repo}\`. Module appears isolated.` }] };
+      }
+
+      const text = formatCouplingAnalysis(path_prefix, repo, rows, internalFileCount, top_n);
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.tool(
+    "extract_module_interface",
+    "Extracts the public surface of a subsystem -- the exported symbols that external code actually references. Shows what interface a replacement module must implement. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().describe("Path prefix of the module (e.g. 'src/auth/')."),
+      include_unused: z.boolean().optional().default(false)
+        .describe("Also show exported symbols with no external consumers."),
+    },
+    async ({ repo, path_prefix, include_unused }) => {
+      logToolInvocation("extract_module_interface", { repo, path_prefix, include_unused });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      const result = await query(
+        `
+        WITH module_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        ),
+        module_symbols AS (
+          SELECT s.id, s.name, s.qualified_name, s.kind, s.signature, s.docstring,
+                 s.visibility, s.is_exported, f.path AS file_path,
+                 s.start_line, s.end_line, s.container_symbol
+          FROM symbols s
+          JOIN module_files f ON f.id = s.file_id
+          WHERE s.is_exported = true OR s.visibility = 'public'
+        ),
+        external_refs AS (
+          SELECT
+            sr.target_name,
+            sf.path AS consumer_path,
+            sr.reference_kind,
+            COUNT(*) AS ref_count
+          FROM symbol_references sr
+          JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+          WHERE sf.path NOT LIKE $2 || '%'
+            AND lower(sr.target_name) IN (SELECT lower(name) FROM module_symbols)
+          GROUP BY sr.target_name, sf.path, sr.reference_kind
+        ),
+        external_deps AS (
+          SELECT
+            ts.name AS target_name,
+            sf.path AS consumer_path,
+            d.kind AS reference_kind,
+            COUNT(*) AS ref_count
+          FROM dependencies d
+          JOIN files sf ON sf.id = d.source_file_id AND sf.repo = $1
+          JOIN symbols ts ON ts.id = d.target_symbol_id
+          JOIN module_files mf ON mf.id = ts.file_id
+          WHERE sf.path NOT LIKE $2 || '%'
+          GROUP BY ts.name, sf.path, d.kind
+        ),
+        all_external_refs AS (
+          SELECT target_name, consumer_path, reference_kind, ref_count FROM external_refs
+          UNION ALL
+          SELECT target_name, consumer_path, reference_kind, ref_count FROM external_deps
+        ),
+        symbol_consumers AS (
+          SELECT
+            target_name,
+            array_agg(DISTINCT consumer_path) AS consumer_files,
+            SUM(ref_count)::integer AS total_refs,
+            array_agg(DISTINCT reference_kind) AS ref_kinds
+          FROM all_external_refs
+          GROUP BY target_name
+        )
+        SELECT
+          ms.name, ms.qualified_name, ms.kind, ms.signature, ms.docstring,
+          ms.file_path, ms.start_line, ms.end_line, ms.visibility,
+          ms.container_symbol,
+          sc.consumer_files, sc.total_refs, sc.ref_kinds
+        FROM module_symbols ms
+        LEFT JOIN symbol_consumers sc ON lower(sc.target_name) = lower(ms.name)
+        WHERE sc.target_name IS NOT NULL
+           OR $3 = true
+        ORDER BY
+          CASE WHEN sc.target_name IS NOT NULL THEN 0 ELSE 1 END,
+          sc.total_refs DESC NULLS LAST,
+          ms.kind, ms.name
+        `,
+        [repo, path_prefix, include_unused],
+      );
+
+      const rows = result.rows as ModuleInterfaceRow[];
+      if (rows.length === 0) {
+        return { content: [{ type: "text", text: `No exported symbols found in \`${path_prefix}\` in repo \`${repo}\`.` }] };
+      }
+
+      const text = formatModuleInterface(path_prefix, rows, include_unused);
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.tool(
+    "find_dependency_cycles",
+    "Detects circular dependency chains in the file dependency graph. Cycles are the primary obstacle to modularization. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().optional().default("")
+        .describe("Optional path prefix to scope cycle detection to a subsystem."),
+      max_cycle_length: z.number().optional().default(6)
+        .describe("Maximum cycle length to search for (default 6, max 10)."),
+    },
+    async ({ repo, path_prefix, max_cycle_length }) => {
+      const clampedMax = Math.min(max_cycle_length, 10);
+      logToolInvocation("find_dependency_cycles", { repo, path_prefix, max_cycle_length: clampedMax });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      // Extract directed file-to-file edge list
+      const result = await query(
+        `
+        WITH scoped_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        ),
+        dep_edges AS (
+          SELECT DISTINCT
+            sf.path AS source,
+            tf.path AS target
+          FROM dependencies d
+          JOIN scoped_files sf ON sf.id = d.source_file_id
+          JOIN scoped_files tf ON tf.id = d.target_file_id
+          WHERE sf.path <> tf.path
+        ),
+        ref_edges AS (
+          SELECT DISTINCT
+            sf.path AS source,
+            tf.path AS target
+          FROM symbol_references sr
+          JOIN scoped_files sf ON sf.id = sr.source_file_id
+          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN scoped_files tf ON tf.id = s.file_id
+          WHERE sf.path <> tf.path
+        )
+        SELECT DISTINCT source, target FROM dep_edges
+        UNION
+        SELECT DISTINCT source, target FROM ref_edges
+        ORDER BY source, target
+        `,
+        [repo, path_prefix],
+      );
+
+      const edges = result.rows as GraphEdge[];
+      if (edges.length === 0) {
+        return { content: [{ type: "text", text: `No dependency edges found under \`${path_prefix || "(entire repo)"}\` in repo \`${repo}\`.` }] };
+      }
+
+      const cycles = findCycles(edges, clampedMax);
+      if (cycles.length === 0) {
+        return { content: [{ type: "text", text: `No dependency cycles found under \`${path_prefix || "(entire repo)"}\` in repo \`${repo}\`. The dependency graph is acyclic.` }] };
+      }
+
+      const rankings = rankNodesByCycleParticipation(cycles);
+      const text = formatCycles(repo, path_prefix, cycles, rankings);
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.tool(
+    "find_modularization_seams",
+    "Produces a comprehensive extraction plan for a subsystem: required interfaces, dependencies to inject, and cross-boundary seams to cut. Use this to plan modularizing a component so it can be replaced. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().describe("Path prefix of the module to extract (e.g. 'src/notifications/')."),
+    },
+    async ({ repo, path_prefix }) => {
+      logToolInvocation("find_modularization_seams", { repo, path_prefix });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      // Count internal files
+      const fileCountResult = await query(
+        `SELECT COUNT(*) AS cnt FROM files WHERE repo = $1 AND path LIKE $2 || '%'`,
+        [repo, path_prefix],
+      );
+      const internalFileCount = Number((fileCountResult.rows[0] as Record<string, unknown>).cnt);
+
+      if (internalFileCount === 0) {
+        return { content: [{ type: "text", text: `No files found under \`${path_prefix}\` in repo \`${repo}\`.` }] };
+      }
+
+      // Query A: Required interfaces (external code calling into this module)
+      const interfaceResult = await query(
+        `
+        WITH module_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        ),
+        module_symbols AS (
+          SELECT s.id, s.name, s.qualified_name, s.kind, s.signature, s.docstring,
+                 s.visibility, s.is_exported, f.path AS file_path,
+                 s.start_line, s.end_line, s.container_symbol
+          FROM symbols s
+          JOIN module_files f ON f.id = s.file_id
+        ),
+        external_refs AS (
+          SELECT
+            sr.target_name,
+            sf.path AS consumer_path,
+            sr.reference_kind,
+            COUNT(*) AS ref_count
+          FROM symbol_references sr
+          JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+          WHERE sf.path NOT LIKE $2 || '%'
+            AND lower(sr.target_name) IN (SELECT lower(name) FROM module_symbols)
+          GROUP BY sr.target_name, sf.path, sr.reference_kind
+        ),
+        symbol_consumers AS (
+          SELECT
+            target_name,
+            array_agg(DISTINCT consumer_path) AS consumer_files,
+            SUM(ref_count)::integer AS total_refs,
+            array_agg(DISTINCT reference_kind) AS ref_kinds
+          FROM external_refs
+          GROUP BY target_name
+        )
+        SELECT
+          ms.name, ms.qualified_name, ms.kind, ms.signature, ms.docstring,
+          ms.file_path, ms.start_line, ms.end_line, ms.visibility,
+          ms.container_symbol,
+          sc.consumer_files, sc.total_refs, sc.ref_kinds
+        FROM module_symbols ms
+        JOIN symbol_consumers sc ON lower(sc.target_name) = lower(ms.name)
+        ORDER BY sc.total_refs DESC, ms.kind, ms.name
+        `,
+        [repo, path_prefix],
+      );
+
+      // Query B: Dependencies to inject (external symbols referenced inside the module)
+      const depsResult = await query(
+        `
+        WITH module_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        )
+        SELECT
+          'outbound' AS direction,
+          mf.path AS internal_file,
+          ef.path AS external_file,
+          sr.target_name AS symbol_name,
+          s.kind AS symbol_kind,
+          s.signature,
+          sr.reference_kind,
+          COUNT(*) AS usage_count
+        FROM symbol_references sr
+        JOIN module_files mf ON mf.id = sr.source_file_id
+        JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+        JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
+        WHERE ef.path NOT LIKE $2 || '%'
+        GROUP BY mf.path, ef.path, sr.target_name, s.kind, s.signature, sr.reference_kind
+        ORDER BY usage_count DESC
+        `,
+        [repo, path_prefix],
+      );
+
+      // Query C: All cross-boundary seam edges (both directions)
+      const seamsResult = await query(
+        `
+        WITH module_files AS (
+          SELECT id, path FROM files
+          WHERE repo = $1 AND path LIKE $2 || '%'
+        ),
+        inbound_seams AS (
+          SELECT
+            'inbound' AS direction,
+            mf.path AS internal_file,
+            sf.path AS external_file,
+            sr.target_name AS symbol_name,
+            s.kind AS symbol_kind,
+            s.signature,
+            sr.reference_kind,
+            COUNT(*) AS usage_count
+          FROM symbol_references sr
+          JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN module_files mf ON mf.id = s.file_id
+          WHERE sf.path NOT LIKE $2 || '%'
+          GROUP BY mf.path, sf.path, sr.target_name, s.kind, s.signature, sr.reference_kind
+        ),
+        outbound_seams AS (
+          SELECT
+            'outbound' AS direction,
+            mf.path AS internal_file,
+            ef.path AS external_file,
+            sr.target_name AS symbol_name,
+            s.kind AS symbol_kind,
+            s.signature,
+            sr.reference_kind,
+            COUNT(*) AS usage_count
+          FROM symbol_references sr
+          JOIN module_files mf ON mf.id = sr.source_file_id
+          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
+          WHERE ef.path NOT LIKE $2 || '%'
+          GROUP BY mf.path, ef.path, sr.target_name, s.kind, s.signature, sr.reference_kind
+        )
+        SELECT * FROM inbound_seams
+        UNION ALL
+        SELECT * FROM outbound_seams
+        ORDER BY usage_count DESC
+        `,
+        [repo, path_prefix],
+      );
+
+      const requiredInterface = interfaceResult.rows as ModuleInterfaceRow[];
+      const dependencies = depsResult.rows as SeamRow[];
+      const seams = seamsResult.rows as SeamRow[];
+
+      const text = formatModularizationSeams(path_prefix, requiredInterface, dependencies, seams, internalFileCount);
+      return { content: [{ type: "text", text }] };
     },
   );
 }

@@ -36,7 +36,7 @@ Design pattern:
 Core modules:
 - `index.ts` (entrypoint + stable utility re-exports)
 - `src/server.ts` (transport bootstrap)
-- `src/mcp/*` (tool/resource/logging/search formatting)
+- `src/mcp/*` (tool/resource/logging/search formatting/graph algorithms)
 - `src/repositories/store.ts` (repo-scoped read model queries)
 - `src/web/*` (embedded browser UI and JSON endpoints)
 
@@ -46,6 +46,7 @@ Responsibilities:
 - run hybrid search (semantic + keyword) within a selected repository
 - provide symbol lookup, references, dependency tracing, file map, and intent summaries
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
+- provide refactoring analysis: coupling metrics, module interface extraction, cycle detection, and modularization seam planning
 - host `/ui` for semantic graph browsing and per-repo stats
 
 Design pattern:
@@ -123,6 +124,10 @@ MCP query tools require a `repo` parameter, preventing accidental cross-repo mix
 ### Hybrid retrieval
 
 Semantic search combines vector similarity with keyword fallback and result fusion, scoped to a selected repository.
+
+### Refactoring analysis layer
+
+The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_dependency_cycles`, `find_modularization_seams`) operate on the same indexed data without re-ingestion. They compose SQL queries over the `dependencies`, `symbol_references`, and `symbols` tables to answer structural questions. Graph algorithms (cycle detection) live in `src/mcp/graph.ts` as pure functions operating on in-memory edge lists extracted from the database. This keeps graph logic testable and separated from SQL and MCP concerns.
 
 ### Explicit metadata over query-time inference
 

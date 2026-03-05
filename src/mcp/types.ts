@@ -62,3 +62,47 @@ export type ReferenceRow = {
   source_symbol_name: string | null;
   target_paths: string[] | null;
 };
+
+/** @brief Cross-boundary coupling edge returned by analyze_coupling. */
+export type CouplingEdgeRow = {
+  direction: string;
+  internal_path: string;
+  external_path: string;
+  kind: string;
+  edge_count: number;
+};
+
+/** @brief Module interface symbol with external consumer information. */
+export type ModuleInterfaceRow = {
+  name: string;
+  qualified_name: string | null;
+  kind: string;
+  signature: string | null;
+  docstring: string | null;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  visibility: string | null;
+  container_symbol: string | null;
+  consumer_files: string[] | null;
+  total_refs: number | null;
+  ref_kinds: string[] | null;
+};
+
+/** @brief Lightweight directed edge for graph algorithms. */
+export type GraphEdge = {
+  source: string;
+  target: string;
+};
+
+/** @brief Cross-boundary seam edge for modularization planning. */
+export type SeamRow = {
+  direction: string;
+  internal_file: string;
+  external_file: string;
+  symbol_name: string;
+  symbol_kind: string | null;
+  signature: string | null;
+  reference_kind: string;
+  usage_count: number;
+};

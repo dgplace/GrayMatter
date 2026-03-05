@@ -11,3 +11,4 @@
 2026-03-05 Switched local ingestion defaults to 127.0.0.1 endpoints and improved embedding transport errors to include endpoint/model context for timeout diagnosis.
 2026-03-05 Added live `/ui/api/tool-calls` counters and a real-time UI panel showing per-function MCP tool invocation totals.
 2026-03-05 Added full C# ingestion support with `.cs` mapping, tree-sitter-c-sharp parsing, namespace-aware symbol extraction, and C# dependency parsing/tests.
+2026-03-05 Added refactoring analysis MCP tools: analyze_coupling, extract_module_interface, find_dependency_cycles, find_modularization_seams; enhanced trace_dependencies with summary mode; added graph.ts cycle detection module and performance indexes.
