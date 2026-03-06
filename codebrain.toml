@@ -1,15 +1,6 @@
-[database]
-url = "postgresql://codebrain:codebrain_local@applepi3:5433/codebrain"
-
-[embeddings]
-model = "nomic-embed-text"
-dimensions = 768
-api_style = "ollama"
-base_url = "http://applepi3:11434"
-
-[classifier]
-model = "qwen2.5-coder-7b-instruct"
-base_url = "http://applepi3:11435"
+# Environment-specific settings (database, embeddings, classifier) live in
+# .env/codebrain.toml which is git-ignored. Copy codebrain.example.toml to
+# .env/codebrain.toml and edit it for your local setup.
 
 [ingestion]
 chunk_size = 512

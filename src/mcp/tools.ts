@@ -9,6 +9,8 @@ import { z } from "zod";
 import { query } from "../db.js";
 import { embed, vecLiteral } from "../embed.js";
 import {
+  deleteRepository,
+  getRepositoryIndexSize,
   getRepositoryStats,
   listRepositories,
   repositoryExists,
@@ -1211,6 +1213,91 @@ export function registerTools(server: McpServer): void {
 
       const text = formatModularizationSeams(path_prefix, requiredInterface, dependencies, seams, internalFileCount);
       return { content: [{ type: "text", text }] };
+    },
+  );
+
+  /* ------------------------------------------------------------------ */
+  /*  Index management tools                                             */
+  /* ------------------------------------------------------------------ */
+
+  server.tool(
+    "get_index_size",
+    "Reports the estimated storage size and row counts for a repository's index in the database. Useful for understanding how much data is indexed.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+    },
+    async ({ repo }) => {
+      logToolInvocation("get_index_size", { repo });
+
+      const size = await getRepositoryIndexSize(repo);
+      if (!size) {
+        return { content: [{ type: "text", text: repoNotFoundText(repo) }] };
+      }
+
+      function humanBytes(bytes: number): string {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+      }
+
+      const lines = [
+        `# Index Size: ${size.repo}`,
+        "",
+        `| Metric | Value |`,
+        `|--------|-------|`,
+        `| Files | ${size.file_count.toLocaleString()} |`,
+        `| Chunks | ${size.chunk_count.toLocaleString()} |`,
+        `| Symbols | ${size.symbol_count.toLocaleString()} |`,
+        `| References | ${size.ref_count.toLocaleString()} |`,
+        `| Content text | ${humanBytes(size.content_bytes)} |`,
+        `| Embeddings (est.) | ${humanBytes(size.estimated_embedding_bytes)} |`,
+        `| **Total (est.)** | **${humanBytes(size.estimated_total_bytes)}** |`,
+        "",
+        "_Embedding estimate: 768-dim float32 vectors × chunk count._",
+      ];
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
+    "delete_index",
+    "Permanently deletes all indexed data for a repository from the database (files, chunks, embeddings, symbols, references). This cannot be undone. Pass confirm=true to proceed.",
+    {
+      repo: z.string().min(1).describe("Repository name to delete. Required."),
+      confirm: z
+        .boolean()
+        .describe("Must be true to proceed. Prevents accidental deletion."),
+    },
+    async ({ repo, confirm }) => {
+      logToolInvocation("delete_index", { repo, confirm });
+
+      if (!confirm) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Deletion aborted. Pass \`confirm: true\` to permanently delete the index for \`${repo}\`.`,
+            },
+          ],
+        };
+      }
+
+      const exists = await repositoryExists(repo);
+      if (!exists) {
+        return { content: [{ type: "text", text: repoNotFoundText(repo) }] };
+      }
+
+      const deleted = await deleteRepository(repo);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Deleted index for \`${repo}\`: ${deleted} file records removed (chunks, embeddings, symbols, and references cascade-deleted).`,
+          },
+        ],
+      };
     },
   );
 }

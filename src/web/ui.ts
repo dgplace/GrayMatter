@@ -241,6 +241,30 @@ export function renderWebUi(): string {
       margin: 0;
     }
 
+    .btn-danger {
+      background: linear-gradient(135deg, #b33a1a 0%, #d04b22 100%);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 0.55rem 0.9rem;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 0.5rem;
+    }
+
+    .btn-danger:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .size-note {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin: 0.3rem 0 0;
+    }
+
     @media (max-width: 1000px) {
       header {
         grid-template-columns: 1fr;
@@ -292,6 +316,13 @@ export function renderWebUi(): string {
       </section>
 
       <section class="panel">
+        <h2>Index Management</h2>
+        <div class="body" id="indexMgmtBody">
+          <p class="warn" id="indexStatus">Select a repository.</p>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>MCP Tool Calls</h2>
         <div class="body" id="toolCallBody">
           <p class="warn">Waiting for tool calls...</p>
@@ -326,10 +357,79 @@ export function renderWebUi(): string {
     const statsBody = document.getElementById('statsBody');
     const statusEl = document.getElementById('status');
     const toolCallBody = document.getElementById('toolCallBody');
+    const indexMgmtBody = document.getElementById('indexMgmtBody');
     const graphEl = document.getElementById('graph');
     const edgeTableBody = document.querySelector('#edgeTable tbody');
     const legend = document.getElementById('legend');
     let toolCallPollId = null;
+
+    function humanBytes(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function renderIndexSize(size) {
+      indexMgmtBody.innerHTML = [
+        '<div class="metric"><span>Files</span><strong>' + Number(size.file_count).toLocaleString() + '</strong></div>',
+        '<div class="metric"><span>Chunks</span><strong>' + Number(size.chunk_count).toLocaleString() + '</strong></div>',
+        '<div class="metric"><span>Symbols</span><strong>' + Number(size.symbol_count).toLocaleString() + '</strong></div>',
+        '<div class="metric"><span>References</span><strong>' + Number(size.ref_count).toLocaleString() + '</strong></div>',
+        '<div class="metric"><span>Content text</span><strong>' + humanBytes(size.content_bytes) + '</strong></div>',
+        '<div class="metric"><span>Embeddings</span><strong>' + humanBytes(size.estimated_embedding_bytes) + '</strong></div>',
+        '<div class="metric"><span>Total (est.)</span><strong>' + humanBytes(size.estimated_total_bytes) + '</strong></div>',
+        '<p class="size-note">Embedding estimate: 768-dim float32 × chunk count.</p>',
+        '<button class="btn-danger" id="deleteIndexBtn" type="button">Delete Index</button>',
+      ].join('');
+
+      document.getElementById('deleteIndexBtn').addEventListener('click', async () => {
+        const repo = repoSelect.value;
+        if (!repo) return;
+        if (!confirm('Permanently delete the index for "' + repo + '"? This cannot be undone.')) return;
+        const btn = document.getElementById('deleteIndexBtn');
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
+        try {
+          const res = await fetch('/ui/api/repos/' + encodeURIComponent(repo), { method: 'DELETE' });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || ('HTTP ' + res.status));
+          }
+          const data = await res.json();
+          indexMgmtBody.innerHTML = '<p class="warn">Index deleted (' + Number(data.deleted_files).toLocaleString() + ' files removed). Refreshing...</p>';
+          // Reload repo list
+          setTimeout(async () => {
+            try {
+              const reposData = await getJson('/ui/api/repos');
+              const repos = reposData.repositories || [];
+              repoSelect.innerHTML = repos.length
+                ? repos.map((r) => '<option value="' + esc(r.repo) + '">' + esc(r.repo) + ' (' + Number(r.total_files).toLocaleString() + ' files)</option>').join('')
+                : '<option value="">No repositories</option>';
+              if (repos.length) {
+                await loadRepo(repoSelect.value);
+              } else {
+                statsBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
+                indexMgmtBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
+              }
+            } catch (e) {
+              updateStatus('Refresh failed: ' + (e && e.message ? e.message : String(e)));
+            }
+          }, 800);
+        } catch (e) {
+          indexMgmtBody.innerHTML = '<p class="warn">Delete failed: ' + esc(e && e.message ? e.message : String(e)) + '</p>';
+        }
+      });
+    }
+
+    async function loadIndexSize(repo) {
+      try {
+        const size = await getJson('/ui/api/repos/' + encodeURIComponent(repo) + '/size');
+        renderIndexSize(size);
+      } catch (e) {
+        indexMgmtBody.innerHTML = '<p class="warn">Failed to load index size: ' + esc(e && e.message ? e.message : String(e)) + '</p>';
+      }
+    }
 
     function esc(value) {
       return String(value)
@@ -495,6 +595,7 @@ export function renderWebUi(): string {
 
     async function loadRepo(repo) {
       updateStatus('Loading stats and graph for ' + repo + '...');
+      indexMgmtBody.innerHTML = '<p class="warn">Loading...</p>';
       const encodedRepo = encodeURIComponent(repo);
       const [stats, graph] = await Promise.all([
         getJson('/ui/api/repos/' + encodedRepo + '/stats'),
@@ -503,6 +604,7 @@ export function renderWebUi(): string {
       renderStats(stats);
       renderGraph(graph);
       updateStatus('Showing ' + repo + '.');
+      void loadIndexSize(repo);
     }
 
     async function boot() {

@@ -4,7 +4,9 @@
  */
 
 import {
+  deleteRepository,
   getRepositoryGraph,
+  getRepositoryIndexSize,
   getRepositoryStats,
   listRepositories,
   repositoryExists,
@@ -48,6 +50,36 @@ export function registerWebRoutes(app: any): void {
     } catch (error) {
       console.error("Failed to load repository stats:", error);
       res.status(500).json({ error: "Failed to load repository stats." });
+    }
+  });
+
+  app.get("/ui/api/repos/:repo/size", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      const size = await getRepositoryIndexSize(repo);
+      if (!size) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      res.status(200).json(size);
+    } catch (error) {
+      console.error("Failed to load repository size:", error);
+      res.status(500).json({ error: "Failed to load repository size." });
+    }
+  });
+
+  app.delete("/ui/api/repos/:repo", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const deleted = await deleteRepository(repo);
+      res.status(200).json({ deleted_files: deleted, repo });
+    } catch (error) {
+      console.error("Failed to delete repository:", error);
+      res.status(500).json({ error: "Failed to delete repository index." });
     }
   });
 

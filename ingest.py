@@ -35,9 +35,24 @@ from embedder import EmbeddingClient
 console = Console()
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
 def load_config(path: str = "codebrain.toml") -> dict:
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        cfg = tomllib.load(f)
+    local_path = Path(".env/codebrain.toml")
+    if local_path.exists():
+        with open(local_path, "rb") as f:
+            cfg = _deep_merge(cfg, tomllib.load(f))
+    return cfg
 
 
 def get_db(config: dict):

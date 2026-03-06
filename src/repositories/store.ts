@@ -226,6 +226,69 @@ export async function getRepositoryStats(repo: string): Promise<RepositoryStats 
   };
 }
 
+/** @brief Storage size breakdown for a repository's index. */
+export type RepositoryIndexSize = {
+  repo: string;
+  file_count: number;
+  chunk_count: number;
+  symbol_count: number;
+  ref_count: number;
+  content_bytes: number;
+  estimated_embedding_bytes: number;
+  estimated_total_bytes: number;
+};
+
+/**
+ * @brief Returns row counts and estimated storage size for a repository's index.
+ * @param repo Repository name.
+ * @returns Size breakdown, or null when repo does not exist.
+ */
+export async function getRepositoryIndexSize(repo: string): Promise<RepositoryIndexSize | null> {
+  const result = await query(
+    `
+    SELECT
+      (SELECT COUNT(*) FROM files WHERE repo = $1)::int AS file_count,
+      (SELECT COUNT(*) FROM code_chunks cc JOIN files f ON f.id = cc.file_id WHERE f.repo = $1)::int AS chunk_count,
+      (SELECT COALESCE(SUM(length(cc.content)), 0) FROM code_chunks cc JOIN files f ON f.id = cc.file_id WHERE f.repo = $1)::bigint AS content_bytes,
+      (SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.repo = $1)::int AS symbol_count,
+      (SELECT COUNT(*) FROM symbol_references sr JOIN files f ON f.id = sr.source_file_id WHERE f.repo = $1)::int AS ref_count
+    `,
+    [repo],
+  );
+
+  const row = result.rows[0] as Record<string, unknown>;
+  if (!row || Number(row.file_count) === 0) {
+    return null;
+  }
+
+  const chunkCount = Number(row.chunk_count);
+  const contentBytes = Number(row.content_bytes);
+  // vector(768): 768 floats × 4 bytes + 8 bytes overhead per row
+  const embeddingBytes = chunkCount * (768 * 4 + 8);
+
+  return {
+    repo,
+    file_count: Number(row.file_count),
+    chunk_count: chunkCount,
+    symbol_count: Number(row.symbol_count),
+    ref_count: Number(row.ref_count),
+    content_bytes: contentBytes,
+    estimated_embedding_bytes: embeddingBytes,
+    estimated_total_bytes: contentBytes + embeddingBytes,
+  };
+}
+
+/**
+ * @brief Deletes all indexed data for a repository (files, chunks, symbols, references, dependencies).
+ * @param repo Repository name.
+ * @returns Number of files deleted.
+ */
+export async function deleteRepository(repo: string): Promise<number> {
+  // Deleting from files cascades to code_chunks, symbols, dependencies, symbol_references
+  const result = await query(`DELETE FROM files WHERE repo = $1`, [repo]);
+  return result.rowCount ?? 0;
+}
+
 /**
  * @brief Loads a repository semantic graph from dependency and reference edges.
  * @param repo Repository name.
