@@ -8,6 +8,146 @@ from pathlib import Path
 import ingest
 
 
+class _FakeCursor:
+    """@brief Minimal cursor stub for process_file warning-path tests."""
+
+    def __init__(self) -> None:
+        self._pending_fetch: tuple | None = None
+
+    def execute(self, query: str, params=None) -> None:
+        """@brief Record a deterministic fetch response for known SQL patterns.
+
+        @param query SQL statement text.
+        @param params SQL parameters (unused).
+        """
+        normalized = " ".join(query.strip().lower().split())
+        if normalized.startswith("select id, hash from files"):
+            self._pending_fetch = None
+        elif normalized.startswith("insert into files"):
+            self._pending_fetch = (1,)
+        else:
+            self._pending_fetch = None
+
+    def fetchone(self):
+        """@brief Return the prepared fetch payload."""
+        return self._pending_fetch
+
+
+class _FakeConn:
+    """@brief Minimal psycopg2 connection stub for process_file warning-path tests."""
+
+    def __init__(self) -> None:
+        self._cursor = _FakeCursor()
+
+    def cursor(self) -> _FakeCursor:
+        """@brief Return a reusable fake cursor."""
+        return self._cursor
+
+    def commit(self) -> None:
+        """@brief No-op commit for the fake connection."""
+        return None
+
+    def rollback(self) -> None:
+        """@brief No-op rollback for the fake connection."""
+        return None
+
+
+class _FakePool:
+    """@brief Minimal connection pool stub for process_file warning-path tests."""
+
+    def __init__(self) -> None:
+        self._conn = _FakeConn()
+
+    def getconn(self) -> _FakeConn:
+        """@brief Return a fake connection."""
+        return self._conn
+
+    def putconn(self, conn: _FakeConn) -> None:
+        """@brief No-op pool return method.
+
+        @param conn Connection being returned.
+        """
+        return None
+
+
+class _FakeEmbedder:
+    """@brief Minimal embedding client stub returning deterministic vectors."""
+
+    def embed(self, text: str) -> list[float]:
+        """@brief Return a single deterministic embedding vector.
+
+        @param text Input text to embed.
+        @return Dummy vector for test assertions.
+        """
+        return [0.0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """@brief Return one deterministic vector per input text.
+
+        @param texts Batch of embedding inputs.
+        @return Dummy vectors for test assertions.
+        """
+        return [[0.0] for _ in texts]
+
+
+class _FakeClassifier:
+    """@brief Minimal classifier stub that emits one warning and fallback values."""
+
+    def analyze_file(self, file_path: str, code: str, language: str, on_warning=None) -> tuple[str, str]:
+        """@brief Emit a warning and return fallback summary/role values.
+
+        @param file_path Relative file path.
+        @param code File contents.
+        @param language File language label.
+        @param on_warning Optional warning callback.
+        @return Empty summary and unknown role.
+        """
+        if on_warning:
+            on_warning(f"Classifier file analysis fallback for {file_path}: test")
+        return "", "unknown"
+
+    def classify_chunks_batch(
+        self,
+        chunks: list[dict],
+        language: str,
+        file_path: str,
+        on_warning=None,
+    ) -> list[tuple[str, str]]:
+        """@brief Return fallback chunk classifications.
+
+        @param chunks Chunk dictionaries.
+        @param language File language label.
+        @param file_path Relative file path.
+        @param on_warning Optional warning callback.
+        @return Utility fallback classifications matching chunk count.
+        """
+        return [("utility", "")] * len(chunks)
+
+
+class _FakeChunker:
+    """@brief Minimal chunker stub that emits no chunks."""
+
+    def chunk_file(self, content: str, language: str, rel_path: str) -> list[dict]:
+        """@brief Return no chunks to keep the test path focused on warnings.
+
+        @param content File contents.
+        @param language File language label.
+        @param rel_path Relative file path.
+        @return Empty chunk list.
+        """
+        return []
+
+    def extract_dependencies(self, content: str, language: str, rel_path: str) -> list[dict]:
+        """@brief Return no dependencies.
+
+        @param content File contents.
+        @param language File language label.
+        @param rel_path Relative file path.
+        @return Empty dependency list.
+        """
+        return []
+
+
 def test_clean_swift_type_strips_optionals_generics_and_modules() -> None:
     """@brief Verify Swift type cleanup normalizes decorated type names."""
     assert ingest._clean_swift_type("App.TrackService<Dependency>?") == "TrackService"
@@ -153,3 +293,30 @@ def test_extract_symbol_references_deduplicates_and_skips_stopwords() -> None:
             "line_no": 12,
         },
     ]
+
+
+def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:
+    """@brief Verify classifier fallback messages are returned in process_file results."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fpath = repo_root / "demo.py"
+    fpath.write_text("print('x')\n", encoding="utf-8")
+
+    monkeypatch.setattr(ingest, "register_vector", lambda conn: None)
+
+    result = ingest.process_file(
+        fpath=fpath,
+        repo_root=repo_root,
+        repo_name="repo",
+        config={"languages": {"extensions": {"py": "python"}}},
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_FakeChunker(),
+        db_pool=_FakePool(),
+        force=True,
+        no_classify=False,
+    )
+
+    assert result["status"] == "indexed"
+    assert len(result.get("warnings", [])) == 1
+    assert "Classifier file analysis fallback for demo.py" in result["warnings"][0]

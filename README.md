@@ -25,7 +25,7 @@ Update `codebrain.toml` if your database, embedding service, or classifier endpo
 
 ## Ingest a Repository
 
-Local ingestion is the intended path.
+### CLI
 
 ```bash
 python3 -m venv .venv
@@ -41,6 +41,22 @@ Notes:
 - `--force` ignores the file hash cache and re-indexes everything
 - `--watch` re-indexes changed files on save
 - `.gitignore` is respected during ingestion
+
+### Desktop Application (Windows / macOS / Linux)
+
+```bash
+pip install -r requirements-gui.txt
+python -m desktop
+```
+
+The desktop app provides:
+- A GUI for all `ingest.py` options (force, no-classify, worker count)
+- Multi-repo management — add, remove, and index any number of repos
+- Concurrent file watching across multiple repos simultaneously
+- Live progress bars and a scrolling file log during ingestion
+- Per-repo statistics and ingestion history views
+- Settings dialog for database, embedding, and classifier configuration
+- System tray integration — close the window while watchers continue running
 
 ## Run the MCP Server
 

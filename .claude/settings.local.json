@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit)",
+      "Bash(npm run build)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(npm install)",
+      "Bash(npm test)",
+      "Skill(commit-commands:commit-push-pr)",
+      "Skill(commit-commands:commit-push-pr:*)",
+      "Bash(git checkout -b refactoring-analysis-tools)",
+      "Bash(brew list gh)",
+      "Bash(git checkout main)",
+      "Bash(git merge refactoring-analysis-tools)",
+      "Bash(git push origin main)",
+      "Bash(ls -la /Users/david/src/AI/GrayMatter/*.py)",
+      "Bash(wc -l /Users/david/src/AI/GrayMatter/*.py /Users/david/src/AI/GrayMatter/src/**/*.ts)",
+      "Bash(/Users/david/src/AI/GrayMatter/.venv/bin/python --version)"
+    ]
+  }
+}

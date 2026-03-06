@@ -54,3 +54,32 @@ def test_analyze_file_falls_back_when_response_is_not_json(monkeypatch) -> None:
     monkeypatch.setattr(classifier, "_generate", lambda prompt, max_tokens=200: "not-json")
 
     assert classifier.analyze_file("demo.py", "print('x')", "python") == ("", "unknown")
+
+
+def test_analyze_file_reports_warning_on_fallback(monkeypatch) -> None:
+    """@brief Verify analyze_file emits a warning when model output cannot be parsed."""
+    classifier = _classifier()
+    warnings: list[str] = []
+    monkeypatch.setattr(classifier, "_generate", lambda prompt, max_tokens=200: "not-json")
+
+    classifier.analyze_file("demo.py", "print('x')", "python", on_warning=warnings.append)
+
+    assert len(warnings) == 1
+    assert "Classifier file analysis fallback for demo.py" in warnings[0]
+
+
+def test_classify_chunks_batch_reports_warning_on_fallback(monkeypatch) -> None:
+    """@brief Verify chunk classification emits a warning when model output is malformed."""
+    classifier = _classifier()
+    warnings: list[str] = []
+    monkeypatch.setattr(classifier, "_generate", lambda prompt, max_tokens=200: "not-json")
+
+    classifier.classify_chunks_batch(
+        [{"content": "alpha()", "start_line": 1, "end_line": 1}],
+        "python",
+        "demo.py",
+        on_warning=warnings.append,
+    )
+
+    assert len(warnings) == 1
+    assert "Classifier chunk intent fallback for demo.py" in warnings[0]

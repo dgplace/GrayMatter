@@ -7,6 +7,8 @@ strict JSON parsing and conservative fallbacks for malformed model output.
 """
 
 import json
+from typing import Callable, Optional
+
 import httpx
 
 
@@ -99,12 +101,32 @@ class IntentClassifier:
             cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(cleaned)
 
-    def analyze_file(self, file_path: str, code: str, language: str) -> tuple[str, str]:
+    def _emit_warning(
+        self,
+        on_warning: Optional[Callable[[str], None]],
+        message: str,
+    ) -> None:
+        """@brief Deliver one classifier warning to an optional callback.
+
+        @param on_warning Callback receiving a human-readable warning message.
+        @param message Warning payload text.
+        """
+        if on_warning:
+            on_warning(message)
+
+    def analyze_file(
+        self,
+        file_path: str,
+        code: str,
+        language: str,
+        on_warning: Optional[Callable[[str], None]] = None,
+    ) -> tuple[str, str]:
         """@brief Summarize a file and infer its architectural role.
 
         @param file_path Repository-relative or absolute file path.
         @param code File contents.
         @param language Detected file language.
+        @param on_warning Optional callback for model/parse failures.
         @return Tuple of `(summary, role)`, or empty/unknown fallback values.
         """
         prompt = ANALYZE_FILE_PROMPT.format(
@@ -115,17 +137,26 @@ class IntentClassifier:
         try:
             data = self._parse_json(self._generate(prompt, max_tokens=150))
             return data.get("summary", ""), data.get("role", "unknown")
-        except Exception:
+        except Exception as exc:
+            self._emit_warning(
+                on_warning,
+                f"Classifier file analysis fallback for {file_path}: {exc}",
+            )
             return "", "unknown"
 
     def classify_chunks_batch(
-        self, chunks: list[dict], language: str, file_path: str
+        self,
+        chunks: list[dict],
+        language: str,
+        file_path: str,
+        on_warning: Optional[Callable[[str], None]] = None,
     ) -> list[tuple[str, str]]:
         """@brief Classify file chunks in fixed-size batches.
 
         @param chunks Chunk dictionaries to classify.
         @param language Detected file language.
         @param file_path Source file path for prompt context.
+        @param on_warning Optional callback for model/parse failures.
         @return List of `(intent, description)` tuples in input order.
         """
         if not chunks:
@@ -134,17 +165,29 @@ class IntentClassifier:
         results: list[tuple[str, str]] = []
         for i in range(0, len(chunks), _CHUNK_BATCH_SIZE):
             batch = chunks[i : i + _CHUNK_BATCH_SIZE]
-            results.extend(self._classify_batch(batch, language, file_path))
+            results.extend(
+                self._classify_batch(
+                    batch,
+                    language,
+                    file_path,
+                    on_warning=on_warning,
+                )
+            )
         return results
 
     def _classify_batch(
-        self, chunks: list[dict], language: str, file_path: str
+        self,
+        chunks: list[dict],
+        language: str,
+        file_path: str,
+        on_warning: Optional[Callable[[str], None]] = None,
     ) -> list[tuple[str, str]]:
         """@brief Classify one chunk batch with fallback-safe parsing.
 
         @param chunks Chunk dictionaries included in the batch.
         @param language Detected file language.
         @param file_path Source file path for prompt context.
+        @param on_warning Optional callback for model/parse failures.
         @return List of `(intent, description)` tuples for the batch.
         """
         chunk_blocks = "\n\n".join(
@@ -171,7 +214,11 @@ class IntentClassifier:
             while len(results) < len(chunks):
                 results.append(("utility", ""))
             return results
-        except Exception:
+        except Exception as exc:
+            self._emit_warning(
+                on_warning,
+                f"Classifier chunk intent fallback for {file_path}: {exc}",
+            )
             return [("utility", "")] * len(chunks)
 
     # ── Legacy single-call methods (used by watch mode / fallback) ──────────

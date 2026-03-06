@@ -12,3 +12,6 @@
 2026-03-05 Added live `/ui/api/tool-calls` counters and a real-time UI panel showing per-function MCP tool invocation totals.
 2026-03-05 Added full C# ingestion support with `.cs` mapping, tree-sitter-c-sharp parsing, namespace-aware symbol extraction, and C# dependency parsing/tests.
 2026-03-05 Added refactoring analysis MCP tools: analyze_coupling, extract_module_interface, find_dependency_cycles, find_modularization_seams; enhanced trace_dependencies with summary mode; added graph.ts cycle detection module and performance indexes.
+2026-03-07 Added cross-platform desktop application (desktop/ package, PySide6): multi-repo management, live ingestion progress, concurrent file watching with system tray, stats/history views, settings dialog; adds requirements-gui.txt.
+2026-03-07 Added explicit classifier fallback reporting across CLI and desktop flows: per-file warnings, summary fallback counts, and tests covering warning propagation.
+2026-03-07 Finished desktop re-index action wiring: added RepoPanel handling for RepoCard `Re-index` to launch force ingestion (equivalent to `ingest.py --force`).

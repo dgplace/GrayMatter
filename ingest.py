@@ -2,6 +2,7 @@
 """
 CodeBrain Ingestion Pipeline
 Walks a codebase, parses with tree-sitter, embeds with Ollama, classifies intent, stores in PostgreSQL.
+ options: --debug, --force, --watch
 """
 
 import hashlib
@@ -472,7 +473,8 @@ def process_file(
     @param db_pool Shared database connection pool.
     @param force Whether to bypass file hash skip checks.
     @param no_classify Whether to skip classifier calls.
-    @return Result dictionary containing status and optional counters/error details.
+    @return Result dictionary containing status, optional counters/error details,
+            and optional classifier warning messages under `warnings`.
     """
     rel_path = str(fpath.relative_to(repo_root))
     language = detect_language(fpath, config)
@@ -501,10 +503,17 @@ def process_file(
         line_count = content.count("\n") + 1
 
         # Generate file-level summary + role (one LLM call) and embedding
+        classifier_warnings: list[str] = []
+
         if no_classify:
             file_summary, file_role = "", "unknown"
         else:
-            file_summary, file_role = classifier.analyze_file(rel_path, content[:3000], language)
+            file_summary, file_role = classifier.analyze_file(
+                rel_path,
+                content[:3000],
+                language,
+                on_warning=classifier_warnings.append,
+            )
         file_embedding = embedder.embed(f"{rel_path}\n{file_summary}")
 
         # Upsert file record
@@ -535,7 +544,13 @@ def process_file(
 
         if not chunks:
             conn.commit()
-            return {"status": "indexed", "path": rel_path, "chunks": 0, "symbols": 0}
+            return {
+                "status": "indexed",
+                "path": rel_path,
+                "chunks": 0,
+                "symbols": 0,
+                "warnings": classifier_warnings,
+            }
 
         # --- Batch all embeddings for this file in one call ---
         chunk_embed_texts = [f"# {rel_path}\n{c['content']}" for c in chunks]
@@ -554,7 +569,12 @@ def process_file(
         if no_classify:
             chunk_classifications = [("utility", "")] * len(chunks)
         else:
-            chunk_classifications = classifier.classify_chunks_batch(chunks, language, rel_path)
+            chunk_classifications = classifier.classify_chunks_batch(
+                chunks,
+                language,
+                rel_path,
+                on_warning=classifier_warnings.append,
+            )
         # ------------------------------------------------------------------
 
         chunk_count = 0
@@ -684,6 +704,7 @@ def process_file(
             "path": rel_path,
             "chunks": chunk_count,
             "symbols": symbol_count,
+            "warnings": classifier_warnings,
         }
 
     except Exception as e:
@@ -691,7 +712,12 @@ def process_file(
             conn.rollback()
         except Exception:
             pass
-        return {"status": "error", "path": rel_path, "error": str(e)}
+        return {
+            "status": "error",
+            "path": rel_path,
+            "error": str(e),
+            "warnings": classifier_warnings if "classifier_warnings" in locals() else [],
+        }
     finally:
         db_pool.putconn(conn)
 
@@ -771,8 +797,16 @@ def main(
     files = walk_repo(repo_root, cfg)
     console.print(f"  Found [bold]{len(files)}[/] source files\n")
 
-    stats = {"indexed": 0, "skipped": 0, "errors": 0, "chunks": 0, "symbols": 0}
+    stats = {
+        "indexed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "chunks": 0,
+        "symbols": 0,
+        "classifier_fallbacks": 0,
+    }
     error_details: list[tuple[str, str]] = []
+    classifier_warning_details: list[tuple[str, str]] = []
 
     # Each thread gets its own ASTChunker (tree-sitter parsers are not thread-safe)
     thread_chunkers: dict[int, ASTChunker] = {}
@@ -819,6 +853,7 @@ def main(
                         "status": "error",
                         "path": str(futures[future]),
                         "error": f"Worker exception: {e}",
+                        "warnings": [],
                     }
 
                 status_key = normalize_result_status(result.get("status"))
@@ -836,6 +871,14 @@ def main(
                     stats["chunks"] += result["chunks"]
                 if result.get("symbols"):
                     stats["symbols"] += result["symbols"]
+                warnings = result.get("warnings", [])
+                if warnings:
+                    error_path = result.get("path", "<unknown>")
+                    for warning in warnings:
+                        classifier_warning_details.append((error_path, warning))
+                        if debug:
+                            console.print(f"  [yellow]![/] [dim]{error_path}[/]: {warning}")
+                    stats["classifier_fallbacks"] += len(warnings)
                 progress.update(
                     task, advance=1,
                     description=f"[dim]{result.get('path', '')[:60]}[/]"
@@ -847,6 +890,13 @@ def main(
             console.print(f"  [red]✗[/] [dim]{error_path}[/]: {error_msg}")
         if len(error_details) > 5:
             console.print(f"  [dim]... and {len(error_details) - 5} more[/]")
+
+    if classifier_warning_details:
+        console.print("\n  [bold yellow]Classifier fallback samples:[/]")
+        for warn_path, warn_msg in classifier_warning_details[:5]:
+            console.print(f"  [yellow]![/] [dim]{warn_path}[/]: {warn_msg}")
+        if len(classifier_warning_details) > 5:
+            console.print(f"  [dim]... and {len(classifier_warning_details) - 5} more[/]")
 
     # Update ingestion run
     finish_conn = get_db(cfg)
@@ -867,6 +917,7 @@ def main(
     console.print(f"  Files indexed: {stats['indexed']}")
     console.print(f"  Files skipped (unchanged): {stats['skipped']}")
     console.print(f"  Errors: {stats['errors']}")
+    console.print(f"  Classifier fallbacks: {stats['classifier_fallbacks']}")
     console.print(f"  Chunks created: {stats['chunks']}")
     console.print(f"  Symbols extracted: {stats['symbols']}")
 
@@ -890,8 +941,26 @@ def main(
                         lang = detect_language(fpath, cfg)
                         if lang:
                             console.print(f"  [dim]Re-indexing {fpath.name}...[/]")
-                            process_file(fpath, repo_root, repo_name, cfg,
-                                         embedder, classifier, watch_chunker, watch_pool)
+                            watch_result = process_file(
+                                fpath,
+                                repo_root,
+                                repo_name,
+                                cfg,
+                                embedder,
+                                classifier,
+                                watch_chunker,
+                                watch_pool,
+                                no_classify=no_classify,
+                            )
+                            if watch_result.get("error"):
+                                console.print(
+                                    f"  [red]✗[/] [dim]{watch_result.get('path', fpath.name)}[/]: "
+                                    f"{watch_result['error']}"
+                                )
+                            for warning in watch_result.get("warnings", []):
+                                console.print(
+                                    f"  [yellow]![/] [dim]{watch_result.get('path', fpath.name)}[/]: {warning}"
+                                )
 
         observer = Observer()
         observer.schedule(ReindexHandler(), str(repo_root), recursive=True)

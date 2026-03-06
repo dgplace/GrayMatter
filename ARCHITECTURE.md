@@ -133,6 +133,46 @@ The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_dep
 
 Dependencies, references, and symbols are extracted during ingestion and stored explicitly so query-time work is focused on filtering, ranking, and formatting.
 
+### 4. Desktop Application (Python + PySide6)
+
+Entry point:
+- `python -m desktop` from the project root
+
+Core files:
+- `desktop/__main__.py` — QApplication entry point
+- `desktop/app.py` — lifecycle coordinator (CodeBrainApp)
+- `desktop/core/engine.py` — IngestionEngine: wraps pipeline functions, emits Qt signals
+- `desktop/core/watcher.py` — MultiRepoWatcher: N-repo watchdog observer management
+- `desktop/core/state.py` — AppState: local SQLite persistence for repo list and settings
+
+UI files (`desktop/ui/`):
+- `main_window.py` — sidebar navigation + stacked view layout
+- `repo_panel.py` — add/remove repos, index and watch controls, status cards
+- `ingestion_view.py` — live progress bars and file log per active ingestion
+- `stats_view.py` — per-repo aggregate stats from PostgreSQL
+- `history_view.py` — ingestion_runs table display
+- `settings_dialog.py` — database, embeddings, and classifier config editor
+- `tray.py` — system tray icon, context menu, balloon notifications
+
+Responsibilities:
+- provide a GUI equivalent of the `ingest.py` CLI for all three platforms
+- manage multiple repositories simultaneously (add, remove, index, watch)
+- run ingestion workers on background QThreads and report live progress
+- watch N repos for file changes using concurrent watchdog Observers
+- persist to system tray when windows are closed and watchers are active
+- store app-level preferences (repo list, auto-watch) in a local SQLite DB
+
+Design pattern:
+- `IngestionEngine` is a thin bridge: it duplicates only the thread orchestration
+  from `ingest.py main()` and replaces Rich output with Qt signals; `process_file`,
+  `walk_repo`, and `ensure_schema` are called directly with no modification.
+- Qt signal/slot cross-thread delivery handles safe UI updates from worker threads.
+- `MultiRepoWatcher` gives each repo its own watchdog Observer and connection pool
+  for clean lifecycle isolation; `EmbeddingClient` and `IntentClassifier` are shared
+  across repos since they are thread-safe.
+- `AppState` (SQLite) stores only desktop UI state; all indexed code data remains
+  in the containerized PostgreSQL instance.
+
 ## Operational Topology
 
 Typical deployment:
@@ -140,7 +180,8 @@ Typical deployment:
 - embedding provider on local or network host
 - classifier provider on local or network host
 - MCP server exposing `/mcp`, `/ui`, and `/healthz`
-- ingestion run locally against configured services
+- ingestion run locally against configured services — either via `ingest.py` CLI
+  or via the desktop application (`python -m desktop`)
 
 Containerized MCP service publishes HTTP-only endpoints and includes the embedded UI.
 
