@@ -320,3 +320,88 @@ def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> Non
     assert result["status"] == "indexed"
     assert len(result.get("warnings", [])) == 1
     assert "Classifier file analysis fallback for demo.py" in result["warnings"][0]
+
+
+def test_reindex_handler_on_deleted_executes_delete_query(monkeypatch) -> None:
+    """@brief Verify ReindexHandler.on_deleted removes the file from the database."""
+    from watchdog.events import FileDeletedEvent
+
+    deleted_queries = []
+
+    class _MockCursor:
+        def execute(self, query, params):
+            if "DELETE FROM files" in query:
+                deleted_queries.append((query, params))
+
+    class _MockConn:
+        def cursor(self):
+            return _MockCursor()
+
+        def commit(self):
+            pass
+
+    class _MockPool:
+        def getconn(self):
+            return _MockConn()
+
+        def putconn(self, conn):
+            pass
+
+    repo_root = Path("/repo")
+    handler = ingest.ReindexHandler(
+        repo_root=repo_root,
+        repo_name="test-repo",
+        config={},
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_FakeChunker(),
+        db_pool=_MockPool(),
+    )
+
+    # Simulate deletion of /repo/src/main.py
+    event = FileDeletedEvent(src_path="/repo/src/main.py")
+    handler.on_deleted(event)
+
+    assert len(deleted_queries) == 1
+    query, params = deleted_queries[0]
+    assert "DELETE FROM files" in query
+    assert params == ("test-repo", "src/main.py")
+
+
+def test_prune_stale_files_executes_correct_deletions() -> None:
+    """@brief Verify prune_stale_files identifies and deletes missing files."""
+    deleted_queries = []
+
+    class _MockCursor:
+        def execute(self, query, params=None):
+            if "SELECT path FROM files" in query:
+                self.results = [("stale.py",), ("active.py",)]
+            elif "DELETE FROM files" in query:
+                deleted_queries.append((query, params))
+
+        def fetchall(self):
+            return self.results
+
+    class _MockConn:
+        def cursor(self):
+            return _MockCursor()
+
+        def commit(self):
+            pass
+
+    repo_root = Path("/repo")
+    # Only active.py exists on disk
+    current_files = [Path("/repo/active.py")]
+
+    stale = ingest.prune_stale_files(
+        _MockConn(),
+        "test-repo",
+        repo_root,
+        current_files
+    )
+
+    assert stale == ["stale.py"]
+    assert len(deleted_queries) == 1
+    query, params = deleted_queries[0]
+    assert "DELETE FROM files" in query
+    assert params == ("test-repo", "stale.py")

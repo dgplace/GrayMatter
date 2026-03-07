@@ -40,6 +40,7 @@ from ingest import (  # noqa: E402
     load_config,
     normalize_result_status,
     process_file,
+    prune_stale_files,
     walk_repo,
 )
 
@@ -72,6 +73,7 @@ class IngestionWorker(QObject):
     """
 
     repo_started = Signal(str, int)        # (repo_name, total_files)
+    pruning_started = Signal(str, int)     # (repo_name, stale_count)
     progress = Signal(str, int, int, dict) # (repo_name, current, total, result)
     file_processed = Signal(str, str, str) # (repo_name, rel_path, status_key)
     repo_completed = Signal(str, dict)     # (repo_name, final_stats)
@@ -170,6 +172,17 @@ class IngestionWorker(QObject):
         files = walk_repo(repo_root, cfg)
         total = len(files)
         self.repo_started.emit(repo_name, total)
+
+        # Prune stale files from database
+        prune_conn = db_pool.getconn()
+        try:
+            stale_paths = prune_stale_files(prune_conn, repo_name, repo_root, files)
+            if stale_paths:
+                self.pruning_started.emit(repo_name, len(stale_paths))
+                for path in stale_paths:
+                    self.file_processed.emit(repo_name, path, "deleted")
+        finally:
+            db_pool.putconn(prune_conn)
 
         if total == 0:
             self._finalize_run(cfg, run_id, 0, 0, 0, db_pool)
@@ -304,6 +317,7 @@ class IngestionEngine(QObject):
 
     # Forwarded from active IngestionWorker instances.
     repo_started = Signal(str, int)        # (repo_name, total_files)
+    pruning_started = Signal(str, int)     # (repo_name, stale_count)
     progress = Signal(str, int, int, dict) # (repo_name, current, total, result)
     file_processed = Signal(str, str, str) # (repo_name, path, status_key)
     repo_completed = Signal(str, dict)     # (repo_name, stats)

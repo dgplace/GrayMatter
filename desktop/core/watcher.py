@@ -58,10 +58,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 class _ReindexHandler(FileSystemEventHandler):
-    """@brief Watchdog event handler that re-indexes a modified or created file.
-
-    Filters events by supported language, exclude patterns, and .gitignore
-    before delegating to process_file().
+    """@brief Watchdog event handler that re-indexes modified/created files
+    and prunes deleted files/directories in real-time.
     """
 
     def __init__(
@@ -76,18 +74,6 @@ class _ReindexHandler(FileSystemEventHandler):
         on_reindexed,
         on_error,
     ) -> None:
-        """@brief Construct the handler with pre-built pipeline resources.
-
-        @param repo_root Absolute repository root Path.
-        @param repo_name Repository name for DB records.
-        @param cfg Effective configuration dict.
-        @param embedder Shared EmbeddingClient instance.
-        @param classifier Shared IntentClassifier instance.
-        @param chunker Per-repo ASTChunker instance.
-        @param db_pool Per-repo connection pool.
-        @param on_reindexed Callback(path: str, status: str) called after re-index.
-        @param on_error Callback(error: str) called on handler exceptions.
-        """
         super().__init__()
         self._repo_root = repo_root
         self._repo_name = repo_name
@@ -100,21 +86,89 @@ class _ReindexHandler(FileSystemEventHandler):
         self._on_error = on_error
         self._excludes = cfg.get("ingestion", {}).get("exclude", [])
 
-    def on_modified(self, event) -> None:
-        """@brief React to file modification events."""
+    def on_created(self, event) -> None:
         if not event.is_directory:
             self._handle(Path(event.src_path))
 
-    def on_created(self, event) -> None:
-        """@brief React to file creation events (e.g. new files added to repo)."""
+    def on_modified(self, event) -> None:
         if not event.is_directory:
             self._handle(Path(event.src_path))
+
+    def on_deleted(self, event) -> None:
+        fpath = Path(event.src_path)
+        if (
+            should_exclude(fpath, self._repo_root, self._excludes)
+            or is_gitignored(fpath, self._repo_root)
+        ):
+            return
+
+        try:
+            rel_path = str(fpath.relative_to(self._repo_root))
+        except ValueError:
+            return
+
+        conn = self._db_pool.getconn()
+        try:
+            cur = conn.cursor()
+            if event.is_directory:
+                cur.execute(
+                    "DELETE FROM files WHERE repo = %s AND path LIKE %s",
+                    (self._repo_name, f"{rel_path}/%")
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM files WHERE repo = %s AND path = %s",
+                    (self._repo_name, rel_path)
+                )
+            conn.commit()
+            self._on_reindexed(rel_path, "deleted")
+        except Exception as exc:
+            self._on_error(str(exc))
+        finally:
+            self._db_pool.putconn(conn)
+
+    def on_moved(self, event) -> None:
+        # Remove old path
+        src_path = Path(event.src_path)
+        if not (
+            should_exclude(src_path, self._repo_root, self._excludes)
+            or is_gitignored(src_path, self._repo_root)
+        ):
+            try:
+                rel_src_path = str(src_path.relative_to(self._repo_root))
+                conn = self._db_pool.getconn()
+                try:
+                    cur = conn.cursor()
+                    if event.is_directory:
+                        cur.execute(
+                            "DELETE FROM files WHERE repo = %s AND (path = %s OR path LIKE %s)",
+                            (self._repo_name, rel_src_path, f"{rel_src_path}/%")
+                        )
+                    else:
+                        cur.execute(
+                            "DELETE FROM files WHERE repo = %s AND path = %s",
+                            (self._repo_name, rel_src_path)
+                        )
+                    conn.commit()
+                except Exception as exc:
+                    self._on_error(str(exc))
+                finally:
+                    self._db_pool.putconn(conn)
+            except ValueError:
+                pass
+
+        if event.is_directory:
+            # Re-index all files in new directory
+            import os
+            new_dir = Path(event.dest_path)
+            for root, _, filenames in os.walk(new_dir):
+                for fname in filenames:
+                    self._handle(Path(root) / fname)
+        else:
+            self._handle(Path(event.dest_path))
 
     def _handle(self, fpath: Path) -> None:
-        """@brief Filter and re-index one file.
-
-        @param fpath Absolute path of the changed file.
-        """
+        """@brief Filter and re-index one file."""
         try:
             if should_exclude(fpath, self._repo_root, self._excludes):
                 return

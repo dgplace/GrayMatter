@@ -335,6 +335,7 @@ class IngestionView(QWidget):
 
         # Wire engine signals (full ingestion runs)
         engine.repo_started.connect(self._on_repo_started)
+        engine.pruning_started.connect(self._on_pruning_started)
         engine.progress.connect(self._on_progress)
         engine.repo_completed.connect(self._on_repo_completed)
         engine.repo_error.connect(self._on_repo_error)
@@ -372,6 +373,15 @@ class IngestionView(QWidget):
         section = _RepoProgressSection(repo_name, total, self._engine)
         self._sections[repo_name] = section
         self._sections_layout.insertWidget(0, section)
+
+    @Slot(str, int)
+    def _on_pruning_started(self, repo_name: str, stale_count: int) -> None:
+        """@brief Log a message when pruning of stale files begins.
+
+        @param repo_name Repository name.
+        @param stale_count Number of files being removed.
+        """
+        self._log.appendPlainText(f"[i] {repo_name}: Pruning {stale_count} stale files from database...")
 
     @Slot(str, int, int, dict)
     def _on_progress(self, repo_name: str, current: int, total: int, result: dict) -> None:
@@ -419,9 +429,9 @@ class IngestionView(QWidget):
 
         @param repo_name Repository name (shown as prefix).
         @param path Relative path of the processed file.
-        @param status One of 'indexed', 'skipped', 'errors'.
+        @param status One of 'indexed', 'skipped', 'errors', 'deleted'.
         """
-        icon = {"indexed": "+", "skipped": "=", "errors": "!"}.get(status, "?")
+        icon = {"indexed": "+", "skipped": "=", "errors": "!", "deleted": "-"}.get(status, "?")
         self._log.appendPlainText(f"[{icon}] {repo_name}/{path}")
 
     # ------------------------------------------------------------------
@@ -504,7 +514,7 @@ class IngestionView(QWidget):
         section = self._watch_sections.get(repo_name)
         if section:
             section.on_file_reindexed(status)
-        icon = {"indexed": "~", "skipped": "=", "error": "!"}.get(status, "?")
+        icon = {"indexed": "~", "skipped": "=", "error": "!", "deleted": "-"}.get(status, "?")
         self._log.appendPlainText(f"[{icon}] {repo_name}/{rel_path}")
 
     @Slot(str, str)

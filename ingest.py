@@ -23,6 +23,8 @@ import psycopg2.pool
 from pgvector.psycopg2 import register_vector
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 try:
     import tomllib
@@ -467,9 +469,9 @@ def normalize_result_status(status: Optional[str]) -> str:
     """@brief Normalize per-file status to a summary counter key.
 
     @param status Raw status label returned by a worker result.
-    @return One of `indexed`, `skipped`, or `errors`.
+    @return One of `indexed`, `skipped`, `deleted`, or `errors`.
     """
-    if status in {"indexed", "skipped"}:
+    if status in {"indexed", "skipped", "deleted"}:
         return status
     return "errors"
 
@@ -747,6 +749,159 @@ def process_file(
         db_pool.putconn(conn)
 
 
+class ReindexHandler(FileSystemEventHandler):
+    """@brief Watchdog handler to re-index files on creation, modification, or deletion."""
+
+    def __init__(
+        self,
+        repo_root: Path,
+        repo_name: str,
+        config: dict,
+        embedder: EmbeddingClient,
+        classifier: IntentClassifier,
+        chunker: ASTChunker,
+        db_pool: psycopg2.pool.ThreadedConnectionPool,
+        no_classify: bool = False,
+    ):
+        self.repo_root = repo_root
+        self.repo_name = repo_name
+        self.config = config
+        self.embedder = embedder
+        self.classifier = classifier
+        self.chunker = chunker
+        self.db_pool = db_pool
+        self.no_classify = no_classify
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._handle_change(Path(event.src_path))
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._handle_change(Path(event.src_path))
+
+    def on_deleted(self, event):
+        fpath = Path(event.src_path)
+        if (
+            should_exclude(fpath, self.repo_root, self.config.get("ingestion", {}).get("exclude", []))
+            or is_gitignored(fpath, self.repo_root)
+        ):
+            return
+
+        try:
+            rel_path = str(fpath.relative_to(self.repo_root))
+        except ValueError:
+            return
+
+        conn = self.db_pool.getconn()
+        try:
+            cur = conn.cursor()
+            if event.is_directory:
+                console.print(f"  [dim]Removing directory {rel_path} from index...[/]")
+                cur.execute(
+                    "DELETE FROM files WHERE repo = %s AND path LIKE %s",
+                    (self.repo_name, f"{rel_path}/%")
+                )
+            else:
+                console.print(f"  [dim]Removing {rel_path} from index...[/]")
+                cur.execute(
+                    "DELETE FROM files WHERE repo = %s AND path = %s",
+                    (self.repo_name, rel_path)
+                )
+            conn.commit()
+        finally:
+            self.db_pool.putconn(conn)
+
+    def on_moved(self, event):
+        # Remove old path (file or directory)
+        src_path = Path(event.src_path)
+        if not (
+            should_exclude(src_path, self.repo_root, self.config.get("ingestion", {}).get("exclude", []))
+            or is_gitignored(src_path, self.repo_root)
+        ):
+            try:
+                rel_src_path = str(src_path.relative_to(self.repo_root))
+                conn = self.db_pool.getconn()
+                try:
+                    cur = conn.cursor()
+                    if event.is_directory:
+                        cur.execute(
+                            "DELETE FROM files WHERE repo = %s AND (path = %s OR path LIKE %s)",
+                            (self.repo_name, rel_src_path, f"{rel_src_path}/%")
+                        )
+                    else:
+                        cur.execute(
+                            "DELETE FROM files WHERE repo = %s AND path = %s",
+                            (self.repo_name, rel_src_path)
+                        )
+                    conn.commit()
+                finally:
+                    self.db_pool.putconn(conn)
+            except ValueError:
+                pass
+
+        if event.is_directory:
+            # For directories, re-index all files inside the new path
+            new_dir_path = Path(event.dest_path)
+            for root, _, filenames in os.walk(new_dir_path):
+                for fname in filenames:
+                    self._handle_change(Path(root) / fname)
+        else:
+            # Process new path
+            self._handle_change(Path(event.dest_path))
+
+    def _handle_change(self, fpath: Path):
+        if (
+            not should_exclude(fpath, self.repo_root, self.config.get("ingestion", {}).get("exclude", []))
+            and not is_gitignored(fpath, self.repo_root)
+        ):
+            lang = detect_language(fpath, self.config)
+            if lang:
+                console.print(f"  [dim]Re-indexing {fpath.name}...[/]")
+                watch_result = process_file(
+                    fpath,
+                    self.repo_root,
+                    self.repo_name,
+                    self.config,
+                    self.embedder,
+                    self.classifier,
+                    self.chunker,
+                    self.db_pool,
+                    no_classify=self.no_classify,
+                )
+                if watch_result.get("error"):
+                    console.print(
+                        f"  [red]✗[/] [dim]{watch_result.get('path', fpath.name)}[/]: "
+                        f"{watch_result['error']}"
+                    )
+                for warning in watch_result.get("warnings", []):
+                    console.print(
+                        f"  [yellow]![/] [dim]{watch_result.get('path', fpath.name)}[/]: {warning}"
+                    )
+
+
+def prune_stale_files(conn, repo_name: str, repo_root: Path, current_files: list[Path]) -> list[str]:
+    """@brief Remove database records for files that no longer exist on disk.
+
+    @param conn Database connection.
+    @param repo_name Repository name.
+    @param repo_root Repository root path.
+    @param current_files List of files currently present on disk.
+    @return List of relative paths that were pruned.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT path FROM files WHERE repo = %s", (repo_name,))
+    db_paths = {row[0] for row in cur.fetchall()}
+    current_paths = {str(f.relative_to(repo_root)) for f in current_files}
+    stale_paths = db_paths - current_paths
+
+    if stale_paths:
+        for path in stale_paths:
+            cur.execute("DELETE FROM files WHERE repo = %s AND path = %s", (repo_name, path))
+        conn.commit()
+    return list(stale_paths)
+
+
 @click.command()
 @click.argument("repo_path", type=click.Path(exists=True))
 @click.option("--config", default="codebrain.toml", help="Config file path")
@@ -821,6 +976,13 @@ def main(
     # Walk repository
     files = walk_repo(repo_root, cfg)
     console.print(f"  Found [bold]{len(files)}[/] source files\n")
+
+    # Prune stale files from database
+    prune_conn = get_db(cfg)
+    stale_paths = prune_stale_files(prune_conn, repo_name, repo_root, files)
+    if stale_paths:
+        console.print(f"  Pruning [bold]{len(stale_paths)}[/] stale files from database")
+    prune_conn.close()
 
     stats = {
         "indexed": 0,
@@ -948,47 +1110,24 @@ def main(
 
     if watch:
         console.print(f"\n[bold cyan]Watching for changes...[/] (Ctrl+C to stop)")
-        from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler
 
         watch_conn = get_db(cfg)
         watch_chunker = ASTChunker(cfg)
         watch_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, cfg["database"]["url"])
 
-        class ReindexHandler(FileSystemEventHandler):
-            def on_modified(self, event):
-                if not event.is_directory:
-                    fpath = Path(event.src_path)
-                    if (
-                        not should_exclude(fpath, repo_root, cfg.get("ingestion", {}).get("exclude", []))
-                        and not is_gitignored(fpath, repo_root)
-                    ):
-                        lang = detect_language(fpath, cfg)
-                        if lang:
-                            console.print(f"  [dim]Re-indexing {fpath.name}...[/]")
-                            watch_result = process_file(
-                                fpath,
-                                repo_root,
-                                repo_name,
-                                cfg,
-                                embedder,
-                                classifier,
-                                watch_chunker,
-                                watch_pool,
-                                no_classify=no_classify,
-                            )
-                            if watch_result.get("error"):
-                                console.print(
-                                    f"  [red]✗[/] [dim]{watch_result.get('path', fpath.name)}[/]: "
-                                    f"{watch_result['error']}"
-                                )
-                            for warning in watch_result.get("warnings", []):
-                                console.print(
-                                    f"  [yellow]![/] [dim]{watch_result.get('path', fpath.name)}[/]: {warning}"
-                                )
+        handler = ReindexHandler(
+            repo_root=repo_root,
+            repo_name=repo_name,
+            config=cfg,
+            embedder=embedder,
+            classifier=classifier,
+            chunker=watch_chunker,
+            db_pool=watch_pool,
+            no_classify=no_classify,
+        )
 
         observer = Observer()
-        observer.schedule(ReindexHandler(), str(repo_root), recursive=True)
+        observer.schedule(handler, str(repo_root), recursive=True)
         observer.start()
         try:
             while True:
