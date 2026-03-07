@@ -18,3 +18,4 @@
 2026-03-07 Improved desktop startup dependency error handling to show a clear `pip install -r requirements-gui.txt` fix when `PySide6` is missing.
 2026-03-07 Rewrote module intent synthesis: class-level weighted graph (Louvain with tunable resolution), hub dampening, recursive splitting, narrative domain-specific intents; added member_symbols column and [synthesis] config.
 2026-03-07 Added --machine flag to synthesize_modules.py for deterministic desktop progress; added synthesis docs to README.
+2026-03-08 Added resolution input to desktop synthesis; fixed MCP server for Gemini compatibility (restored Streamable HTTP, removed Zod defaults, and allowed 0.0.0.0 binding).
