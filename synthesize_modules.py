@@ -17,6 +17,9 @@ console = Console()
 def synthesize_directory_modules(conn, repo: str, min_files: int, classifier: IntentClassifier):
     cur = conn.cursor()
     
+    # Clear existing directory modules to ensure old paths are removed
+    cur.execute("DELETE FROM module_intents WHERE repo = %s AND kind = 'directory'", (repo,))
+    
     cur.execute("""
         SELECT 
             f.path,
@@ -106,6 +109,10 @@ Respond with ONLY this JSON object:
 
 def synthesize_logical_modules(conn, repo: str, min_files: int, classifier: IntentClassifier):
     cur = conn.cursor()
+    
+    # Clear existing logical modules for this repo to ensure old partitions are removed
+    cur.execute("DELETE FROM module_intents WHERE repo = %s AND kind = 'logical'", (repo,))
+    
     cur.execute("""
         WITH reference_edges AS (
             SELECT sf.path as source, tf.path as target
