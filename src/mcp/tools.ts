@@ -110,7 +110,7 @@ export function registerTools(server: McpServer): void {
       query: z
         .string()
         .describe("Short technical search phrase. Prefer 2-8 words with framework names, APIs, or domain terms."),
-      limit: z.number().optional().default(10).describe("Max results (default 10)."),
+      limit: z.number().optional().describe("Max results (default 10)."),
       intent: z
         .enum(INTENT_VALUES)
         .optional()
@@ -123,10 +123,9 @@ export function registerTools(server: McpServer): void {
       threshold: z
         .number()
         .optional()
-        .default(0.3)
         .describe("Semantic similarity threshold 0-1. Lower this when codebase terminology is sparse."),
     },
-    async ({ repo, query: searchQuery, limit, intent, language, path_prefix, threshold }) => {
+    async ({ repo, query: searchQuery, limit = 10, intent, language, path_prefix, threshold = 0.3 }) => {
       logToolInvocation("semantic_search", {
         repo,
         query: searchQuery,
@@ -343,9 +342,9 @@ export function registerTools(server: McpServer): void {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol name to find references for."),
       file: z.string().optional().describe("Optional target declaration file filter to disambiguate common names."),
-      limit: z.number().optional().default(25).describe("Max references to return (default 25)."),
+      limit: z.number().optional().describe("Max references to return (default 25)."),
     },
-    async ({ repo, name, file, limit }) => {
+    async ({ repo, name, file, limit = 25 }) => {
       logToolInvocation("find_references", { repo, name, file, limit });
 
       const repoCheck = await requireRepository(repo);
@@ -402,12 +401,11 @@ export function registerTools(server: McpServer): void {
       direction: z
         .enum(["inbound", "outbound", "both"])
         .optional()
-        .default("both")
         .describe("Use inbound for reverse dependencies, outbound for direct dependencies, both for a quick graph walk."),
-      max_depth: z.number().optional().default(3).describe("Depth limit for the graph walk (default 3)."),
-      summary: z.boolean().optional().default(false).describe("When true, returns aggregated counts by file and kind instead of individual edges."),
+      max_depth: z.number().optional().describe("Depth limit for the graph walk (default 3)."),
+      summary: z.boolean().optional().describe("When true, returns aggregated counts by file and kind instead of individual edges."),
     },
-    async ({ repo, path, direction, max_depth, summary }) => {
+    async ({ repo, path, direction = "both", max_depth = 3, summary = false }) => {
       logToolInvocation("trace_dependencies", { repo, path, direction, max_depth, summary });
 
       const repoCheck = await requireRepository(repo);
@@ -616,9 +614,9 @@ export function registerTools(server: McpServer): void {
     "Gives an architectural map of a directory or subsystem. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
-      path_prefix: z.string().optional().default("").describe("Directory or path prefix to inspect."),
+      path_prefix: z.string().optional().describe("Directory or path prefix to inspect."),
     },
-    async ({ repo, path_prefix }) => {
+    async ({ repo, path_prefix = "" }) => {
       logToolInvocation("get_file_map", { repo, path_prefix });
 
       const repoCheck = await requireRepository(repo);
@@ -801,9 +799,9 @@ export function registerTools(server: McpServer): void {
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().describe("Path prefix identifying the subsystem to analyze (e.g. 'src/payments/')."),
-      top_n: z.number().optional().default(20).describe("Number of top coupling pairs to return (default 20)."),
+      top_n: z.number().optional().describe("Number of top coupling pairs to return (default 20)."),
     },
-    async ({ repo, path_prefix, top_n }) => {
+    async ({ repo, path_prefix, top_n = 20 }) => {
       logToolInvocation("analyze_coupling", { repo, path_prefix, top_n });
 
       const repoCheck = await requireRepository(repo);
@@ -905,10 +903,10 @@ export function registerTools(server: McpServer): void {
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().describe("Path prefix of the module (e.g. 'src/auth/')."),
-      include_unused: z.boolean().optional().default(false)
+      include_unused: z.boolean().optional()
         .describe("Also show exported symbols with no external consumers."),
     },
-    async ({ repo, path_prefix, include_unused }) => {
+    async ({ repo, path_prefix, include_unused = false }) => {
       logToolInvocation("extract_module_interface", { repo, path_prefix, include_unused });
 
       const repoCheck = await requireRepository(repo);
@@ -999,12 +997,12 @@ export function registerTools(server: McpServer): void {
     "Detects circular dependency chains in the file dependency graph. Cycles are the primary obstacle to modularization. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
-      path_prefix: z.string().optional().default("")
+      path_prefix: z.string().optional()
         .describe("Optional path prefix to scope cycle detection to a subsystem."),
-      max_cycle_length: z.number().optional().default(6)
+      max_cycle_length: z.number().optional()
         .describe("Maximum cycle length to search for (default 6, max 10)."),
     },
-    async ({ repo, path_prefix, max_cycle_length }) => {
+    async ({ repo, path_prefix = "", max_cycle_length = 6 }) => {
       const clampedMax = Math.min(max_cycle_length, 10);
       logToolInvocation("find_dependency_cycles", { repo, path_prefix, max_cycle_length: clampedMax });
 
@@ -1268,9 +1266,9 @@ export function registerTools(server: McpServer): void {
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path_prefix: z.string().optional().describe("Optional path prefix to filter modules."),
-      kind: z.enum(["directory", "logical", "all"]).optional().default("all").describe("Module kind to return."),
+      kind: z.enum(["directory", "logical", "all"]).optional().describe("Module kind to return."),
     },
-    async ({ repo, path_prefix, kind }) => {
+    async ({ repo, path_prefix, kind = "all" }) => {
       logToolInvocation("get_module_map", { repo, path_prefix, kind });
 
       const repoCheck = await requireRepository(repo);
