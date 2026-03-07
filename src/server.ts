@@ -69,6 +69,15 @@ async function startHttpTransport(): Promise<void> {
     console.error("[mcp] SSE session established");
   });
 
+  // Compatibility for older Streamable HTTP clients that POST directly to the same endpoint
+  app.post("/mcp", async (req: any, res: any) => {
+    if (!transport) {
+      res.status(400).json({ error: "No active SSE session" });
+      return;
+    }
+    await transport.handlePostMessage(req, res);
+  });
+
   app.post("/mcp/message", async (req: any, res: any) => {
     if (!transport) {
       res.status(400).json({ error: "No active SSE session" });
