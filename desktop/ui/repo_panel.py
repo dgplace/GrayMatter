@@ -46,6 +46,7 @@ class RepoCard(QFrame):
 
     request_index = Signal(str)         # (repo_path,)
     request_reindex = Signal(str)       # (repo_path,) — force=True
+    request_synthesize = Signal(str)    # (repo_name,) — synthesize modules
     request_cancel = Signal(str)        # (repo_name,)
     request_watch = Signal(str, bool)   # (repo_path, enabled)
     request_remove = Signal(str)        # (repo_path,)
@@ -110,6 +111,11 @@ class RepoCard(QFrame):
         self._btn_reindex.clicked.connect(self._on_reindex_clicked)
         actions.addWidget(self._btn_reindex)
 
+        self._btn_synthesize = QPushButton("Synthesize")
+        self._btn_synthesize.setToolTip("Run module intent synthesis")
+        self._btn_synthesize.clicked.connect(self._on_synthesize_clicked)
+        actions.addWidget(self._btn_synthesize)
+
         self._btn_watch = QPushButton()
         self._update_watch_button()
         self._btn_watch.clicked.connect(self._on_watch_clicked)
@@ -134,6 +140,7 @@ class RepoCard(QFrame):
             self._btn_index.clicked.disconnect()
             self._btn_index.clicked.connect(self._on_cancel_clicked)
             self._btn_reindex.setEnabled(False)
+            self._btn_synthesize.setEnabled(False)
         else:
             self._btn_index.setText("Index Now")
             try:
@@ -142,6 +149,7 @@ class RepoCard(QFrame):
                 pass
             self._btn_index.clicked.connect(self._on_index_clicked)
             self._btn_reindex.setEnabled(True)
+            self._btn_synthesize.setEnabled(True)
             self._update_status_badge()
 
     def set_watching(self, watching: bool) -> None:
@@ -171,6 +179,10 @@ class RepoCard(QFrame):
     def _on_reindex_clicked(self) -> None:
         """@brief Emit request_reindex to trigger a force re-index."""
         self.request_reindex.emit(self._path)
+
+    def _on_synthesize_clicked(self) -> None:
+        """@brief Emit request_synthesize with this repo's name."""
+        self.request_synthesize.emit(self._name)
 
     def _on_cancel_clicked(self) -> None:
         """@brief Emit request_cancel with this repo's name."""
@@ -379,6 +391,7 @@ class RepoPanel(QWidget):
         card = RepoCard(repo, self._engine, self._watcher)
         card.request_index.connect(self._on_request_index)
         card.request_reindex.connect(self._on_request_reindex)
+        card.request_synthesize.connect(self._on_request_synthesize)
         card.request_cancel.connect(self._engine.cancel_ingestion)
         card.request_watch.connect(self._on_request_watch)
         card.request_remove.connect(self._on_request_remove)
@@ -411,6 +424,34 @@ class RepoPanel(QWidget):
         started = self._engine.start_ingestion(repo_path, force=True)
         if started:
             self.ingestion_started.emit(Path(repo_path).name)
+
+    @Slot(str)
+    def _on_request_synthesize(self, repo_name: str) -> None:
+        """@brief Run synthesize_modules.py in a background process.
+
+        @param repo_name Name of the repository to synthesize.
+        """
+        import subprocess
+        import sys
+        
+        QMessageBox.information(
+            self,
+            "Synthesis Started",
+            f"Module synthesis for '{repo_name}' has started in the background. It may take a few minutes."
+        )
+        
+        def run_synthesis():
+            try:
+                subprocess.run(
+                    [sys.executable, "synthesize_modules.py", "--repo", repo_name, "--mode", "all"],
+                    cwd=str(Path(__file__).resolve().parent.parent.parent),
+                    capture_output=True
+                )
+            except Exception as e:
+                print(f"Synthesis failed: {e}")
+
+        import threading
+        threading.Thread(target=run_synthesis, daemon=True).start()
 
     @Slot(str, bool)
     def _on_request_watch(self, repo_path: str, enable: bool) -> None:
