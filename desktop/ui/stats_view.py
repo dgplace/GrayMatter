@@ -93,6 +93,19 @@ class StatsView(QWidget):
         lang_layout.addWidget(self._lang_table)
         root.addWidget(lang_group)
 
+        # Module intents table
+        modules_group = QGroupBox("Module Intents")
+        modules_layout = QVBoxLayout(modules_group)
+
+        self._modules_table = QTableWidget(0, 5)
+        self._modules_table.setHorizontalHeaderLabels(["Module", "Kind", "Role", "Dominant Intent", "Files"])
+        self._modules_table.horizontalHeader().setStretchLastSection(True)
+        self._modules_table.verticalHeader().setVisible(False)
+        self._modules_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._modules_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        modules_layout.addWidget(self._modules_table)
+        root.addWidget(modules_group)
+
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: gray; font-style: italic;")
         root.addWidget(self._status_label)
@@ -163,6 +176,17 @@ class StatsView(QWidget):
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self._lang_table.setItem(row, 1, count_item)
 
+        modules = self._engine.get_module_intents(repo_name)
+        self._modules_table.setRowCount(len(modules))
+        for row, mod in enumerate(modules):
+            self._modules_table.setItem(row, 0, QTableWidgetItem(mod["module_name"] or mod["module_path"]))
+            self._modules_table.setItem(row, 1, QTableWidgetItem(mod["kind"]))
+            self._modules_table.setItem(row, 2, QTableWidgetItem(mod["role"] or "unknown"))
+            self._modules_table.setItem(row, 3, QTableWidgetItem(mod["dominant_intent"] or "unknown"))
+            count_item = QTableWidgetItem(str(mod["file_count"]))
+            count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._modules_table.setItem(row, 4, count_item)
+
         self._status_label.setText(f"Stats for '{repo_name}'")
         self._status_label.setStyleSheet("color: gray; font-style: italic;")
 
@@ -173,6 +197,7 @@ class StatsView(QWidget):
             if val:
                 val.setText("—")
         self._lang_table.setRowCount(0)
+        self._modules_table.setRowCount(0)
 
     @Slot(str, dict)
     def _on_repo_completed(self, repo_name: str, _stats: dict) -> None:
