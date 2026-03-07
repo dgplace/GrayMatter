@@ -309,6 +309,11 @@ class IngestionEngine(QObject):
     repo_completed = Signal(str, dict)     # (repo_name, stats)
     repo_error = Signal(str, str)          # (repo_name, error_message)
 
+    # Synthesis signals
+    synthesis_started = Signal(str)        # (repo_name)
+    synthesis_completed = Signal(str, str) # (repo_name, message)
+    synthesis_error = Signal(str, str)     # (repo_name, error_message)
+
     # Internal: routes _cleanup() back to the main thread via Qt queued delivery.
     _cleanup_requested = Signal(str)       # (repo_name)
 
@@ -506,6 +511,57 @@ class IngestionEngine(QObject):
             return rows
         except Exception:
             return []
+
+    def get_module_intents(self, repo_name: str) -> list[dict]:
+        """@brief Query the module_intents table.
+
+        @param repo_name Filter to a specific repo.
+        @return List of module dicts.
+        """
+        try:
+            cfg = load_config(self._config_path)
+            cfg = _deep_merge(cfg, self._config_overrides)
+            conn = psycopg2.connect(cfg["database"]["url"])
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT module_path, kind, module_name, summary, role, dominant_intent, file_count, chunk_count
+                   FROM module_intents
+                   WHERE repo = %s
+                   ORDER BY kind, module_path""",
+                (repo_name,)
+            )
+            cols = ["module_path", "kind", "module_name", "summary", "role", "dominant_intent", "file_count", "chunk_count"]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+            conn.close()
+            return rows
+        except Exception:
+            return []
+
+    def start_synthesis(self, repo_name: str) -> None:
+        """@brief Launch module synthesis for one repository on a background thread.
+
+        @param repo_name Repository name to synthesize.
+        """
+        self.synthesis_started.emit(repo_name)
+
+        def run_synthesis():
+            import subprocess
+            try:
+                # The python script itself handles UPSERT and will clear/overwrite automatically
+                result = subprocess.run(
+                    [sys.executable, "synthesize_modules.py", "--repo", repo_name, "--mode", "all"],
+                    cwd=str(_ROOT),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    self.synthesis_completed.emit(repo_name, "Synthesis complete")
+                else:
+                    self.synthesis_error.emit(repo_name, result.stderr.strip() or "Unknown error")
+            except Exception as e:
+                self.synthesis_error.emit(repo_name, str(e))
+
+        threading.Thread(target=run_synthesis, daemon=True).start()
 
     def _cleanup(self, repo_name: str) -> None:
         """@brief Remove the active entry for a completed or errored ingestion run.

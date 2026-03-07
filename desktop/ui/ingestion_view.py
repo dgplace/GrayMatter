@@ -151,6 +151,54 @@ class _RepoProgressSection(QGroupBox):
         self.deleteLater()
 
 
+class _SynthesisProgressSection(QGroupBox):
+    """@brief UI section for one active or recently completed synthesis run."""
+
+    def __init__(self, repo_name: str) -> None:
+        super().__init__(f"Synthesis: {repo_name}")
+        self._repo_name = repo_name
+
+        layout = QVBoxLayout(self)
+
+        self._bar = QProgressBar()
+        self._bar.setMinimum(0)
+        self._bar.setMaximum(0) # Indeterminate progress
+        layout.addWidget(self._bar)
+
+        action_row = QHBoxLayout()
+        self._status_label = QLabel("Synthesizing module intents...")
+        action_row.addWidget(self._status_label)
+        action_row.addStretch()
+
+        self._btn_dismiss = QPushButton("Dismiss")
+        self._btn_dismiss.setFixedWidth(80)
+        self._btn_dismiss.setEnabled(False)
+        self._btn_dismiss.clicked.connect(self._dismiss)
+        action_row.addWidget(self._btn_dismiss)
+        layout.addLayout(action_row)
+
+    def mark_completed(self, message: str) -> None:
+        self._bar.setMaximum(100)
+        self._bar.setValue(100)
+        self._status_label.setText(f"Done — {message}")
+        self._btn_dismiss.setEnabled(True)
+
+    def mark_error(self, message: str) -> None:
+        self._bar.setMaximum(100)
+        self._bar.setValue(100)
+        self._status_label.setText(f"Error: {message}")
+        self._status_label.setStyleSheet("color: red;")
+        self._btn_dismiss.setEnabled(True)
+
+    def _dismiss(self) -> None:
+        parent = self.parentWidget()
+        if parent:
+            layout = parent.layout()
+            if layout:
+                layout.removeWidget(self)
+        self.deleteLater()
+
+
 class _WatchStatusSection(QGroupBox):
     """@brief Persistent status section for one actively watched repository.
 
@@ -241,7 +289,7 @@ class IngestionView(QWidget):
         root_layout.addWidget(sep)
 
         # Shared file log
-        log_label = QLabel("Recent files:")
+        log_label = QLabel("Recent files & events:")
         log_label.setStyleSheet("font-weight: bold;")
         root_layout.addWidget(log_label)
 
@@ -260,6 +308,11 @@ class IngestionView(QWidget):
         engine.repo_completed.connect(self._on_repo_completed)
         engine.repo_error.connect(self._on_repo_error)
         engine.file_processed.connect(self._on_file_processed)
+
+        # Wire engine signals (synthesis)
+        engine.synthesis_started.connect(self._on_synthesis_started)
+        engine.synthesis_completed.connect(self._on_synthesis_completed)
+        engine.synthesis_error.connect(self._on_synthesis_error)
 
         # Wire watcher signals (watch-mode re-indexes)
         watcher.watch_started.connect(self._on_watch_started)
@@ -338,6 +391,32 @@ class IngestionView(QWidget):
         """
         icon = {"indexed": "+", "skipped": "=", "errors": "!"}.get(status, "?")
         self._log.appendPlainText(f"[{icon}] {repo_name}/{path}")
+
+    # ------------------------------------------------------------------
+    # Synthesis signal handlers
+    # ------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_synthesis_started(self, repo_name: str) -> None:
+        self._empty_label.hide()
+        section = _SynthesisProgressSection(repo_name)
+        self._sections[f"synth_{repo_name}"] = section
+        self._sections_layout.insertWidget(0, section)
+        self._log.appendPlainText(f"[i] {repo_name}: Module synthesis started...")
+
+    @Slot(str, str)
+    def _on_synthesis_completed(self, repo_name: str, message: str) -> None:
+        section = self._sections.get(f"synth_{repo_name}")
+        if section and isinstance(section, _SynthesisProgressSection):
+            section.mark_completed(message)
+        self._log.appendPlainText(f"[+] {repo_name}: {message}")
+
+    @Slot(str, str)
+    def _on_synthesis_error(self, repo_name: str, error: str) -> None:
+        section = self._sections.get(f"synth_{repo_name}")
+        if section and isinstance(section, _SynthesisProgressSection):
+            section.mark_error(error)
+        self._log.appendPlainText(f"[!] {repo_name}: Synthesis error: {error}")
 
     # ------------------------------------------------------------------
     # Watcher signal handlers
