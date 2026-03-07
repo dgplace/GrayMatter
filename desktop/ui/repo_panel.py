@@ -427,31 +427,12 @@ class RepoPanel(QWidget):
 
     @Slot(str)
     def _on_request_synthesize(self, repo_name: str) -> None:
-        """@brief Run synthesize_modules.py in a background process.
+        """@brief Start module synthesis via the engine and switch to ingestion view.
 
         @param repo_name Name of the repository to synthesize.
         """
-        import subprocess
-        import sys
-        
-        QMessageBox.information(
-            self,
-            "Synthesis Started",
-            f"Module synthesis for '{repo_name}' has started in the background. It may take a few minutes."
-        )
-        
-        def run_synthesis():
-            try:
-                subprocess.run(
-                    [sys.executable, "synthesize_modules.py", "--repo", repo_name, "--mode", "all"],
-                    cwd=str(Path(__file__).resolve().parent.parent.parent),
-                    capture_output=True
-                )
-            except Exception as e:
-                print(f"Synthesis failed: {e}")
-
-        import threading
-        threading.Thread(target=run_synthesis, daemon=True).start()
+        self._engine.start_synthesis(repo_name)
+        self.ingestion_started.emit(repo_name)
 
     @Slot(str, bool)
     def _on_request_watch(self, repo_path: str, enable: bool) -> None:
