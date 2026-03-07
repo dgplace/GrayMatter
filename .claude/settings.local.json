@@ -15,7 +15,14 @@
       "Bash(git push origin main)",
       "Bash(ls -la /Users/david/src/AI/GrayMatter/*.py)",
       "Bash(wc -l /Users/david/src/AI/GrayMatter/*.py /Users/david/src/AI/GrayMatter/src/**/*.ts)",
-      "Bash(/Users/david/src/AI/GrayMatter/.venv/bin/python --version)"
+      "Bash(/Users/david/src/AI/GrayMatter/.venv/bin/python --version)",
+      "Bash(python3 -c \"import networkx as nx; print\\(dir\\(nx.community\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"import networkx as nx; print\\([x for x in dir\\(nx.community\\) if ''louvain'' in x.lower\\(\\) or ''modularity'' in x.lower\\(\\) or ''partition'' in x.lower\\(\\)]\\)\")",
+      "Bash(.venv/bin/python3 -c \"import inspect, networkx as nx; print\\(inspect.signature\\(nx.community.louvain_communities\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"import inspect, networkx as nx; print\\(inspect.signature\\(nx.community.greedy_modularity_communities\\)\\)\")",
+      "Bash(.venv/bin/python3 -c \"import networkx as nx; print\\(nx.__version__\\)\")",
+      "Bash(psql -p 5433 -U codebrain -d codebrain -c \"ALTER TABLE module_intents ADD COLUMN IF NOT EXISTS member_symbols TEXT[];\")",
+      "Bash(.venv/bin/python3 -c \":*)"
     ]
   }
 }

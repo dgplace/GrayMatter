@@ -310,9 +310,10 @@ class IngestionEngine(QObject):
     repo_error = Signal(str, str)          # (repo_name, error_message)
 
     # Synthesis signals
-    synthesis_started = Signal(str)        # (repo_name)
-    synthesis_completed = Signal(str, str) # (repo_name, message)
-    synthesis_error = Signal(str, str)     # (repo_name, error_message)
+    synthesis_started = Signal(str)            # (repo_name)
+    synthesis_progress = Signal(str, int, int, str)  # (repo_name, current, total, phase)
+    synthesis_completed = Signal(str, str)     # (repo_name, message)
+    synthesis_error = Signal(str, str)         # (repo_name, error_message)
 
     # Internal: routes _cleanup() back to the main thread via Qt queued delivery.
     _cleanup_requested = Signal(str)       # (repo_name)
@@ -537,27 +538,51 @@ class IngestionEngine(QObject):
         except Exception:
             return []
 
-    def start_synthesis(self, repo_name: str) -> None:
+    def start_synthesis(self, repo_name: str, resolution: float = 1.5) -> None:
         """@brief Launch module synthesis for one repository on a background thread.
 
+        Runs synthesize_modules.py with --machine flag to receive parseable
+        progress lines (SYNTH:phase:current:total) and emits synthesis_progress
+        signals for deterministic UI updates.
+
         @param repo_name Repository name to synthesize.
+        @param resolution Louvain resolution (higher = smaller communities).
         """
         self.synthesis_started.emit(repo_name)
 
         def run_synthesis():
             import subprocess
             try:
-                # The python script itself handles UPSERT and will clear/overwrite automatically
-                result = subprocess.run(
-                    [sys.executable, "synthesize_modules.py", "--repo", repo_name, "--mode", "all"],
+                proc = subprocess.Popen(
+                    [sys.executable, "synthesize_modules.py",
+                     "--repo", repo_name, "--mode", "all", "--machine",
+                     "--resolution", str(resolution)],
                     cwd=str(_ROOT),
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
+                    bufsize=1,
                 )
-                if result.returncode == 0:
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line.startswith("SYNTH:"):
+                        continue
+                    parts = line.split(":")
+                    if len(parts) == 4 and parts[1] in ("dir", "logical"):
+                        try:
+                            current = int(parts[2])
+                            total = int(parts[3])
+                            self.synthesis_progress.emit(
+                                repo_name, current, total, parts[1])
+                        except ValueError:
+                            pass
+                proc.wait()
+                if proc.returncode == 0:
                     self.synthesis_completed.emit(repo_name, "Synthesis complete")
                 else:
-                    self.synthesis_error.emit(repo_name, result.stderr.strip() or "Unknown error")
+                    stderr = proc.stderr.read().strip() if proc.stderr else ""
+                    self.synthesis_error.emit(
+                        repo_name, stderr or "Unknown error")
             except Exception as e:
                 self.synthesis_error.emit(repo_name, str(e))
 

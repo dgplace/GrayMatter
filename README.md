@@ -58,6 +58,29 @@ The desktop app provides:
 - Settings dialog for database, embedding, and classifier configuration
 - System tray integration — close the window while watchers continue running
 
+## Synthesize Module Intents
+
+After ingestion, run synthesis to identify logical modules and generate domain-specific intents:
+
+```bash
+python synthesize_modules.py --repo <repo-name>
+python synthesize_modules.py --repo <repo-name> --mode logical --resolution 2.5
+```
+
+Options:
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--mode` | `all` | `directory`, `logical`, or `all` |
+| `--min-files` | `3` | Minimum files for a module to be created |
+| `--resolution` | `1.5` | Louvain resolution. **Higher = smaller, more focused modules**. Lower = broader groupings. |
+| `--max-community-size` | `20` | Modules exceeding this are recursively split |
+| `--hub-percentile` | `90.0` | Degree percentile above which nodes are dampened to prevent utility classes from merging unrelated clusters |
+
+These can also be set in `codebrain.toml` under `[synthesis]`.
+
+The desktop app runs synthesis from the repo panel with a deterministic progress bar.
+
 ## Run the MCP Server
 
 ### Local

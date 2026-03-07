@@ -152,9 +152,22 @@ class _RepoProgressSection(QGroupBox):
 
 
 class _SynthesisProgressSection(QGroupBox):
-    """@brief UI section for one active or recently completed synthesis run."""
+    """@brief UI section for one active or recently completed synthesis run.
+
+    Displays a deterministic progress bar driven by SYNTH:phase:current:total
+    lines emitted by synthesize_modules.py --machine.
+    """
+
+    _PHASE_LABELS = {
+        "dir": "Synthesizing directory modules",
+        "logical": "Synthesizing logical modules",
+    }
 
     def __init__(self, repo_name: str) -> None:
+        """@brief Construct the synthesis progress section.
+
+        @param repo_name Repository name shown in the group box title.
+        """
         super().__init__(f"Synthesis: {repo_name}")
         self._repo_name = repo_name
 
@@ -162,11 +175,11 @@ class _SynthesisProgressSection(QGroupBox):
 
         self._bar = QProgressBar()
         self._bar.setMinimum(0)
-        self._bar.setMaximum(0) # Indeterminate progress
+        self._bar.setMaximum(0)  # indeterminate until first progress signal
         layout.addWidget(self._bar)
 
         action_row = QHBoxLayout()
-        self._status_label = QLabel("Synthesizing module intents...")
+        self._status_label = QLabel("Starting synthesis...")
         action_row.addWidget(self._status_label)
         action_row.addStretch()
 
@@ -177,13 +190,30 @@ class _SynthesisProgressSection(QGroupBox):
         action_row.addWidget(self._btn_dismiss)
         layout.addLayout(action_row)
 
+    def update_progress(self, current: int, total: int, phase: str) -> None:
+        """@brief Advance the progress bar from a synthesis progress signal.
+
+        @param current Items processed so far in this phase.
+        @param total Total items in this phase.
+        @param phase Phase identifier ('dir' or 'logical').
+        """
+        if total > 0:
+            self._bar.setMaximum(total)
+            self._bar.setValue(current)
+            self._bar.setFormat(f"%v / {total}")
+        label = self._PHASE_LABELS.get(phase, phase)
+        self._status_label.setText(f"{label}... ({current}/{total})")
+
     def mark_completed(self, message: str) -> None:
+        """@brief Update the section to reflect completed synthesis."""
         self._bar.setMaximum(100)
         self._bar.setValue(100)
+        self._bar.setFormat("100%")
         self._status_label.setText(f"Done — {message}")
         self._btn_dismiss.setEnabled(True)
 
     def mark_error(self, message: str) -> None:
+        """@brief Update the section to reflect a synthesis error."""
         self._bar.setMaximum(100)
         self._bar.setValue(100)
         self._status_label.setText(f"Error: {message}")
@@ -191,6 +221,7 @@ class _SynthesisProgressSection(QGroupBox):
         self._btn_dismiss.setEnabled(True)
 
     def _dismiss(self) -> None:
+        """@brief Remove this section from its parent layout."""
         parent = self.parentWidget()
         if parent:
             layout = parent.layout()
@@ -311,6 +342,7 @@ class IngestionView(QWidget):
 
         # Wire engine signals (synthesis)
         engine.synthesis_started.connect(self._on_synthesis_started)
+        engine.synthesis_progress.connect(self._on_synthesis_progress)
         engine.synthesis_completed.connect(self._on_synthesis_completed)
         engine.synthesis_error.connect(self._on_synthesis_error)
 
@@ -403,6 +435,20 @@ class IngestionView(QWidget):
         self._sections[f"synth_{repo_name}"] = section
         self._sections_layout.insertWidget(0, section)
         self._log.appendPlainText(f"[i] {repo_name}: Module synthesis started...")
+
+    @Slot(str, int, int, str)
+    def _on_synthesis_progress(self, repo_name: str, current: int,
+                               total: int, phase: str) -> None:
+        """@brief Update synthesis progress bar from machine-readable output.
+
+        @param repo_name Repository name.
+        @param current Items processed so far.
+        @param total Total items in this phase.
+        @param phase Phase identifier ('dir' or 'logical').
+        """
+        section = self._sections.get(f"synth_{repo_name}")
+        if section and isinstance(section, _SynthesisProgressSection):
+            section.update_progress(current, total, phase)
 
     @Slot(str, str)
     def _on_synthesis_completed(self, repo_name: str, message: str) -> None:

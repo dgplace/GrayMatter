@@ -314,6 +314,7 @@ CREATE TABLE IF NOT EXISTS module_intents (
   dominant_intent TEXT,
   file_count      INTEGER NOT NULL DEFAULT 0,
   chunk_count     INTEGER NOT NULL DEFAULT 0,
+  member_symbols  TEXT[],                            -- class/type names in this module
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (repo, module_path)
 );

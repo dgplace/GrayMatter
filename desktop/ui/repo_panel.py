@@ -13,6 +13,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -46,7 +47,7 @@ class RepoCard(QFrame):
 
     request_index = Signal(str)         # (repo_path,)
     request_reindex = Signal(str)       # (repo_path,) — force=True
-    request_synthesize = Signal(str)    # (repo_name,) — synthesize modules
+    request_synthesize = Signal(str, float) # (repo_name, resolution) — synthesize modules
     request_cancel = Signal(str)        # (repo_name,)
     request_watch = Signal(str, bool)   # (repo_path, enabled)
     request_remove = Signal(str)        # (repo_path,)
@@ -116,6 +117,15 @@ class RepoCard(QFrame):
         self._btn_synthesize.clicked.connect(self._on_synthesize_clicked)
         actions.addWidget(self._btn_synthesize)
 
+        actions.addWidget(QLabel("Res:"))
+        self._resolution_input = QDoubleSpinBox()
+        self._resolution_input.setRange(0.1, 10.0)
+        self._resolution_input.setSingleStep(0.1)
+        self._resolution_input.setValue(1.5)
+        self._resolution_input.setToolTip("Louvain resolution (higher = finer/smaller communities, default 1.5)")
+        self._resolution_input.setFixedWidth(60)
+        actions.addWidget(self._resolution_input)
+
         self._btn_watch = QPushButton()
         self._update_watch_button()
         self._btn_watch.clicked.connect(self._on_watch_clicked)
@@ -141,6 +151,7 @@ class RepoCard(QFrame):
             self._btn_index.clicked.connect(self._on_cancel_clicked)
             self._btn_reindex.setEnabled(False)
             self._btn_synthesize.setEnabled(False)
+            self._resolution_input.setEnabled(False)
         else:
             self._btn_index.setText("Index Now")
             try:
@@ -150,6 +161,7 @@ class RepoCard(QFrame):
             self._btn_index.clicked.connect(self._on_index_clicked)
             self._btn_reindex.setEnabled(True)
             self._btn_synthesize.setEnabled(True)
+            self._resolution_input.setEnabled(True)
             self._update_status_badge()
 
     def set_watching(self, watching: bool) -> None:
@@ -181,8 +193,8 @@ class RepoCard(QFrame):
         self.request_reindex.emit(self._path)
 
     def _on_synthesize_clicked(self) -> None:
-        """@brief Emit request_synthesize with this repo's name."""
-        self.request_synthesize.emit(self._name)
+        """@brief Emit request_synthesize with this repo's name and resolution."""
+        self.request_synthesize.emit(self._name, self._resolution_input.value())
 
     def _on_cancel_clicked(self) -> None:
         """@brief Emit request_cancel with this repo's name."""
@@ -425,13 +437,14 @@ class RepoPanel(QWidget):
         if started:
             self.ingestion_started.emit(Path(repo_path).name)
 
-    @Slot(str)
-    def _on_request_synthesize(self, repo_name: str) -> None:
+    @Slot(str, float)
+    def _on_request_synthesize(self, repo_name: str, resolution: float) -> None:
         """@brief Start module synthesis via the engine and switch to ingestion view.
 
         @param repo_name Name of the repository to synthesize.
+        @param resolution Louvain resolution.
         """
-        self._engine.start_synthesis(repo_name)
+        self._engine.start_synthesis(repo_name, resolution)
         self.ingestion_started.emit(repo_name)
 
     @Slot(str, bool)

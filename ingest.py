@@ -212,6 +212,10 @@ SCHEMA_PATCHES = [
     """
     CREATE INDEX IF NOT EXISTS idx_module_intents_kind ON module_intents(repo, kind)
     """,
+    """
+    ALTER TABLE module_intents
+    ADD COLUMN IF NOT EXISTS member_symbols TEXT[]
+    """,
 ]
 
 REFERENCE_PATTERNS = [

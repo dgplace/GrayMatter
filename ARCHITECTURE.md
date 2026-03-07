@@ -129,6 +129,27 @@ Semantic search combines vector similarity with keyword fallback and result fusi
 
 The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_dependency_cycles`, `find_modularization_seams`) operate on the same indexed data without re-ingestion. They compose SQL queries over the `dependencies`, `symbol_references`, and `symbols` tables to answer structural questions. Graph algorithms (cycle detection) live in `src/mcp/graph.ts` as pure functions operating on in-memory edge lists extracted from the database. This keeps graph logic testable and separated from SQL and MCP concerns.
 
+### Module intent synthesis
+
+`synthesize_modules.py` runs as a post-ingestion step to identify logical modules and assign domain-specific narrative intents.  Two module kinds are produced:
+
+**Directory modules** (`kind='directory'`): one per directory with enough files.  The LLM receives file summaries and chunk-level `intent_detail` to produce a narrative intent describing what the directory accomplishes in the application.
+
+**Logical modules** (`kind='logical'`): cross-directory groupings detected via weighted community detection on a class-level coupling graph.
+
+The class-level graph is built from `symbols` (filtered to classes, structs, interfaces, protocols, enums), `dependencies` (symbol-to-symbol edges), and `symbol_references` (source-symbol-to-target-name edges).  Edges are weighted by reference count so tightly-coupled classes cluster together while loose imports have little influence.
+
+Three mechanisms prevent overbroad modules:
+- **Hub dampening**: high-degree nodes (above the 90th-percentile) have edge weights scaled down by `median_degree / node_degree` so utility types don't merge unrelated clusters.
+- **Louvain with tunable resolution**: `nx.community.louvain_communities(G, weight='weight', resolution=R)` with default R=1.5 (higher = smaller communities).
+- **Recursive splitting**: communities exceeding `max_community_size` (default 20) are re-partitioned at doubled resolution until they fit.
+
+For repos with fewer than 5 class-level symbols, synthesis falls back to a weighted file-level graph using the same algorithm.
+
+Synthesis parameters are configurable via `codebrain.toml` `[synthesis]` section or CLI flags (`--resolution`, `--max-community-size`, `--hub-percentile`).
+
+Each module's `dominant_intent` is a narrative sentence describing what the code is trying to accomplish (the "story"), not a generic category like "business logic".  The `member_symbols` column stores the class/type names in each logical module.
+
 ### Explicit metadata over query-time inference
 
 Dependencies, references, and symbols are extracted during ingestion and stored explicitly so query-time work is focused on filtering, ranking, and formatting.

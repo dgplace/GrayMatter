@@ -16,3 +16,5 @@
 2026-03-07 Added explicit classifier fallback reporting across CLI and desktop flows: per-file warnings, summary fallback counts, and tests covering warning propagation.
 2026-03-07 Finished desktop re-index action wiring: added RepoPanel handling for RepoCard `Re-index` to launch force ingestion (equivalent to `ingest.py --force`).
 2026-03-07 Improved desktop startup dependency error handling to show a clear `pip install -r requirements-gui.txt` fix when `PySide6` is missing.
+2026-03-07 Rewrote module intent synthesis: class-level weighted graph (Louvain with tunable resolution), hub dampening, recursive splitting, narrative domain-specific intents; added member_symbols column and [synthesis] config.
+2026-03-07 Added --machine flag to synthesize_modules.py for deterministic desktop progress; added synthesis docs to README.
