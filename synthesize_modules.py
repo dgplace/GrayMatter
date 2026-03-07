@@ -71,12 +71,17 @@ Files:
 {files_context}
 
 Respond with ONLY this JSON object:
-{{"summary": "<1-2 sentences on what this directory module does>", "role": "<architectural role>"}}"""
+{{
+  "summary": "<1-2 sentences on what this directory module does>",
+  "role": "<architectural role>",
+  "dominant_intent": "<a full sentence describing the primary intent or purpose of this module>"
+}}"""
 
         try:
-            res = classifier._parse_json(classifier._generate(prompt, max_tokens=150))
+            res = classifier._parse_json(classifier._generate(prompt, max_tokens=200))
             summary = res.get("summary", "")
             role = res.get("role", "unknown")
+            dominant_intent = res.get("dominant_intent", dominant_intent)
         except Exception:
             summary = "Directory module"
             role = "module"
@@ -186,13 +191,19 @@ Files:
 {files_context}
 
 Respond with ONLY this JSON object:
-{{"module_name": "<short descriptive slug>", "summary": "<1-2 sentences on what this logical module does>", "role": "<architectural role>"}}"""
+{{
+  "module_name": "<short descriptive slug>",
+  "summary": "<1-2 sentences on what this logical module does>",
+  "role": "<architectural role>",
+  "dominant_intent": "<a full sentence describing the primary intent or purpose of this module>"
+}}"""
 
         try:
-            res = classifier._parse_json(classifier._generate(prompt, max_tokens=150))
+            res = classifier._parse_json(classifier._generate(prompt, max_tokens=200))
             module_name = res.get("module_name", f"logical-{i}")
             summary = res.get("summary", "")
             role = res.get("role", "unknown")
+            dominant_intent = res.get("dominant_intent", dominant_intent)
         except Exception:
             module_name = f"logical-{i}"
             summary = "Logical module"
