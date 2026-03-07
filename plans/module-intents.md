@@ -1,35 +1,51 @@
-# Plan: Module-Level Intent Synthesis
+# Plan: Module-Level Intent Synthesis (Repository-Current)
 
-## Context
-The database has chunk-level `intent_detail` and file-level `summary`/`role`, but no concept of a subsystem or logical module. This adds a `module_intents` table and a standalone `synthesize_modules.py` script (manual post-ingestion step) that discovers modules two ways:
-- **directory** — any folder containing ≥ 3 source files (based on `files.path`)
-- **logical** — communities detected from the file-to-file dependency/reference graph (networkx community detection)
+## Current State (2026-03-07)
+- `module_intents` is not implemented yet: no table, no synthesis script, no MCP tool, no app endpoint.
+- MCP currently includes index management tools: `get_index_size` and `delete_index`.
+- The embedded CodeBrain app (`/ui`) already exposes that new index-management capability via:
+  - `GET /ui/api/repos/:repo/size`
+  - `DELETE /ui/api/repos/:repo`
+  - `Index Management` panel in `src/web/ui.ts`
 
-Both kinds are stored in the same table (distinguished by `kind` column). A new MCP tool `get_module_map` surfaces the data.
+This plan adds module-level intent synthesis and exposes it in both MCP and the embedded CodeBrain app, following the same store/routes/ui pattern used by index management.
 
----
+## Goal
+Add repository-scoped module intent synthesis with two module kinds:
+- `directory`: folder-based modules (>= N source files)
+- `logical`: cross-folder communities from dependency/reference graph
 
-## Files to Modify / Create
+Then expose results in:
+- MCP tool: `get_module_map`
+- CodeBrain app (`/ui`): module-intents panel + API route
+- Desktop app (PySide6): module-intents panel in the Statistics workflow
+
+## Files To Modify / Create
 
 | File | Change |
 |---|---|
 | `schema.sql` | Add `module_intents` DDL |
-| `ingest.py` | Add `module_intents` CREATE to `SCHEMA_PATCHES` |
-| `src/db.ts` | Add `module_intents` CREATE to `SCHEMA_PATCHES` |
-| `synthesize_modules.py` | **New file** — CLI script (both modes) |
-| `src/repositories/store.ts` | Add `getModuleIntents()` |
-| `src/mcp/tools.ts` | Add `get_module_map` tool |
+| `ingest.py` | Add `module_intents` create/index statements to `SCHEMA_PATCHES` |
+| `src/db.ts` | Add `module_intents` create/index statements to `SCHEMA_PATCHES` |
+| `synthesize_modules.py` | New standalone synthesis CLI |
+| `src/repositories/store.ts` | Add `ModuleIntent` type + `getModuleIntents()` |
+| `src/mcp/tools.ts` | Add `get_module_map` MCP tool |
+| `src/web/routes.ts` | Add `GET /ui/api/repos/:repo/modules` endpoint |
+| `src/web/ui.ts` | Add module-intents panel and rendering logic |
+| `desktop/core/engine.py` | Add DB query helper for module intents |
+| `desktop/ui/stats_view.py` | Add module-intents display section for selected repo |
+| `tests/web-ui.test.ts` | Assert module panel/API hook is rendered |
 
----
+## 1. Schema
 
-## 1. Schema — `module_intents` table
+Add `module_intents`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS module_intents (
   repo            TEXT NOT NULL,
-  module_path     TEXT NOT NULL,   -- dir path OR "_logical/<slug>"
-  kind            TEXT NOT NULL DEFAULT 'directory',  -- 'directory' | 'logical'
-  module_name     TEXT,            -- human-readable name (LLM-generated for logical)
+  module_path     TEXT NOT NULL, -- directory path OR "_logical/<slug>"
+  kind            TEXT NOT NULL DEFAULT 'directory', -- 'directory' | 'logical'
+  module_name     TEXT,
   summary         TEXT,
   role            TEXT,
   dominant_intent TEXT,
@@ -42,197 +58,120 @@ CREATE INDEX IF NOT EXISTS idx_module_intents_repo ON module_intents(repo);
 CREATE INDEX IF NOT EXISTS idx_module_intents_kind ON module_intents(repo, kind);
 ```
 
-Add this to:
-- `schema.sql` (end of file)
-- `SCHEMA_PATCHES` list in `ingest.py`
-- `SCHEMA_PATCHES` array in `src/db.ts`
+Apply in `schema.sql`, `ingest.py` patch list, and `src/db.ts` patch list.
 
----
+## 2. Synthesis CLI (`synthesize_modules.py`)
 
-## 2. `synthesize_modules.py` — New Standalone Script
+CLI:
 
-### CLI
-```
+```bash
 python synthesize_modules.py --repo <name> [--mode directory|logical|all] [--min-files 3] [--config codebrain.toml]
 ```
-Default `--mode all` (runs both passes).
 
-### Shared setup
-- `load_config()` — import directly from `ingest.py`
-- `IntentClassifier` — import from `classifier.py`
-- DB connection via `psycopg2.connect(config["database"]["url"])`
+Implementation notes:
+- reuse `load_config()` from `ingest.py` (includes `.env/codebrain.toml` merge behavior)
+- reuse `IntentClassifier` for summary/role/dominant-intent synthesis
+- default mode `all`
+- upsert into `module_intents` by `(repo, module_path)`
 
----
+Directory pass:
+- group by parent directory from `files.path`
+- include only dirs with `>= min-files`
+- aggregate file summaries/intents/chunk counts
+- synthesize `summary`, `role`, `dominant_intent`
 
-### Pass 1: Directory modules
+Logical pass:
+- build file graph from `dependencies` + `symbol_references`
+- run `networkx.community.greedy_modularity_communities`
+- drop communities below `min-files`
+- skip communities fully contained in one directory
+- synthesize name + summary/role/dominant-intent
+- write as `_logical/<slug>`
 
-1. Discover directories with ≥ N files:
-   ```sql
-   SELECT regexp_replace(path, '/[^/]+$', '') AS dir, COUNT(*) AS file_count
-   FROM files WHERE repo = %s
-   GROUP BY dir HAVING COUNT(*) >= %s
-   ORDER BY dir
-   ```
-2. For each directory, fetch file summaries + dominant intent + chunk counts:
-   ```sql
-   SELECT f.path, f.summary, f.role,
-     (SELECT mode() WITHIN GROUP (ORDER BY cc.intent)
-      FROM code_chunks cc WHERE cc.file_id = f.id) AS dom_intent,
-     (SELECT COUNT(*) FROM code_chunks cc WHERE cc.file_id = f.id) AS chunk_count
-   FROM files f
-   WHERE f.repo = %s AND regexp_replace(f.path, '/[^/]+$', '') = %s
-   ```
-3. Build `DIRECTORY_MODULE_PROMPT`:
-   ```
-   Analyze this source directory and synthesize its architectural role.
+## 3. MCP Surface
 
-   Module path: {module_path}
-   Files ({file_count}):
-   {file_list_with_summaries}
+In `src/repositories/store.ts`:
+- add `ModuleIntent` type
+- add `getModuleIntents(repo, pathPrefix?, kind?)`
 
-   Intent distribution: {intent_counts}
+In `src/mcp/tools.ts`:
+- register `get_module_map` with required `repo` and optional `path_prefix`, `kind`
+- enforce repo existence with current `requireRepository()` flow
+- format output in grouped sections (`directory`, `logical`)
+- return explicit “run synthesize_modules.py first” message when empty
 
-   Respond with ONLY:
-   {"summary": "<2-3 sentences>", "role": "<architectural role>", "dominant_intent": "<category>"}
-   ```
-4. Call `classifier._generate(prompt, max_tokens=200)` + `classifier._parse_json()`
-5. Upsert with `kind='directory'`, `module_name=<last path component>`
+## 4. CodeBrain App (`/ui`) Exposure
 
----
+Add a module-intents read path to the existing embedded app (which already has index-management controls):
 
-### Pass 2: Logical modules (dependency community detection)
+1. `src/web/routes.ts`
+- add `GET /ui/api/repos/:repo/modules`
+- params:
+  - `kind` (`directory|logical|all`, default `all`)
+  - `path_prefix` (optional)
+- use `repositoryExists()` guard + `getModuleIntents()`
 
-**Requires:** `pip install networkx`
+2. `src/web/ui.ts`
+- add a new sidebar panel: `Module Intents`
+- fetch modules on repo selection and refresh
+- render grouped directory/logical cards:
+  - module name/path
+  - role + dominant intent
+  - file/chunk counts
+  - summary
+- preserve existing `Index Management` behavior unchanged
 
-1. Load all file-to-file edges for the repo:
-   ```sql
-   SELECT DISTINCT sf.path AS source, tf.path AS target
-   FROM dependencies d
-   JOIN files sf ON sf.id = d.source_file_id AND sf.repo = %s
-   JOIN files tf ON tf.id = d.target_file_id AND tf.repo = %s
-   WHERE sf.path <> tf.path
-   UNION
-   SELECT DISTINCT sf.path AS source, tf.path AS target
-   FROM symbol_references sr
-   JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = %s
-   JOIN symbols s ON lower(s.name) = lower(sr.target_name)
-   JOIN files tf ON tf.id = s.file_id AND tf.repo = %s
-   WHERE sf.path <> tf.path
-   ```
-2. Build undirected `networkx.Graph` from edges
-3. Run `nx.community.greedy_modularity_communities(G)` (no external deps beyond networkx)
-4. Filter: keep communities with ≥ `--min-files` nodes
-5. Skip communities where all files share the same directory (already covered by directory pass)
-6. For each community, fetch file summaries from DB and build `LOGICAL_MODULE_PROMPT`:
-   ```
-   Identify the functional purpose of this group of source files that form a cohesive logical module.
+## 5. Desktop App Exposure (`python -m desktop`)
 
-   Repository: {repo}
-   Files ({count}):
-   {file_list_with_summaries}
+Expose module intents in the existing desktop stats flow without changing watcher/ingestion behavior:
 
-   These files are grouped because they have strong call/reference relationships.
+1. `desktop/core/engine.py`
+- add `get_module_intents(repo_name: str, kind: str = "all", path_prefix: str = "") -> list[dict]`
+- query `module_intents` with repo/kind/path filtering, ordered by `kind, module_path`
+- return empty list on DB errors to match current desktop defensive behavior
 
-   Respond with ONLY:
-   {"name": "<short-hyphenated-slug>", "summary": "<2-3 sentences on the shared purpose>",
-    "role": "<architectural role>", "dominant_intent": "<category>"}
-   ```
-7. Upsert with:
-   - `module_path = "_logical/" + name_slug`
-   - `kind = 'logical'`
-   - `module_name` = LLM-returned name
+2. `desktop/ui/stats_view.py`
+- add a "Module Intents" group below current summary/language blocks
+- add a `kind` selector (`all`, `directory`, `logical`) and refresh button reuse
+- render each module with:
+  - module name/path
+  - role + dominant intent
+  - file/chunk counts
+  - summary text
+- refresh module-intent data on:
+  - repo selection change
+  - manual refresh click
+  - `engine.repo_completed` for the selected repo
 
----
+## 6. Verification
 
-## 3. `src/repositories/store.ts` — `getModuleIntents()`
+1. Schema patching:
+- run `python ingest.py /path/to/repo --force` once
+- confirm `module_intents` exists
 
-```typescript
-export type ModuleIntent = {
-  module_path: string;
-  kind: string;
-  module_name: string | null;
-  summary: string | null;
-  role: string | null;
-  dominant_intent: string | null;
-  file_count: number;
-  chunk_count: number;
-  updated_at: string;
-};
+2. Synthesis:
+- `python synthesize_modules.py --repo <repo> --mode all`
+- verify rows:
+  - `SELECT * FROM module_intents WHERE repo='<repo>' ORDER BY kind, module_path;`
 
-export async function getModuleIntents(
-  repo: string,
-  pathPrefix = "",
-  kind?: string,
-): Promise<ModuleIntent[]> {
-  const result = await query(
-    `SELECT module_path, kind, module_name, summary, role, dominant_intent, file_count, chunk_count, updated_at
-     FROM module_intents
-     WHERE repo = $1
-       AND ($2 = '' OR module_path LIKE $2 || '%')
-       AND ($3::text IS NULL OR kind = $3)
-     ORDER BY kind, module_path`,
-    [repo, pathPrefix, kind ?? null],
-  );
-  return result.rows as ModuleIntent[];
-}
-```
+3. MCP:
+- call `get_module_map` with `repo=<repo>, kind=all`
+- verify grouped directory/logical output
 
----
+4. Embedded app:
+- run server, open `/ui`
+- select repo and verify module panel loads
+- verify `/ui/api/repos/:repo/modules` returns data
 
-## 4. `src/mcp/tools.ts` — `get_module_map` tool
+5. Desktop app:
+- run `python -m desktop`
+- open Statistics for an indexed repo
+- verify module intents render and `kind` filter switches between `all/directory/logical`
+- run ingestion for the selected repo and confirm the panel auto-refreshes on completion
 
-Add after `get_file_map`, import `getModuleIntents` from `store.ts`:
+6. Tests/build:
+- `npm test`
+- `node node_modules/typescript/lib/tsc.js --noEmit`
+- `.venv/bin/python -m pytest -q`
 
-```typescript
-server.tool(
-  "get_module_map",
-  "Returns synthesized module-level intents for a repository — both folder-based and logical (cross-folder) modules. Useful to understand subsystem purposes before diving into files. Run synthesize_modules.py first. Repository scope is required.",
-  {
-    repo: z.string().min(1).describe("Repository name. Required."),
-    path_prefix: z.string().optional().default("").describe("Filter to a path prefix (directory modules only)."),
-    kind: z.enum(["directory", "logical", "all"]).optional().default("all").describe("Filter by module kind."),
-  },
-  async ({ repo, path_prefix, kind }) => {
-    logToolInvocation("get_module_map", { repo, path_prefix, kind });
-    const repoCheck = await requireRepository(repo);
-    if (repoCheck) return repoCheck;
-
-    const kindFilter = kind === "all" ? undefined : kind;
-    const modules = await getModuleIntents(repo, path_prefix, kindFilter);
-
-    if (modules.length === 0) {
-      return { content: [{ type: "text", text: `No module intents found for \`${repo}\`. Run synthesize_modules.py first.` }] };
-    }
-
-    const dirModules = modules.filter(m => m.kind === "directory");
-    const logicalModules = modules.filter(m => m.kind === "logical");
-
-    const formatModule = (m: ModuleIntent) =>
-      `**${m.module_name || m.module_path}** (${m.file_count} files | ${m.chunk_count} chunks)\n` +
-      `  Role: ${m.role || "unknown"} | Intent: ${m.dominant_intent || "unknown"}\n` +
-      (m.summary ? `  ${m.summary}` : "");
-
-    const parts: string[] = [`# Module Map: ${repo}\n`];
-    if (dirModules.length > 0) {
-      parts.push(`## Directory Modules\n\n${dirModules.map(formatModule).join("\n\n")}`);
-    }
-    if (logicalModules.length > 0) {
-      parts.push(`## Logical Modules (Cross-Folder)\n\n${logicalModules.map(formatModule).join("\n\n")}`);
-    }
-
-    return { content: [{ type: "text", text: parts.join("\n\n") }] };
-  },
-);
-```
-
----
-
-## Verification
-
-1. **Schema**: Run `python ingest.py --repo <name>` or start the TS server — both apply `SCHEMA_PATCHES`, which creates `module_intents`
-2. **Directory modules**: `python synthesize_modules.py --repo <name> --mode directory`
-   - Check: `SELECT * FROM module_intents WHERE repo='<name>' AND kind='directory';`
-3. **Logical modules**: `python synthesize_modules.py --repo <name> --mode logical`
-   - Check: `SELECT * FROM module_intents WHERE repo='<name>' AND kind='logical';`
-4. **MCP tool**: Call `get_module_map` with `repo` + `kind="all"` — should return formatted sections
-5. **TypeScript**: `node node_modules/typescript/lib/tsc.js --noEmit` — clean
+Note: desktop UI currently has limited automated coverage in this repo; manual verification remains required for the new desktop module-intents view.

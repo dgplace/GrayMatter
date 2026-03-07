@@ -191,6 +191,27 @@ SCHEMA_PATCHES = [
     CREATE INDEX IF NOT EXISTS idx_symbol_refs_kind
     ON symbol_references(reference_kind)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS module_intents (
+      repo            TEXT NOT NULL,
+      module_path     TEXT NOT NULL,
+      kind            TEXT NOT NULL DEFAULT 'directory',
+      module_name     TEXT,
+      summary         TEXT,
+      role            TEXT,
+      dominant_intent TEXT,
+      file_count      INTEGER NOT NULL DEFAULT 0,
+      chunk_count     INTEGER NOT NULL DEFAULT 0,
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (repo, module_path)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_module_intents_repo ON module_intents(repo)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_module_intents_kind ON module_intents(repo, kind)
+    """,
 ]
 
 REFERENCE_PATTERNS = [

@@ -226,6 +226,60 @@ export async function getRepositoryStats(repo: string): Promise<RepositoryStats 
   };
 }
 
+/** @brief Repository-scoped module intent representation. */
+export type ModuleIntent = {
+  repo: string;
+  module_path: string;
+  kind: string;
+  module_name: string | null;
+  summary: string | null;
+  role: string | null;
+  dominant_intent: string | null;
+  file_count: number;
+  chunk_count: number;
+  updated_at: Date;
+};
+
+/**
+ * @brief Loads module intents for a repository.
+ * @param repo Repository name.
+ * @param kind Optional module kind (directory, logical).
+ * @param pathPrefix Optional module path prefix to filter by.
+ * @returns Array of module intents.
+ */
+export async function getModuleIntents(repo: string, kind?: string, pathPrefix?: string): Promise<ModuleIntent[]> {
+  const conditions = ["repo = $1"];
+  const params: any[] = [repo];
+
+  if (kind && kind !== 'all') {
+    params.push(kind);
+    conditions.push(`kind = $${params.length}`);
+  }
+
+  if (pathPrefix) {
+    params.push(`${pathPrefix}%`);
+    conditions.push(`module_path LIKE $${params.length}`);
+  }
+
+  const result = await query(
+    `SELECT * FROM module_intents WHERE ${conditions.join(" AND ")} ORDER BY kind, module_path`,
+    params
+  );
+
+  return result.rows.map((row: any) => ({
+    repo: String(row.repo),
+    module_path: String(row.module_path),
+    kind: String(row.kind),
+    module_name: row.module_name ? String(row.module_name) : null,
+    summary: row.summary ? String(row.summary) : null,
+    role: row.role ? String(row.role) : null,
+    dominant_intent: row.dominant_intent ? String(row.dominant_intent) : null,
+    file_count: Number(row.file_count),
+    chunk_count: Number(row.chunk_count),
+    updated_at: new Date(row.updated_at)
+  }));
+}
+
 /** @brief Storage size breakdown for a repository's index. */
 export type RepositoryIndexSize = {
   repo: string;

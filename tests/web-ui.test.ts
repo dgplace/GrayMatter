@@ -16,5 +16,6 @@ test("renderWebUi includes repo API hooks and graph container", () => {
   assert.match(html, /id="repoSelect"/);
   assert.match(html, /id="graph"/);
   assert.match(html, /id="toolCallBody"/);
+  assert.match(html, /id="modulesBody"/);
   assert.match(html, /CodeBrain Semantic Graph Browser/);
 });
