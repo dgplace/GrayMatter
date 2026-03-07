@@ -31,7 +31,7 @@ export const EMBED_API_KEY = process.env.EMBED_API_KEY;
 export const MCP_TRANSPORT = (process.env.MCP_TRANSPORT || "http").toLowerCase();
 
 /** @brief Host interface bound by the MCP HTTP server. */
-export const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
+export const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "0.0.0.0";
 
 /** @brief Port used by the MCP HTTP server. */
 export const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3001");
