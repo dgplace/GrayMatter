@@ -65,16 +65,16 @@ def synthesize_directory_modules(conn, repo: str, min_files: int, classifier: In
         dominant_intent = max(intent_counts.items(), key=lambda x: x[1])[0] if intent_counts else 'unknown'
         
         files_context = "\n".join([f"- {f['path']}: {f['role']} - {f['summary']}" for f in data['files'][:20]])
-        prompt = f"""Analyze this directory module.
+        prompt = f"""Analyze this directory module within a software application.
 
 Files:
 {files_context}
 
 Respond with ONLY this JSON object:
 {{
-  "summary": "<1-2 sentences on what this directory module does>",
+  "summary": "<1-2 sentences summarizing what this directory module does in the application>",
   "role": "<architectural role>",
-  "dominant_intent": "<a full sentence describing the primary intent or purpose of this module>"
+  "dominant_intent": "<A clear, domain-specific sentence describing the actual business or application value of this module. Do not use generic words like 'utility', 'components', or 'files'. Explain what the application is trying to achieve with this code.>"
 }}"""
 
         try:
@@ -183,19 +183,19 @@ def synthesize_logical_modules(conn, repo: str, min_files: int, classifier: Inte
         dominant_intent = max(intent_counts.items(), key=lambda x: x[1])[0] if intent_counts else 'unknown'
         
         files_context = "\n".join(files_context_lines[:20])
-        prompt = f"""Analyze these files which form a cross-directory logical module.
-The module name should reflect the specific architectural purpose or intent of this group of files, NOT the name of the repository itself. Use a kebab-case slug.
-For example, instead of 'my-project-name', use 'auth-service', 'data-pipeline', 'ui-components', etc.
+        prompt = f"""Analyze these files which form a cross-directory logical module within a software application.
+The module name should reflect the specific domain or business purpose of this group of files, NOT the name of the repository itself. Use a kebab-case slug.
+For example, instead of 'my-project-name', use 'user-authentication', 'payment-processing', 'document-indexing', etc.
 
 Files:
 {files_context}
 
 Respond with ONLY this JSON object:
 {{
-  "module_name": "<short descriptive slug>",
-  "summary": "<1-2 sentences on what this logical module does>",
+  "module_name": "<short descriptive domain-specific slug>",
+  "summary": "<1-2 sentences summarizing what this logical module does in the application>",
   "role": "<architectural role>",
-  "dominant_intent": "<a full sentence describing the primary intent or purpose of this module>"
+  "dominant_intent": "<A clear, domain-specific sentence describing the actual business or application value of this module. Do not use generic words like 'utility', 'components', or 'files'. Explain what the application is trying to achieve with this code.>"
 }}"""
 
         try:
