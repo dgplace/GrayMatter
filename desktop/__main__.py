@@ -12,7 +12,15 @@ are discoverable by load_config().
 
 import sys
 
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtWidgets import QApplication
+except ModuleNotFoundError as exc:
+    if exc.name == "PySide6":
+        raise SystemExit(
+            "Missing GUI dependency 'PySide6'. Install desktop requirements with:\n"
+            "  pip install -r requirements-gui.txt"
+        ) from exc
+    raise
 
 from desktop.app import CodeBrainApp
 

@@ -15,3 +15,4 @@
 2026-03-07 Added cross-platform desktop application (desktop/ package, PySide6): multi-repo management, live ingestion progress, concurrent file watching with system tray, stats/history views, settings dialog; adds requirements-gui.txt.
 2026-03-07 Added explicit classifier fallback reporting across CLI and desktop flows: per-file warnings, summary fallback counts, and tests covering warning propagation.
 2026-03-07 Finished desktop re-index action wiring: added RepoPanel handling for RepoCard `Re-index` to launch force ingestion (equivalent to `ingest.py --force`).
+2026-03-07 Improved desktop startup dependency error handling to show a clear `pip install -r requirements-gui.txt` fix when `PySide6` is missing.

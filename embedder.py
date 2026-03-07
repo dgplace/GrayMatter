@@ -30,7 +30,8 @@ class EmbeddingClient:
         )
         self.url = (embed_cfg.get("base_url") or embed_cfg.get("ollama_url") or default_url).rstrip("/")
         self.api_key = embed_cfg.get("api_key")
-        self.max_input_chars = embed_cfg.get("max_input_chars", 4000)
+        self.context_length = embed_cfg.get("context_length", 8192)
+        self.max_input_chars = embed_cfg.get("max_input_chars", self.context_length * 4)
         self.client = httpx.Client(timeout=60.0)
 
     def _headers(self) -> dict[str, str]:
@@ -59,7 +60,9 @@ class EmbeddingClient:
             }
             endpoint = "/v1/embeddings"
         else:
-            payload = {"model": self.model, "input": input_data}
+            payload = {"model": self.model, "input": input_data, "truncate": True}
+            if self.context_length:
+                payload["options"] = {"num_ctx": self.context_length}
             endpoint = "/api/embed"
 
         endpoint_url = f"{self.url}{endpoint}"

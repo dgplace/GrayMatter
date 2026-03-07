@@ -170,6 +170,12 @@ class ASTChunker:
         Split a file into semantically meaningful chunks.
         Uses tree-sitter for supported languages, falls back to line-based chunking.
         """
+        import re
+        # Strip decorative block comment separators like /**********/ to save token space
+        content = re.sub(r"^[ \t]*/\*[\* \t]*\*/[ \t]*\n?", "", content, flags=re.MULTILINE)
+        # Strip decorative line comment separators like // =======
+        content = re.sub(r"^[ \t]*//[ \t]*[-=+\*]{3,}[ \t]*\n?", "", content, flags=re.MULTILINE)
+
         if not language:
             return self._fallback_chunk(content, file_path)
 
