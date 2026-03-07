@@ -91,7 +91,7 @@ class StatsView(QWidget):
         self._lang_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._lang_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         lang_layout.addWidget(self._lang_table)
-        root.addWidget(lang_group)
+        root.addWidget(lang_group, stretch=1)
 
         # Module intents table
         modules_group = QGroupBox("Module Intents")
@@ -104,7 +104,7 @@ class StatsView(QWidget):
         self._modules_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._modules_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         modules_layout.addWidget(self._modules_table)
-        root.addWidget(modules_group)
+        root.addWidget(modules_group, stretch=2)
 
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: gray; font-style: italic;")
