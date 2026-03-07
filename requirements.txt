@@ -16,3 +16,4 @@ tree-sitter-c-sharp>=0.23
 watchdog>=4.0
 rich>=13.0
 click>=8.1
+networkx>=3.0
