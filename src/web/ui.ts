@@ -316,6 +316,13 @@ export function renderWebUi(): string {
       </section>
 
       <section class="panel">
+        <h2>Module Intents</h2>
+        <div class="body" id="modulesBody">
+          <p class="warn" id="modulesStatus">Select a repository.</p>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Index Management</h2>
         <div class="body" id="indexMgmtBody">
           <p class="warn" id="indexStatus">Select a repository.</p>
@@ -358,6 +365,7 @@ export function renderWebUi(): string {
     const statusEl = document.getElementById('status');
     const toolCallBody = document.getElementById('toolCallBody');
     const indexMgmtBody = document.getElementById('indexMgmtBody');
+    const modulesBody = document.getElementById('modulesBody');
     const graphEl = document.getElementById('graph');
     const edgeTableBody = document.querySelector('#edgeTable tbody');
     const legend = document.getElementById('legend');
@@ -428,6 +436,28 @@ export function renderWebUi(): string {
         renderIndexSize(size);
       } catch (e) {
         indexMgmtBody.innerHTML = '<p class="warn">Failed to load index size: ' + esc(e && e.message ? e.message : String(e)) + '</p>';
+      }
+    }
+
+    async function loadModules(repo) {
+      try {
+        const data = await getJson('/ui/api/repos/' + encodeURIComponent(repo) + '/modules');
+        const modules = data.modules || [];
+        if (!modules.length) {
+          modulesBody.innerHTML = '<p class="warn">No modules found. Run module synthesis from the Desktop application or CLI.</p>';
+          return;
+        }
+
+        modulesBody.innerHTML = modules.map((m) => (
+          '<div style="margin-bottom:1rem; border-bottom:1px solid #d8cdbb; padding-bottom:0.5rem;">'
+          + '<div class="metric"><span style="font-weight:bold; color:#13201b">' + esc(m.module_name || m.module_path) + '</span><span class="pill">' + esc(m.kind) + '</span></div>'
+          + '<div style="font-size:0.85rem; color:#476258; margin:0.3rem 0;">' + esc(m.role || 'unknown') + ' &bull; ' + esc(m.dominant_intent || 'unknown') + '</div>'
+          + '<div style="font-size:0.8rem; margin-bottom:0.3rem;">' + Number(m.file_count) + ' files, ' + Number(m.chunk_count) + ' chunks</div>'
+          + '<div style="font-size:0.88rem;">' + esc(m.summary || '') + '</div>'
+          + '</div>'
+        )).join('');
+      } catch (e) {
+        modulesBody.innerHTML = '<p class="warn">Failed to load modules: ' + esc(e && e.message ? e.message : String(e)) + '</p>';
       }
     }
 
@@ -605,6 +635,7 @@ export function renderWebUi(): string {
       renderGraph(graph);
       updateStatus('Showing ' + repo + '.');
       void loadIndexSize(repo);
+      void loadModules(repo);
     }
 
     async function boot() {

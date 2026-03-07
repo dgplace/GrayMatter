@@ -14,6 +14,7 @@ import {
   getRepositoryStats,
   listRepositories,
   repositoryExists,
+  getModuleIntents,
 } from "../repositories/store.js";
 import {
   formatCouplingAnalysis,
@@ -1258,6 +1259,37 @@ export function registerTools(server: McpServer): void {
       ];
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
+    "get_module_map",
+    "Returns a repository-scoped module map, detailing directory-based and logical modules and their roles.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      path_prefix: z.string().optional().describe("Optional path prefix to filter modules."),
+      kind: z.enum(["directory", "logical", "all"]).optional().default("all").describe("Module kind to return."),
+    },
+    async ({ repo, path_prefix, kind }) => {
+      logToolInvocation("get_module_map", { repo, path_prefix, kind });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      const modules = await getModuleIntents(repo, kind, path_prefix);
+      if (modules.length === 0) {
+        return { content: [{ type: "text", text: `No modules found in \`${repo}\`. You may need to run module synthesis first.` }] };
+      }
+
+      const formatted = modules.map((m: any) => {
+        return `## ${m.module_path} (${m.kind})\n` +
+               `Role: ${m.role}\n` +
+               `Dominant Intent: ${m.dominant_intent}\n` +
+               `Files: ${m.file_count}, Chunks: ${m.chunk_count}\n` +
+               `Summary: ${m.summary}\n`;
+      }).join("\n");
+
+      return { content: [{ type: "text", text: formatted }] };
     },
   );
 
