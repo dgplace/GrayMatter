@@ -78,6 +78,14 @@ class EmbeddingClient:
                 f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}): {e}"
             ) from e
         if not response.is_success:
+            if response.status_code == 400 and "exceeds the context length" in response.text:
+                if isinstance(input_data, list):
+                    truncated_data = [s[:len(s)//2] for s in input_data]
+                else:
+                    truncated_data = input_data[:len(input_data)//2]
+                if (isinstance(truncated_data, list) and any(len(s) > 0 for s in truncated_data)) or (isinstance(truncated_data, str) and len(truncated_data) > 0):
+                    return self._post(truncated_data)
+
             raise RuntimeError(
                 "Embedding request failed "
                 f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}, "
