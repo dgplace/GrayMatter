@@ -6,10 +6,17 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const CODEBRAIN_USAGE_URI = "codebrain://usage";
+export const CODEBRAIN_SERVER_INSTRUCTIONS = [
+  "Use CodeBrain first for repository-scoped discovery that benefits from structure or intent, such as symbol lookup, module mapping, semantic search, and dependency exploration.",
+  "Use fast local text or filename search tools such as `rg` to complement it for exact searches, quick result validation, and any case where the CodeBrain index is stale, noisy, incomplete, or returns an error.",
+].join(" ");
 const CODEBRAIN_USAGE_TEXT = [
   "# CodeBrain Usage",
   "",
   "CodeBrain query tools now require explicit repository scope.",
+  "",
+  "Use CodeBrain first for repository-scoped discovery that benefits from structure or intent, such as symbol lookup, module mapping, semantic search, and dependency exploration.",
+  "Use fast local text or filename search tools such as `rg` to complement it for exact searches, quick result validation, and any case where the CodeBrain index is stale, noisy, incomplete, or returns an error.",
   "",
   "Recommended workflow:",
   "1. Start with `list_repositories` to discover indexed repos.",

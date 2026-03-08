@@ -20,3 +20,5 @@
 2026-03-07 Added --machine flag to synthesize_modules.py for deterministic desktop progress; added synthesis docs to README.
 2026-03-08 Added resolution input to desktop synthesis; fixed MCP server for Gemini compatibility (restored Streamable HTTP, removed Zod defaults, and allowed 0.0.0.0 binding).
 2026-03-08 Fixed ingestion to prune stale files from the database; added on_created, on_deleted, and on_moved handlers to watch mode for real-time index synchronization. Updated desktop UI to show pruning and deletion events in the ingestion log via new Qt signals. Updated file watcher to rigorously ignore .git and other excluded paths in all event handlers.
+2026-03-08 Added top-level MCP server instructions and usage guidance telling agents to use CodeBrain first for structured repo discovery and `rg` as the fallback/complement for exact or stale-index cases.
+2026-03-08 Broadened MCP guidance to recommend fast local text or filename search tools such as `rg`, instead of assuming every client environment exposes `rg`.

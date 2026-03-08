@@ -19,7 +19,7 @@ import {
   MCP_TRANSPORT,
 } from "./config.js";
 import { closePool, ensureSchema } from "./db.js";
-import { registerResources } from "./mcp/resources.js";
+import { CODEBRAIN_SERVER_INSTRUCTIONS, registerResources } from "./mcp/resources.js";
 import { registerTools } from "./mcp/tools.js";
 import { registerWebRoutes } from "./web/routes.js";
 
@@ -31,6 +31,7 @@ export function createServer(): McpServer {
   const server = new McpServer({
     name: "codebrain",
     version: "1.1.0",
+    description: CODEBRAIN_SERVER_INSTRUCTIONS,
   });
 
   registerResources(server);
