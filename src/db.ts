@@ -114,11 +114,24 @@ export async function query(text: string, params?: unknown[]): Promise<pg.QueryR
 
 /**
  * @brief Applies MCP-required schema patches for backwards-compatible startup.
+ *
+ * Uses a PostgreSQL advisory lock to prevent concurrent DDL from multiple
+ * server instances colliding on catalog tuples.
  * @returns Promise resolved when all patches are applied.
  */
 export async function ensureSchema(): Promise<void> {
-  for (const statement of SCHEMA_PATCHES) {
-    await query(statement);
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock(42)");
+    for (const statement of SCHEMA_PATCHES) {
+      await client.query(statement);
+    }
+    await client.query("SELECT pg_advisory_unlock(42)");
+  } catch (err) {
+    await client.query("SELECT pg_advisory_unlock(42)").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
