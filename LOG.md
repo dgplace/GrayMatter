@@ -23,3 +23,4 @@
 2026-03-08 Added top-level MCP server instructions and usage guidance telling agents to use CodeBrain first for structured repo discovery and `rg` as the fallback/complement for exact or stale-index cases.
 2026-03-08 Broadened MCP guidance to recommend fast local text or filename search tools such as `rg`, instead of assuming every client environment exposes `rg`.
 2026-03-08 Added a top-level executable `desktop.py` launcher that re-runs `.venv/bin/python -m desktop`.
+2026-05-06 Updated plane.json to point at the CodeBrain Plane project and refreshed estimate_points IDs from project calibration items (1, 2, 3, 5, 8, 13), then verified mappings against live Plane items.

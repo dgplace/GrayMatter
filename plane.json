@@ -1,0 +1,16 @@
+{
+  "base_url": "http://192.168.0.151:8081",
+  "api_key": "plane_api_5930592f2f2448c7a56cc67a7ebf2b50",
+  "default_workspace": "lesplace",
+  "default_project_name": "CodeBrain",
+  "default_project_identifier": "CODEBRAIN",
+  "default_project_id": "8717f30a-5bc1-4065-9d26-eb304bdc089e",
+  "estimate_points": {
+    "1": "97f1e0aa-667c-4fd7-909f-cd4cc11c49af",
+    "2": "f9f2f595-06ce-4948-90e5-de3568c7f798",
+    "3": "67c683b5-b19f-46bf-b23f-acc59c04c2b2",
+    "5": "482dd5c8-7908-4bf5-aa44-1f4cfbc61c73",
+    "8": "0d9fc09d-5383-4886-8141-7dcd8af9d567",
+    "13": "f6bf030c-9dfe-4f8f-b9b2-9e8216399748"
+  }
+}
