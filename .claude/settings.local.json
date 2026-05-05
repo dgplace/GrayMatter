@@ -22,7 +22,8 @@
       "Bash(.venv/bin/python3 -c \"import inspect, networkx as nx; print\\(inspect.signature\\(nx.community.greedy_modularity_communities\\)\\)\")",
       "Bash(.venv/bin/python3 -c \"import networkx as nx; print\\(nx.__version__\\)\")",
       "Bash(psql -p 5433 -U codebrain -d codebrain -c \"ALTER TABLE module_intents ADD COLUMN IF NOT EXISTS member_symbols TEXT[];\")",
-      "Bash(.venv/bin/python3 -c \":*)"
+      "Bash(.venv/bin/python3 -c \":*)",
+      "Bash(python scripts/plane_api.py items)"
     ]
   }
 }

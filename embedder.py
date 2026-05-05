@@ -137,12 +137,17 @@ class EmbeddingClient:
         self._validate_dimensions(embeddings)
         return embeddings[0]
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """@brief Generate embeddings for multiple texts in one request.
+    def embed_batch(self, texts: list[str], batch_size: int = 50) -> list[list[float]]:
+        """@brief Generate embeddings for multiple texts, batching to avoid timeouts or limits.
 
         @param texts Source texts to embed.
+        @param batch_size Maximum number of items per request.
         @return Embedding vectors in the same order as the input list.
         """
-        embeddings = self._extract_embeddings(self._post([self._truncate(t) for t in texts]))
-        self._validate_dimensions(embeddings)
-        return embeddings
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            embeddings = self._extract_embeddings(self._post([self._truncate(t) for t in batch]))
+            self._validate_dimensions(embeddings)
+            all_embeddings.extend(embeddings)
+        return all_embeddings
