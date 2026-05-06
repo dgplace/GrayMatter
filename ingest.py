@@ -55,6 +55,15 @@ def load_config(path: str = "codebrain.toml") -> dict:
     if local_path.exists():
         with open(local_path, "rb") as f:
             cfg = _deep_merge(cfg, tomllib.load(f))
+    return _apply_env_overrides(cfg)
+
+
+def _apply_env_overrides(cfg: dict) -> dict:
+    """Allow container/CI environments to override boundary endpoints."""
+    if db_url := os.environ.get("DATABASE_URL"):
+        cfg.setdefault("database", {})["url"] = db_url
+    if embed_url := os.environ.get("EMBED_BASE_URL"):
+        cfg.setdefault("embeddings", {})["base_url"] = embed_url
     return cfg
 
 

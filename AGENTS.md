@@ -24,13 +24,62 @@ Keep these files focused on distinct purposes.
 - Keep `CLAUDE.md` and `GEMINI.md` as symlinks to `AGENTS.md`, not separate duplicate files.
 - When shared guidance changes, update `AGENTS.md`; the symlink aliases should continue to resolve to the same content.
 
+## Engineering Approach
+
+### Think before coding
+
+- If a request has multiple valid interpretations, state assumptions explicitly and choose one before implementation.
+- If requirements are ambiguous and a wrong assumption would risk behavior regressions, pause and clarify.
+- If a materially simpler solution exists, prefer it over a more abstract design.
+
+### Keep it simple
+
+- Implement only what was requested.
+- Avoid speculative abstractions and optional configurability unless there is an active operational need.
+- Prefer direct, readable control flow over indirection.
+
+### Make surgical changes
+
+- Touch only files and lines required for the request.
+- Match local style and patterns in the surrounding module.
+- Do not bundle unrelated refactors or cleanup with feature or bug-fix changes.
+- Remove unused imports, variables, and helpers introduced by your change.
+- If you discover broader cleanup opportunities, note them separately instead of mixing them into the same edit.
+
+### Respect single sources of truth
+
+- Resolve each operational value once in the layer that owns it (config, ingestion normalization, persistence schema, or MCP response assembly).
+- Treat consumer-side fallbacks for missing upstream data as defects to fix at the owning layer.
+- Keep behavior consistent across MCP tools; do not patch divergence in one tool while leaving other tools inconsistent.
+
+### Execute against verifiable goals
+
+- Translate each task into concrete checks (tests, command outputs, or observable behavior).
+- For bug fixes, prefer reproducing the failure first, then lock the fix with a regression test.
+- For feature work, add focused tests that prove the new behavior.
+- For multi-step work, keep a short plan and verify each step before moving on.
+
 ## Operational Rules
 
-- Treat `codebrain.toml` as the source of truth for local ingestion defaults.
-- Treat `docker-compose.yml` as the source of truth for the containerized MCP topology.
-- Prefer local ingestion (`python ingest.py ...`) unless the user explicitly asks for a containerized ingestion path.
+- Treat `docker-compose.yml` as the source of truth for the runtime topology (postgres, mcp, indexer).
+- Treat `codebrain.toml` as the source of truth for ingestion defaults shared across host and container runs.
+- Run ingestion through the `indexer` container service (`docker compose --profile indexer run --rm indexer python ingest.py ...`). The container ships with all toolchains required for parsing and indexing; bare-metal `python ingest.py` is no longer the supported path.
 - The MCP server is HTTP-first. Keep HTTP behavior as the default path and only preserve stdio mode when there is an active client need.
-- When changing runtime defaults, prefer updating config files and top-level constants rather than scattering literals.
+- When changing runtime defaults, prefer updating config files and top-level constants rather than scattering literals. Boundary endpoints (`DATABASE_URL`, `EMBED_BASE_URL`) may also be overridden via environment variables for container/CI use.
+
+## Tooling and Workflow
+
+- Use CodeBrain tooling first for repository discovery that benefits from intent, symbol, reference, and dependency context.
+- Use `rg` for exact text and filename discovery, validating index-backed findings, or when index coverage is stale or incomplete.
+- Keep ingestion and MCP workflow commands aligned with `README.md`; if operational commands change, update docs in the same change.
+
+### CodeBrain Self-Discovery Policy
+
+- Treat this repository as a self-hosted discovery environment: when working in CodeBrain, use CodeBrain MCP tools as the primary discovery path.
+- Start discovery with `list_repositories`, then scope subsequent MCP tool calls to the correct `repo` value.
+- Prefer MCP semantic/symbol/reference/dependency tools for architecture and impact analysis; use `rg` as a precision and verification complement.
+- If indexed results appear stale, incomplete, or inconsistent with the working tree, run local re-ingestion and continue with refreshed MCP results.
+- Do not bypass stale-index problems with ad-hoc per-tool heuristics; fix freshness at the ingestion/index layer first.
 
 ## Engineering Standards
 
@@ -51,8 +100,15 @@ Keep these files focused on distinct purposes.
 - Keep data extraction, storage, and query-time ranking as distinct layers.
 - Preserve backward compatibility only when it has a current operational need.
 - Keep infrastructure defaults centralized in config files or top-level constants rather than scattered literals.
-- Add or update tests when behavior changes materially; if tests are not added, note the gap and why.
+- Add or update tests for all non-trivial behavior changes; if tests are not added, note the gap and why.
 - When adding schema or protocol behavior, make migrations or compatibility handling explicit.
+
+## Testing Expectations
+
+- Keep tests deterministic and repeatable across runs.
+- Reuse existing fixtures and sample inputs where possible; add new fixtures only when required.
+- Prefer small, behavior-focused tests close to the changed logic.
+- For ingestion/classification/ranking bug fixes, include assertions that would fail if the regression returns.
 
 ## Documentation and Maintenance Rules
 

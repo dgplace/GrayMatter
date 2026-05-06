@@ -16,6 +16,25 @@ services:
       timeout: 5s
       retries: 10
 
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.indexer
+    image: codebrain-indexer:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
+      EMBED_BASE_URL: http://host.docker.internal:11434
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    profiles:
+      - indexer
+
   mcp:
     build:
       context: .
@@ -29,7 +48,7 @@ services:
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "3001"
-      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1],applepi3
+      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1],host.docker.internal
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       EMBED_API_STYLE: ollama
       EMBED_BASE_URL: http://host.docker.internal:11434

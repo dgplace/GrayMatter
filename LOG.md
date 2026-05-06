@@ -1,5 +1,6 @@
 # LOG
 
+2026-05-06 Added containerized indexer service (Dockerfile.indexer + compose profile) bundling Node, Python, tree-sitter, and scip-typescript; ingest.py now honors DATABASE_URL and EMBED_BASE_URL env overrides; AGENTS.md and README.md updated to make container-based ingestion the canonical path.
 2026-03-04 Added repository engineering standards to AGENTS.md and created LOG.md plus ARCHITECTURE.md documentation scaffolding.
 2026-03-04 Trimmed README.md to a quickstart and updated AGENTS.md to map all repository Markdown docs by purpose.
 2026-03-04 Removed the documentation map from README.md so document ownership guidance lives only in AGENTS.md.
@@ -24,3 +25,6 @@
 2026-03-08 Broadened MCP guidance to recommend fast local text or filename search tools such as `rg`, instead of assuming every client environment exposes `rg`.
 2026-03-08 Added a top-level executable `desktop.py` launcher that re-runs `.venv/bin/python -m desktop`.
 2026-05-06 Updated plane.json to point at the CodeBrain Plane project and refreshed estimate_points IDs from project calibration items (1, 2, 3, 5, 8, 13), then verified mappings against live Plane items.
+2026-05-06 Updated AGENTS.md with transferable engineering guidance from CruiseReport: think-before-coding rules, surgical change discipline, single-source-of-truth expectations, verifiable-goal/testing workflow, and CodeBrain-specific tooling guidance.
+2026-05-06 Switched local runtime defaults from remote Apple Pi hosts to local Docker/host endpoints: updated .env/codebrain.toml, MCP config defaults, docker-compose host allowlist, and Dockerfile.mcp runtime ENV defaults for local container execution.
+2026-05-06 Clarified AGENTS.md self-discovery policy: when coding CodeBrain, agents should use CodeBrain MCP tools as the primary repo discovery path, re-ingest when index data is stale, and use rg as a precision/validation complement.

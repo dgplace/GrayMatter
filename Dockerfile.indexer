@@ -1,0 +1,36 @@
+FROM node:22-bookworm-slim
+
+ARG SCIP_CLI_VERSION=v0.7.1
+ARG SCIP_TYPESCRIPT_VERSION=0.4.0
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        python3 python3-pip python3-venv \
+        build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in \
+      amd64) SCIP_ARCH=linux-amd64 ;; \
+      arm64) SCIP_ARCH=linux-arm64 ;; \
+      *) echo "unsupported arch: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -sSL "https://github.com/scip-code/scip/releases/download/${SCIP_CLI_VERSION}/scip-${SCIP_ARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin scip && \
+    chmod +x /usr/local/bin/scip && \
+    scip --version
+
+RUN npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" && \
+    scip-typescript --version
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+WORKDIR /workspace
+
+CMD ["bash"]

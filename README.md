@@ -7,40 +7,41 @@ CodeBrain is a codebase indexing and MCP query system:
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 22+
-- PostgreSQL with `pgvector`
-- An embedding endpoint compatible with the configured embedding client
+- Docker with Compose v2
+- An embedding endpoint compatible with the configured embedding client (e.g. Ollama on the host at `:11434`)
 - An OpenAI-compatible chat endpoint for classification
 
-The default config in `codebrain.toml` points at local host services (`127.0.0.1`) for ingestion.
+Postgres + pgvector, the MCP server, and the indexer toolchain (Node, Python, tree-sitter, SCIP) all run in containers managed by `docker-compose.yml`.
 
 ## Configuration
 
 Runtime defaults live in:
-- `codebrain.toml` for local ingestion
+- `docker-compose.yml` for service topology and boundary endpoints
+- `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
-Update `codebrain.toml` if your database, embedding service, or classifier endpoint changes.
+Container runs honor two environment overrides for endpoint values: `DATABASE_URL` and `EMBED_BASE_URL`. Both are set in `docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 
 ## Ingest a Repository
 
-### CLI
+### Container (default)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up -d postgres
+docker compose --profile indexer build indexer
 
-python ingest.py /path/to/repo
-python ingest.py /path/to/repo --force
-python ingest.py /path/to/repo --watch
+docker compose --profile indexer run --rm indexer python ingest.py /workspace
+docker compose --profile indexer run --rm indexer python ingest.py /workspace --force
+docker compose --profile indexer run --rm indexer python ingest.py /workspace --watch
 ```
+
+The repo root is mounted at `/workspace` inside the container. To index a different path, mount it: `-v /other/repo:/workspace`.
 
 Notes:
 - `--force` ignores the file hash cache and re-indexes everything
 - `--watch` re-indexes changed files on save
 - `.gitignore` is respected during ingestion
+- The `indexer` profile keeps the service from auto-starting with plain `docker compose up`
 
 ### Desktop Application (Windows / macOS / Linux)
 

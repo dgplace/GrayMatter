@@ -6,7 +6,7 @@
 /** @brief PostgreSQL connection string used by the MCP process. */
 export const DATABASE_URL =
   process.env.DATABASE_URL ||
-  "postgresql://codebrain:codebrain_local@applepi3:5433/codebrain";
+  "postgresql://codebrain:codebrain_local@127.0.0.1:5433/codebrain";
 
 /** @brief Embedding API style selector (`ollama` or `openai`). */
 export const EMBED_API_STYLE = (process.env.EMBED_API_STYLE || "ollama").toLowerCase();
@@ -15,7 +15,7 @@ export const EMBED_API_STYLE = (process.env.EMBED_API_STYLE || "ollama").toLower
 export const EMBED_BASE_URL = (
   process.env.EMBED_BASE_URL ||
   process.env.OLLAMA_URL ||
-  (EMBED_API_STYLE === "ollama" ? "http://applepi3:11434" : "http://applepi3:11435")
+  (EMBED_API_STYLE === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:11435")
 ).replace(/\/+$/, "");
 
 /** @brief Embedding model identifier. */
