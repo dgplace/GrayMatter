@@ -1,0 +1,165 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "scip-typescript",
+      "version": "0.4.0"
+    },
+    "project_root": "file:///probe",
+    "text_document_encoding": 1
+  },
+  "documents": [
+    {
+      "relative_path": "src/greeter.ts",
+      "occurrences": [
+        {
+          "range": [
+            0,
+            0,
+            0
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/",
+          "symbol_roles": 1,
+          "enclosing_range": [
+            0,
+            0,
+            5,
+            0
+          ]
+        },
+        {
+          "range": [
+            0,
+            13,
+            20
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#",
+          "symbol_roles": 1,
+          "enclosing_range": [
+            0,
+            0,
+            4,
+            1
+          ]
+        },
+        {
+          "range": [
+            1,
+            2,
+            7
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#greet().",
+          "symbol_roles": 1,
+          "enclosing_range": [
+            1,
+            2,
+            3,
+            3
+          ]
+        }
+      ],
+      "symbols": [
+        {
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/",
+          "documentation": [
+            "```ts\nmodule \"greeter.ts\"\n```"
+          ]
+        },
+        {
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#",
+          "documentation": [
+            "```ts\nclass Greeter\n```"
+          ]
+        },
+        {
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#greet().",
+          "documentation": [
+            "```ts\n(method) greet(): string\n```"
+          ]
+        }
+      ]
+    },
+    {
+      "relative_path": "src/main.ts",
+      "occurrences": [
+        {
+          "range": [
+            0,
+            0,
+            0
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`main.ts`/",
+          "symbol_roles": 1,
+          "enclosing_range": [
+            0,
+            0,
+            3,
+            0
+          ]
+        },
+        {
+          "range": [
+            0,
+            9,
+            16
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#"
+        },
+        {
+          "range": [
+            0,
+            24,
+            35
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/"
+        },
+        {
+          "range": [
+            1,
+            6,
+            13
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`main.ts`/greeter.",
+          "symbol_roles": 1
+        },
+        {
+          "range": [
+            1,
+            20,
+            27
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#"
+        },
+        {
+          "range": [
+            2,
+            0,
+            7
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`main.ts`/greeter."
+        },
+        {
+          "range": [
+            2,
+            8,
+            13
+          ],
+          "symbol": "scip-typescript npm scip-probe HEAD src/`greeter.ts`/Greeter#greet()."
+        }
+      ],
+      "symbols": [
+        {
+          "symbol": "scip-typescript npm scip-probe HEAD src/`main.ts`/",
+          "documentation": [
+            "```ts\nmodule \"main.ts\"\n```"
+          ]
+        },
+        {
+          "symbol": "scip-typescript npm scip-probe HEAD src/`main.ts`/greeter.",
+          "documentation": [
+            "```ts\nvar greeter: Greeter\n```"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "scip-typescript-fixture",
+  "private": true,
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

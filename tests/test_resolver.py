@@ -3,6 +3,9 @@
 @brief Unit tests for the resolver pipeline stage.
 """
 
+import json
+from pathlib import Path
+
 import resolver
 
 
@@ -22,6 +25,29 @@ class _ResolverCursor:
         @return None.
         """
         normalized = " ".join(query.strip().lower().split())
+        if normalized.startswith(
+            "select s.id, s.file_id from symbols s join files f on f.id = s.file_id where f.repo = %s and f.path = %s and s.name = %s and s.start_line <= %s and s.end_line >= %s"
+        ):
+            repo_name, target_path, target_name, target_line, _ = params
+            if (
+                repo_name == "fixture-repo"
+                and target_path == "src/greeter.ts"
+                and target_name == "Greeter"
+                and target_line == 1
+            ):
+                self._pending_fetchone = (901, 91)
+            elif (
+                repo_name == "fixture-repo"
+                and target_path == "src/greeter.ts"
+                and target_name == "greet"
+                and target_line == 2
+            ):
+                self._pending_fetchone = (902, 91)
+            else:
+                self._pending_fetchone = None
+            self._pending_fetchall = []
+            return
+
         if normalized.startswith("select s.id, s.file_id from symbols s where lower(s.name) = lower(%s)"):
             target_name = params[0].lower()
             if target_name == "photoservice":
@@ -38,21 +64,32 @@ class _ResolverCursor:
             self._pending_fetchone = None
             return
 
-        if normalized.startswith("select sr.id, sr.source_file_id, sr.target_name, sr.reference_kind from symbol_references sr"):
+        if normalized.startswith(
+            "select sr.id, sr.source_file_id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where sr.target_symbol_id = any(%s) and sr.source_file_id <> %s"
+        ):
             self._pending_fetchall = [
-                (301, 41, "PhotoService", "type_reference"),
-                (302, 42, "MissingService", "call"),
-                (303, 43, "helper", "call"),
+                (301, 41, "src/a.py", "python", "PhotoService", "type_reference", 10),
+                (302, 42, "src/b.py", "python", "MissingService", "call", 11),
+                (303, 43, "src/c.py", "python", "helper", "call", 12),
             ]
             self._pending_fetchone = None
             return
 
-        if normalized.startswith("select sr.id, sr.target_name, sr.reference_kind from symbol_references sr join files f on f.id = sr.source_file_id where f.repo = %s"):
-            self._pending_fetchall = [
-                (401, "PhotoService", "type_reference"),
-                (402, "MissingService", "call"),
-                (403, "helper", "call"),
-            ]
+        if normalized.startswith(
+            "select sr.id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where f.repo = %s"
+        ):
+            if params[0] == "fixture-repo":
+                self._pending_fetchall = [
+                    (501, "src/main.ts", "typescript", "Greeter", "type_reference", 1),
+                    (502, "src/main.ts", "typescript", "Greeter", "type_reference", 2),
+                    (503, "src/main.ts", "typescript", "greet", "member_call", 3),
+                ]
+            else:
+                self._pending_fetchall = [
+                    (401, "src/a.py", "python", "PhotoService", "type_reference", 10),
+                    (402, "src/b.py", "python", "MissingService", "call", 11),
+                    (403, "src/c.py", "python", "helper", "call", 12),
+                ]
             self._pending_fetchone = None
             return
 
@@ -235,9 +272,33 @@ def test_reresolve_inbound_references_updates_only_captured_rows() -> None:
     cur = _ResolverCursor()
     plan = {
         "rows": [
-            {"id": 301, "source_file_id": 41, "target_name": "PhotoService", "reference_kind": "type_reference"},
-            {"id": 302, "source_file_id": 42, "target_name": "MissingService", "reference_kind": "call"},
-            {"id": 303, "source_file_id": 43, "target_name": "helper", "reference_kind": "call"},
+            {
+                "id": 301,
+                "source_file_id": 41,
+                "source_path": "src/a.py",
+                "language": "python",
+                "target_name": "PhotoService",
+                "reference_kind": "type_reference",
+                "line_no": 10,
+            },
+            {
+                "id": 302,
+                "source_file_id": 42,
+                "source_path": "src/b.py",
+                "language": "python",
+                "target_name": "MissingService",
+                "reference_kind": "call",
+                "line_no": 11,
+            },
+            {
+                "id": 303,
+                "source_file_id": 43,
+                "source_path": "src/c.py",
+                "language": "python",
+                "target_name": "helper",
+                "reference_kind": "call",
+                "line_no": 12,
+            },
         ],
         "warnings": [],
     }
@@ -263,4 +324,40 @@ def test_refresh_repo_references_updates_repo_rows_serially() -> None:
         (101, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "type_reference", 401),
         (None, 0.0, "unresolved", "call", 402),
         (202, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 403),
+    ]
+
+
+def test_refresh_repo_references_prefers_scip_typescript_exact_matches(monkeypatch) -> None:
+    """@brief Verify TypeScript repo refresh uses SCIP matches before heuristic fallback."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_typescript"
+    fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
+    strategy = resolver.TypeScriptScipResolverStrategy()
+    monkeypatch.setattr(resolver, "_has_scip_tools", lambda: True)
+    monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root: fixture_index)
+    monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-repo", repo_root=fixture_root)
+
+    assert updated == 3
+    assert cur.updated_rows == [
+        (901, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "type_reference", 501),
+        (901, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "type_reference", 502),
+        (902, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "member_call", 503),
+    ]
+
+
+def test_refresh_repo_references_skips_scip_when_cli_is_unavailable(monkeypatch) -> None:
+    """@brief Verify missing SCIP binaries fall back to heuristic resolution instead of aborting ingest."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_typescript"
+    monkeypatch.setattr(resolver, "_has_scip_tools", lambda: False)
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-repo", repo_root=fixture_root)
+
+    assert updated == 3
+    assert cur.updated_rows == [
+        (None, 0.0, "unresolved", "type_reference", 501),
+        (None, 0.0, "unresolved", "type_reference", 502),
+        (None, 0.0, "unresolved", "member_call", 503),
     ]

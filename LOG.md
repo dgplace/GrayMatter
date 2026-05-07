@@ -1,6 +1,8 @@
 # LOG
 
 2026-05-07 Implemented CODEBRAIN-52 repo-root reorganization: moved Python ingestion sources (`ingest.py`, `chunker.py`, `classifier.py`, `embedder.py`, `synthesize_modules.py`, `desktop.py`) into the new `codebrain/` package, grouped Docker artifacts under `docker/`, retargeted Compose `build.context`/`dockerfile`/volume paths, and updated imports/tests/README/AGENTS/ARCHITECTURE references.
+2026-05-07 Hardened CODEBRAIN-17 local fallback: TypeScript exact resolution now skips missing SCIP CLIs and continues with heuristic resolution instead of aborting bare-metal ingest runs.
+2026-05-07 Implemented CODEBRAIN-17 TypeScript exact reference resolution: added a strategy-based resolver path in resolver.py, integrated scip-typescript occurrence-to-symbol joins for full and incremental refresh, and covered it with a small TS SCIP fixture regression.
 2026-05-07 Fixed resolver ingest concurrency: full parallel ingest now persists unresolved symbol_references first and runs a serial repo-wide refresh pass afterward, avoiding deadlocks and stale target_symbol_id FK failures.
 2026-05-07 Implemented CODEBRAIN-16 resolver stage: added resolver.py, moved symbol-reference extraction/resolution behind a uniform pipeline boundary, and enabled watch-mode selective inbound re-resolution with warning-only guardrails.
 2026-05-07 Added AGENTS.md cross-cutting maintenance limits: justification-or-split rules for files over 1000 lines and functions over 150 lines, plus mandatory file separation for tool handlers, language-specific parsers, and HTML/CSS assets.
