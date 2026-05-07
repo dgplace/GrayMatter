@@ -109,6 +109,17 @@ test("find_supertypes and find_subtypes tools walk symbol_relationships with dep
   assert.match(toolsSource, /sr\.target_symbol_id IS NULL AND lower\(sr\.target_name\) = lower\(ss\.name\)/);
 });
 
+test("find_implementations tool filters for implements edges and returns implementer locations", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"find_implementations"/);
+  assert.match(toolsSource, /sr\.relationship_kind = 'implements'/);
+  assert.match(toolsSource, /No implementations found for/);
+  assert.match(toolsSource, /impl_file\.path AS implementer_path/);
+  assert.match(toolsSource, /impl\.start_line AS implementer_start_line/);
+  assert.match(toolsSource, /impl\.end_line AS implementer_end_line/);
+});
+
 test("db schema patches include resolved reference migration columns and indexes", () => {
   const dbSource = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
 

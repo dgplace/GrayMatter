@@ -707,6 +707,146 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "find_implementations",
+    "Returns direct and transitive implementers for an interface/abstract symbol by walking symbol_relationships with kind=implements. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().describe("Interface or abstract symbol name to inspect."),
+      max_depth: z.number().optional().describe("Depth limit for the transitive walk (default 4)."),
+    },
+    async ({ repo, symbol, max_depth = 4 }) => {
+      logToolInvocation("find_implementations", { repo, symbol, max_depth });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const result = await query(
+        `
+        WITH start_symbols AS (
+          SELECT
+            s.id,
+            s.name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+            AND (
+              s.kind IN ('interface', 'protocol')
+              OR COALESCE(s.signature, '') ILIKE '%abstract%'
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 25
+        ),
+        implementation_tree AS (
+          SELECT
+            ss.id AS root_symbol_id,
+            ss.name AS root_symbol_name,
+            ss.file_path AS root_symbol_path,
+            ss.start_line AS root_symbol_start_line,
+            ss.end_line AS root_symbol_end_line,
+            sr.source_symbol_id AS implementer_symbol_id,
+            sr.target_symbol_id,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            1 AS depth,
+            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
+          FROM start_symbols ss
+          JOIN symbol_relationships sr
+            ON sr.relationship_kind = 'implements'
+           AND (
+             sr.target_symbol_id = ss.id
+             OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(ss.name))
+           )
+
+          UNION ALL
+
+          SELECT
+            it.root_symbol_id,
+            it.root_symbol_name,
+            it.root_symbol_path,
+            it.root_symbol_start_line,
+            it.root_symbol_end_line,
+            sr.source_symbol_id AS implementer_symbol_id,
+            sr.target_symbol_id,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            it.depth + 1 AS depth,
+            it.walk_path || sr.source_symbol_id
+          FROM implementation_tree it
+          JOIN symbol_relationships sr
+            ON sr.relationship_kind = 'implements'
+           AND sr.target_symbol_id = it.implementer_symbol_id
+          WHERE it.depth < $3
+            AND NOT sr.source_symbol_id = ANY(it.walk_path)
+        )
+        SELECT DISTINCT
+          it.root_symbol_id,
+          it.root_symbol_name,
+          it.root_symbol_path,
+          it.root_symbol_start_line,
+          it.root_symbol_end_line,
+          it.depth,
+          impl.name AS implementer_name,
+          impl.kind AS implementer_kind,
+          impl_file.path AS implementer_path,
+          impl.start_line AS implementer_start_line,
+          impl.end_line AS implementer_end_line,
+          it.target_name,
+          it.external_module
+        FROM implementation_tree it
+        JOIN symbols impl ON impl.id = it.implementer_symbol_id
+        JOIN files impl_file ON impl_file.id = impl.file_id AND impl_file.repo = $1
+        WHERE impl.kind IN ('class', 'struct', 'enum')
+        ORDER BY it.root_symbol_name, it.depth, impl_file.path, impl.start_line
+      `,
+        [repo, symbol, max_depth],
+      );
+
+      if (result.rows.length === 0) {
+        return { content: [{ type: "text", text: `No implementations found for "${symbol}" in repo \`${repo}\`.` }] };
+      }
+
+      const lines = [`Implementations for \`${symbol}\` in repo \`${repo}\`:`, ""];
+      let currentRoot = "";
+      for (const row of result.rows as Array<Record<string, unknown>>) {
+        const rootLabel = formatSymbolLocator(row);
+        if (rootLabel !== currentRoot) {
+          if (currentRoot) {
+            lines.push("");
+          }
+          lines.push(`- Root: ${rootLabel}`);
+          currentRoot = rootLabel;
+        }
+
+        const depth = Number(row.depth);
+        const implementerName = String(row.implementer_name || "unknown");
+        const implementerKind = String(row.implementer_kind || "unknown");
+        const implementerPath = String(row.implementer_path || "unknown");
+        const implementerStart = Number(row.implementer_start_line || 0);
+        const implementerEnd = Number(row.implementer_end_line || 0);
+        lines.push(
+          `  depth ${depth} [implements] <- ${implementerName} (${implementerKind}, ${implementerPath}:${implementerStart}-${implementerEnd})`,
+        );
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
     "trace_dependencies",
     "Follows dependency edges to answer what depends on X and what X depends on. Repository scope is required.",
     {
