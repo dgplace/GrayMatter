@@ -12,13 +12,21 @@ are dampened to prevent utility types from merging unrelated clusters, and
 oversized communities are recursively split.
 """
 
+import sys
+
 import click
 import networkx as nx
 from rich.console import Console
 from rich.progress import track
 
-from .ingest import load_config, get_db
-from .classifier import IntentClassifier
+# Allow direct script execution (`codebrain/synthesize_modules.py ...`) by
+# ensuring the repo root is on sys.path before importing sibling modules.
+if __package__ in (None, ""):
+    from pathlib import Path as _Path
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
+from codebrain.ingest import load_config, get_db
+from codebrain.classifier import IntentClassifier
 
 console = Console()
 

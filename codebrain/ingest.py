@@ -38,9 +38,15 @@ try:
 except ImportError:
     import tomli as tomllib
 
-from .chunker import ASTChunker
-from .classifier import IntentClassifier
-from .embedder import EmbeddingClient
+# Allow direct script execution (`codebrain/ingest.py ...`) by ensuring the
+# repo root is on sys.path before importing sibling package modules.
+if __package__ in (None, ""):
+    from pathlib import Path as _Path
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
+from codebrain.chunker import ASTChunker
+from codebrain.classifier import IntentClassifier
+from codebrain.embedder import EmbeddingClient
 import resolver
 
 console = Console()
