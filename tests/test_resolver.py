@@ -449,3 +449,130 @@ def test_refresh_repo_references_skips_scip_when_cli_is_unavailable(monkeypatch)
         (None, 0.0, "unresolved", "type_reference", 502),
         (None, 0.0, "unresolved", "member_call", 503),
     ]
+
+
+def test_collect_exact_matches_skips_non_scip_languages(tmp_path) -> None:
+    """@brief Verify SCIP exact-match strategies don't fire for non-SCIP languages.
+
+    Locks in CODEBRAIN-18: rows tagged with languages outside SCIP coverage must
+    bypass exact-match strategies so the heuristic resolver path is used.
+    """
+    rows = [
+        {
+            "language": "java",
+            "source_path": "src/Service.java",
+            "target_name": "PhotoService",
+            "line_no": 1,
+        },
+        {
+            "language": "swift",
+            "source_path": "src/Helper.swift",
+            "target_name": "helper",
+            "line_no": 2,
+        },
+        {
+            "language": "csharp",
+            "source_path": "src/Program.cs",
+            "target_name": "Logger",
+            "line_no": 3,
+        },
+        {
+            "language": "cpp",
+            "source_path": "src/main.cpp",
+            "target_name": "renderFrame",
+            "line_no": 4,
+        },
+    ]
+
+    assert resolver._collect_exact_matches(tmp_path, rows) == {}
+
+
+def test_resolve_reference_rows_uses_heuristic_for_non_scip_languages(tmp_path) -> None:
+    """@brief Verify non-SCIP languages flow through the heuristic resolver path.
+
+    Locks in CODEBRAIN-18: heuristic fallback edges must remain reachable for
+    languages without SCIP coverage, with resolution_confidence below the exact
+    ceiling and reference_kind_v2 populated whenever the kind was determined.
+    """
+    cur = _ResolverCursor()
+
+    resolved = resolver._resolve_reference_rows(
+        cur,
+        [
+            {
+                "id": 801,
+                "source_file_id": 11,
+                "source_path": "src/Service.java",
+                "language": "java",
+                "source_symbol_name": "refresh",
+                "target_name": "PhotoService",
+                "reference_kind": "type_reference",
+                "line_no": 7,
+            },
+            {
+                "id": 802,
+                "source_file_id": 12,
+                "source_path": "src/Helper.swift",
+                "language": "swift",
+                "source_symbol_name": "load",
+                "target_name": "helper",
+                "reference_kind": "call",
+                "line_no": 9,
+            },
+            {
+                "id": 803,
+                "source_file_id": 50,
+                "source_path": "src/Program.cs",
+                "language": "csharp",
+                "source_symbol_name": "run",
+                "target_name": "ambiguousHelper",
+                "reference_kind": "type_reference",
+                "line_no": 11,
+            },
+            {
+                "id": 804,
+                "source_file_id": 60,
+                "source_path": "src/main.cpp",
+                "language": "cpp",
+                "source_symbol_name": "draw",
+                "target_name": "missingSymbol",
+                "reference_kind": "call",
+                "line_no": 13,
+            },
+        ],
+        repo_root=tmp_path,
+    )
+
+    expected = [
+        (
+            101,
+            resolver.HEURISTIC_NAME_CONFIDENCE,
+            "heuristic_name",
+            "type_reference",
+        ),
+        (
+            202,
+            resolver.HEURISTIC_NAME_CONFIDENCE,
+            "heuristic_name",
+            "call",
+        ),
+        (
+            301,
+            resolver.AMBIGUOUS_HEURISTIC_CONFIDENCE,
+            "heuristic_name_ambiguous",
+            "type_reference",
+        ),
+        (None, 0.0, "unresolved", "call"),
+    ]
+    assert [
+        (
+            row["target_symbol_id"],
+            row["resolution_confidence"],
+            row["resolution_method"],
+            row["reference_kind_v2"],
+        )
+        for row in resolved
+    ] == expected
+    for row in resolved:
+        assert row["resolution_confidence"] < resolver.EXACT_MATCH_CONFIDENCE
+        assert row["reference_kind_v2"] is not None

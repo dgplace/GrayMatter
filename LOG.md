@@ -1,5 +1,6 @@
 # LOG
 
+2026-05-07 Implemented CODEBRAIN-18 heuristic fallback regression coverage: locked in non-SCIP language behavior in `tests/test_resolver.py` so the heuristic resolver path stays reachable for Java/Swift/C#/C++ rows with `resolution_confidence < 1.0` and `reference_kind_v2` populated, and verified SCIP exact-match strategies short-circuit for non-SCIP languages.
 2026-05-07 Added `git` to the indexer image so containerized ingestion can resolve the repository toplevel and honor `.gitignore` entries such as `.claude/` instead of falling back to indexing ignored paths.
 2026-05-07 Fixed helper-script mount behavior: `scripts/index-repo.sh` and `scripts/watch-repo.sh` now mount the target repository at `/target` and ingest that path explicitly, avoiding docker compose's existing `/workspace` bind for the CodeBrain source tree.
 2026-05-07 Added `scripts/build-indexer.sh`, `scripts/index-repo.sh`, and `scripts/watch-repo.sh` so containerized ingestion no longer requires remembering the `/workspace` mount convention or raw docker compose invocation.
