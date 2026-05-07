@@ -30,8 +30,14 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
-      EMBED_BASE_URL: http://host.docker.internal:11434
-      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-http://host.docker.internal:11434}
+      # EMBED_BASE_URL and CLASSIFIER_BASE_URL are passed through from the host
+      # by scripts/index-repo.sh (and watch-repo.sh), which translates
+      # 127.0.0.1/localhost in the toml to host.docker.internal so the container
+      # can reach the host's services. Anything else (LAN IP, resolvable host)
+      # is passed through unchanged. If env vars are not set, the toml value
+      # in .env/codebrain.toml is used directly.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-}
     working_dir: /workspace
     volumes:
       - ..:/workspace

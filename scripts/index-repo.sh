@@ -49,6 +49,61 @@ if [[ ! -d "$target_repo" ]]; then
   exit 1
 fi
 
+# Translate the toml's embedder/classifier base_url so the container can reach
+# the host's services. 127.0.0.1 and localhost are rewritten to
+# host.docker.internal; anything else (LAN IP, resolvable hostname) passes
+# through unchanged so the user's toml stays authoritative.
+translate_for_container() {
+  python3 - "$repo_root" <<'PY'
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlparse, urlunparse
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
+repo_root = Path(sys.argv[1])
+candidate_paths = [repo_root / ".env" / "codebrain.toml", repo_root / "codebrain.toml"]
+cfg: dict = {}
+for path in candidate_paths:
+    if path.is_file():
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+        cfg = {**cfg, **data} if cfg else data
+
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def translate(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.hostname in LOCAL_HOSTS:
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse(parsed._replace(netloc=f"host.docker.internal{port}"))
+    return url
+
+
+for env_name, section in (("EMBED_BASE_URL", "embeddings"), ("CLASSIFIER_BASE_URL", "classifier")):
+    if os.environ.get(env_name):
+        # User-provided override wins; emit it back so compose picks it up.
+        print(f"{env_name}={os.environ[env_name]}")
+        continue
+    raw = cfg.get(section, {}).get("base_url", "")
+    translated = translate(raw)
+    if translated:
+        print(f"{env_name}={translated}")
+PY
+}
+
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  export "$line"
+done < <(translate_for_container)
+
 exec docker compose \
   -f "$compose_file" \
   --profile indexer \
