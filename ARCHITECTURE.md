@@ -91,9 +91,10 @@ Design pattern:
 5. `classifier.py` summarizes files and classifies chunk intent.
 6. `embedder.py` generates file and chunk embeddings.
 7. `resolver.py` turns chunk-level lexical references into resolver records with `target_symbol_id`, `resolution_confidence`, `resolution_method`, and `reference_kind_v2` when possible.
-8. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable.
-9. `ingest.py` stores normalized records in PostgreSQL.
-10. Watch-mode single-file updates use the resolver stage to re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
+8. Exact resolution is strategy-driven: today `scip-typescript` runs for TypeScript-family repos that have both `tsconfig.json` and installed `node_modules`, then joins SCIP occurrence ranges back to `symbols` rows by repo-relative file path plus declaration line range. Repositories without TypeScript project metadata fall back cleanly to heuristic name resolution.
+9. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
+10. `ingest.py` stores normalized records in PostgreSQL.
+11. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
 

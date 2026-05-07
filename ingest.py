@@ -584,7 +584,12 @@ def process_file(
 
         if not chunks:
             if incremental_refresh:
-                resolver.re_resolve_inbound_references(cur, incremental_refresh)
+                resolver.re_resolve_inbound_references(
+                    cur,
+                    incremental_refresh,
+                    repo_name=repo_name,
+                    repo_root=repo_root,
+                )
             conn.commit()
             return {
                 "status": "indexed",
@@ -727,7 +732,14 @@ def process_file(
         # Persist unresolved rows during parallel ingest; refresh cross-file
         # target ids in a later serial pass once all symbols are stable.
         reference_records = (
-            resolver.resolve_references(cur, chunks)
+            resolver.resolve_references(
+                cur,
+                chunks,
+                language=language,
+                file_path=rel_path,
+                repo_root=repo_root,
+                repo_name=repo_name,
+            )
             if incremental_update
             else resolver.build_reference_records(chunks)
         )
@@ -753,7 +765,12 @@ def process_file(
             )
 
         if incremental_refresh:
-            resolver.re_resolve_inbound_references(cur, incremental_refresh)
+            resolver.re_resolve_inbound_references(
+                cur,
+                incremental_refresh,
+                repo_name=repo_name,
+                repo_root=repo_root,
+            )
 
         conn.commit()
         return {
@@ -1126,7 +1143,7 @@ def main(
         resolve_conn = get_db(cfg)
         try:
             cur = resolve_conn.cursor()
-            resolver.refresh_repo_references(cur, repo_name)
+            resolver.refresh_repo_references(cur, repo_name, repo_root=repo_root)
             resolve_conn.commit()
         finally:
             resolve_conn.close()
