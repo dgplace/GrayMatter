@@ -135,6 +135,9 @@ pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q
 ```
 
+Use the repo virtualenv for Python tests. Do not assume your system `python3`
+has `pytest` installed.
+
 TypeScript unit tests:
 
 ```bash

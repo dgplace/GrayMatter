@@ -1,8 +1,11 @@
 #!./.venv/bin/python3
 """
-CodeBrain Ingestion Pipeline
-Walks a codebase, parses with tree-sitter, embeds with Ollama, classifies intent, stores in PostgreSQL.
- options: --debug, --force, --watch
+@file ingest.py
+@brief CodeBrain ingestion pipeline entrypoint and persistence helpers.
+
+Walks a codebase, parses with tree-sitter, embeds content, classifies intent,
+and stores normalized metadata in PostgreSQL. Supports one-shot, forced, and
+watch-mode indexing flows.
 """
 
 import hashlib
@@ -173,10 +176,30 @@ SCHEMA_PATCHES = [
         source_chunk_id INTEGER REFERENCES code_chunks(id) ON DELETE CASCADE,
         source_symbol_name TEXT,
         target_name TEXT NOT NULL,
+        target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+        resolution_confidence REAL,
+        resolution_method TEXT,
         reference_kind TEXT NOT NULL,
+        reference_kind_v2 TEXT,
         line_no INTEGER NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """,
+    """
+    ALTER TABLE symbol_references
+    ADD COLUMN IF NOT EXISTS target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL
+    """,
+    """
+    ALTER TABLE symbol_references
+    ADD COLUMN IF NOT EXISTS resolution_confidence REAL
+    """,
+    """
+    ALTER TABLE symbol_references
+    ADD COLUMN IF NOT EXISTS resolution_method TEXT
+    """,
+    """
+    ALTER TABLE symbol_references
+    ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_symbols_container
@@ -201,6 +224,19 @@ SCHEMA_PATCHES = [
     """
     CREATE INDEX IF NOT EXISTS idx_symbol_refs_kind
     ON symbol_references(reference_kind)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol
+    ON symbol_references(target_symbol_id)
+    WHERE target_symbol_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind
+    ON symbol_references(target_name, reference_kind)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name
+    ON symbols(file_id, is_primary_declaration, name)
     """,
     """
     CREATE TABLE IF NOT EXISTS module_intents (

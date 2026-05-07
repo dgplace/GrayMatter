@@ -94,7 +94,11 @@ CREATE TABLE symbol_references (
     source_chunk_id INTEGER REFERENCES code_chunks(id) ON DELETE CASCADE,
     source_symbol_name TEXT,
     target_name     TEXT NOT NULL,
+    target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+    resolution_confidence REAL,
+    resolution_method TEXT,
     reference_kind  TEXT NOT NULL,                    -- call, member_call, type_reference
+    reference_kind_v2 TEXT,                           -- richer resolver-aware reference kind
     line_no         INTEGER NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -103,6 +107,9 @@ CREATE INDEX idx_symbol_refs_source_file ON symbol_references(source_file_id);
 CREATE INDEX idx_symbol_refs_source_chunk ON symbol_references(source_chunk_id);
 CREATE INDEX idx_symbol_refs_target_name ON symbol_references(target_name);
 CREATE INDEX idx_symbol_refs_kind ON symbol_references(reference_kind);
+CREATE INDEX idx_symbol_refs_target_symbol ON symbol_references(target_symbol_id) WHERE target_symbol_id IS NOT NULL;
+CREATE INDEX idx_symbol_refs_target_name_kind ON symbol_references(target_name, reference_kind);
+CREATE INDEX idx_symbols_file_primary_name ON symbols(file_id, is_primary_declaration, name);
 
 -- ============================================================
 -- Dependencies: directed graph of imports and calls

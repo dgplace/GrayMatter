@@ -295,6 +295,19 @@ def test_extract_symbol_references_deduplicates_and_skips_stopwords() -> None:
     ]
 
 
+def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
+    """@brief Verify ingestion schema patches cover CODEBRAIN-15 additive columns and indexes."""
+    patch_blob = "\n".join(ingest.SCHEMA_PATCHES)
+
+    assert "ADD COLUMN IF NOT EXISTS target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS resolution_confidence REAL" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS resolution_method TEXT" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name" in patch_blob
+
+
 def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:
     """@brief Verify classifier fallback messages are returned in process_file results."""
     repo_root = tmp_path / "repo"

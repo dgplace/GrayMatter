@@ -1,5 +1,8 @@
 # LOG
 
+2026-05-07 Added AGENTS.md cross-cutting maintenance limits: justification-or-split rules for files over 1000 lines and functions over 150 lines, plus mandatory file separation for tool handlers, language-specific parsers, and HTML/CSS assets.
+2026-05-07 Clarified README test setup to require the repo virtualenv for Python tests instead of assuming the host `python3` environment includes `pytest`.
+2026-05-07 Implemented CODEBRAIN-15 additive symbol_references schema/bootstrap migration: added resolved-target metadata columns plus reverse-lookup indexes in schema.sql, ingest.py, and MCP startup tests/docs while keeping existing reference queries unchanged.
 2026-05-07 Recorded CODEBRAIN-13 spike findings in docs/spike-incremental-resolved-edges.md: web-backed incremental-edge strategy with required symbol-reference indexing/schema additions and <1M LoC guardrails for selective incoming-edge refresh in watch mode.
 2026-05-06 Recorded CODEBRAIN-14 spike outcome in LOG: web-research-only assessment of AGE vs recursive CTE for <1M LoC scope; recommendation NO-GO on Apache AGE, keep recursive CTEs as canonical traversal path; Phase 7 (CODEBRAIN-44, CODEBRAIN-45) stays in Backlog.
 2026-05-06 Recorded CODEBRAIN-12 spike findings (embedding+cochange naming variant) in docs/spike-cluster-naming-signals.md; implementation deferred.

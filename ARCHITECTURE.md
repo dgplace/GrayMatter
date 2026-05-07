@@ -71,6 +71,7 @@ Responsibilities:
 - store normalized indexed code metadata
 - store vector embeddings for semantic retrieval
 - store lexical and structural relationships for exact and dependency-style queries
+- preserve lexical references alongside optional resolved symbol targets, confidence, and resolver metadata for future exact-reference upgrades
 - support repo-scoped query-time filtering across tools and UI APIs
 
 Design pattern:
@@ -88,7 +89,7 @@ Design pattern:
 5. `classifier.py` summarizes files and classifies chunk intent.
 6. `embedder.py` generates file and chunk embeddings.
 7. `ingest.py` stores normalized records in PostgreSQL.
-8. Symbol references and dependency edges are derived and persisted.
+8. Symbol references and dependency edges are derived and persisted, with symbol references retaining both lexical `target_name` and optional resolved-target metadata when available.
 
 ### MCP query flow
 

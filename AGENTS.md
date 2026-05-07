@@ -95,6 +95,11 @@ Keep these files focused on distinct purposes.
 - **Readable Over Clever**: Favor straightforward control flow and descriptive names over compact but opaque implementations.
 - **Fail Clearly**: For operational failures, surface clear errors with enough context to diagnose the problem. Do not silently swallow errors unless there is a deliberate fallback path.
 
+### Cross-cutting maintenance rules
+- **Large File Limit**: Source files over 1000 lines require a justification comment near the top explaining why the file should remain large; otherwise split the file along responsibility boundaries.
+- **Large Function Limit**: Functions or methods over 150 lines require a justification comment at the function definition explaining why the length is necessary; otherwise split the logic into smaller units.
+- **Handler/Parser/Asset Separation**: Tool handlers, language-specific parsing logic, and HTML/CSS assets must each live in their own files. Do not co-locate those concerns in a single module.
+
 ### Software engineering principles
 - Prefer composition over large multi-purpose classes.
 - Keep data extraction, storage, and query-time ranking as distinct layers.
