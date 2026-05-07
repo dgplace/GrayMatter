@@ -1,5 +1,10 @@
 # LOG
 
+2026-05-07 Recorded CODEBRAIN-13 spike findings in docs/spike-incremental-resolved-edges.md: web-backed incremental-edge strategy with required symbol-reference indexing/schema additions and <1M LoC guardrails for selective incoming-edge refresh in watch mode.
+2026-05-06 Recorded CODEBRAIN-14 spike outcome in LOG: web-research-only assessment of AGE vs recursive CTE for <1M LoC scope; recommendation NO-GO on Apache AGE, keep recursive CTEs as canonical traversal path; Phase 7 (CODEBRAIN-44, CODEBRAIN-45) stays in Backlog.
+2026-05-06 Recorded CODEBRAIN-12 spike findings (embedding+cochange naming variant) in docs/spike-cluster-naming-signals.md; implementation deferred.
+2026-05-06 Recorded CODEBRAIN-11 literature-only spike findings in docs/spike-symbol-vs-file-granularity.md: default to symbol-level clustering under 1M LoC with node/edge guardrails and auto fallback.
+2026-05-06 Recorded CODEBRAIN-9 spike findings in docs/spike-python-resolution-confidence.md: scip-python benchmark on pallets/flask, recommended confidence thresholds (find_references 0.55, impact_of 0.75 with 0.55-0.74 possible-impact band), and UX proposal for surfacing confidence in MCP responses.
 2026-05-06 Added containerized indexer service (Dockerfile.indexer + compose profile) bundling Node, Python, tree-sitter, and scip-typescript; ingest.py now honors DATABASE_URL and EMBED_BASE_URL env overrides; AGENTS.md and README.md updated to make container-based ingestion the canonical path.
 2026-03-04 Added repository engineering standards to AGENTS.md and created LOG.md plus ARCHITECTURE.md documentation scaffolding.
 2026-03-04 Trimmed README.md to a quickstart and updated AGENTS.md to map all repository Markdown docs by purpose.
