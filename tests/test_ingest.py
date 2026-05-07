@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-import ingest
+from codebrain import ingest
 
 
 class _FakeCursor:

@@ -13,11 +13,11 @@ It has two primary runtime concerns:
 ### 1. Ingestion Pipeline (Python)
 
 Core files:
-- `ingest.py`
-- `chunker.py`
+- `codebrain/ingest.py`
+- `codebrain/chunker.py`
 - `resolver.py`
-- `embedder.py`
-- `classifier.py`
+- `codebrain/embedder.py`
+- `codebrain/classifier.py`
 
 Responsibilities:
 - walk a repository while respecting config excludes and `.gitignore`
@@ -84,15 +84,15 @@ Design pattern:
 
 ### Ingestion flow
 
-1. Repository walk starts in `ingest.py`.
+1. Repository walk starts in `codebrain/ingest.py`.
 2. File paths are filtered by config excludes and Git ignore rules.
-3. `chunker.py` parses supported languages with tree-sitter.
+3. `codebrain/chunker.py` parses supported languages with tree-sitter.
 4. AST chunks are generated, with language-specific metadata where available.
-5. `classifier.py` summarizes files and classifies chunk intent.
-6. `embedder.py` generates file and chunk embeddings.
+5. `codebrain/classifier.py` summarizes files and classifies chunk intent.
+6. `codebrain/embedder.py` generates file and chunk embeddings.
 7. `resolver.py` turns chunk-level lexical references into resolver records with `target_symbol_id`, `resolution_confidence`, `resolution_method`, and `reference_kind_v2` when possible.
 8. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable.
-9. `ingest.py` stores normalized records in PostgreSQL.
+9. `codebrain/ingest.py` stores normalized records in PostgreSQL.
 10. Watch-mode single-file updates use the resolver stage to re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
@@ -136,7 +136,7 @@ The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_dep
 
 ### Module intent synthesis
 
-`synthesize_modules.py` runs as a post-ingestion step to identify logical modules and assign domain-specific narrative intents.  Two module kinds are produced:
+`codebrain/synthesize_modules.py` runs as a post-ingestion step to identify logical modules and assign domain-specific narrative intents.  Two module kinds are produced:
 
 **Directory modules** (`kind='directory'`): one per directory with enough files.  The LLM receives file summaries and chunk-level `intent_detail` to produce a narrative intent describing what the directory accomplishes in the application.
 
@@ -181,7 +181,7 @@ UI files (`desktop/ui/`):
 - `tray.py` — system tray icon, context menu, balloon notifications
 
 Responsibilities:
-- provide a GUI equivalent of the `ingest.py` CLI for all three platforms
+- provide a GUI equivalent of the `codebrain/ingest.py` CLI for all three platforms
 - manage multiple repositories simultaneously (add, remove, index, watch)
 - run ingestion workers on background QThreads and report live progress
 - watch N repos for file changes using concurrent watchdog Observers
@@ -190,7 +190,7 @@ Responsibilities:
 
 Design pattern:
 - `IngestionEngine` is a thin bridge: it duplicates only the thread orchestration
-  from `ingest.py main()` and replaces Rich output with Qt signals; `process_file`,
+  from `codebrain/ingest.py main()` and replaces Rich output with Qt signals; `process_file`,
   `walk_repo`, and `ensure_schema` are called directly with no modification.
 - Qt signal/slot cross-thread delivery handles safe UI updates from worker threads.
 - `MultiRepoWatcher` gives each repo its own watchdog Observer and connection pool
@@ -206,7 +206,7 @@ Typical deployment:
 - embedding provider on local or network host
 - classifier provider on local or network host
 - MCP server exposing `/mcp`, `/ui`, and `/healthz`
-- ingestion run locally against configured services — either via `ingest.py` CLI
+- ingestion run locally against configured services — either via `codebrain/ingest.py` CLI
   or via the desktop application (`python -m desktop`)
 
 Containerized MCP service publishes HTTP-only endpoints and includes the embedded UI.

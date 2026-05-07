@@ -31,10 +31,10 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from chunker import ASTChunker  # noqa: E402
-from classifier import IntentClassifier  # noqa: E402
-from embedder import EmbeddingClient  # noqa: E402
-from ingest import (  # noqa: E402
+from codebrain.chunker import ASTChunker  # noqa: E402
+from codebrain.classifier import IntentClassifier  # noqa: E402
+from codebrain.embedder import EmbeddingClient  # noqa: E402
+from codebrain.ingest import (  # noqa: E402
     ensure_schema,
     get_db,
     load_config,
@@ -568,7 +568,7 @@ class IngestionEngine(QObject):
             import subprocess
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, "synthesize_modules.py",
+                    [sys.executable, "-m", "codebrain.synthesize_modules",
                      "--repo", repo_name, "--mode", "all", "--machine",
                      "--resolution", str(resolution)],
                     cwd=str(_ROOT),

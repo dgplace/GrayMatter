@@ -38,9 +38,9 @@ try:
 except ImportError:
     import tomli as tomllib
 
-from chunker import ASTChunker
-from classifier import IntentClassifier
-from embedder import EmbeddingClient
+from .chunker import ASTChunker
+from .classifier import IntentClassifier
+from .embedder import EmbeddingClient
 import resolver
 
 console = Console()

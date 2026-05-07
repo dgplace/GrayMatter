@@ -5,7 +5,7 @@
 
 import pytest
 
-from chunker import ASTChunker
+from codebrain.chunker import ASTChunker
 
 
 def test_chunk_file_falls_back_when_language_is_missing() -> None:

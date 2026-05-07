@@ -1,3 +1,5 @@
+name: codebrain
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -9,7 +11,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U codebrain -d codebrain"]
       interval: 5s
@@ -18,8 +20,8 @@ services:
 
   indexer:
     build:
-      context: .
-      dockerfile: Dockerfile.indexer
+      context: ..
+      dockerfile: docker/Dockerfile.indexer
     image: codebrain-indexer:latest
     depends_on:
       postgres:
@@ -31,14 +33,14 @@ services:
       EMBED_BASE_URL: http://host.docker.internal:11434
     working_dir: /workspace
     volumes:
-      - .:/workspace
+      - ..:/workspace
     profiles:
       - indexer
 
   mcp:
     build:
-      context: .
-      dockerfile: Dockerfile.mcp
+      context: ..
+      dockerfile: docker/Dockerfile.mcp
     depends_on:
       postgres:
         condition: service_healthy

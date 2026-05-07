@@ -5,7 +5,7 @@
 
 import httpx
 
-from embedder import EmbeddingClient
+from codebrain.embedder import EmbeddingClient
 
 
 def test_openai_headers_include_bearer_token() -> None:

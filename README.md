@@ -11,28 +11,28 @@ CodeBrain is a codebase indexing and MCP query system:
 - An embedding endpoint compatible with the configured embedding client (e.g. Ollama on the host at `:11434`)
 - An OpenAI-compatible chat endpoint for classification
 
-Postgres + pgvector, the MCP server, and the indexer toolchain (Node, Python, tree-sitter, SCIP) all run in containers managed by `docker-compose.yml`.
+Postgres + pgvector, the MCP server, and the indexer toolchain (Node, Python, tree-sitter, SCIP) all run in containers managed by `docker/docker-compose.yml`.
 
 ## Configuration
 
 Runtime defaults live in:
-- `docker-compose.yml` for service topology and boundary endpoints
+- `docker/docker-compose.yml` for service topology and boundary endpoints
 - `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
-Container runs honor two environment overrides for endpoint values: `DATABASE_URL` and `EMBED_BASE_URL`. Both are set in `docker-compose.yml`; override per-run with `-e VAR=value` if needed.
+Container runs honor two environment overrides for endpoint values: `DATABASE_URL` and `EMBED_BASE_URL`. Both are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 
 ## Ingest a Repository
 
 ### Container (default)
 
 ```bash
-docker compose up -d postgres
-docker compose --profile indexer build indexer
+docker compose -f docker/docker-compose.yml up -d postgres
+docker compose -f docker/docker-compose.yml --profile indexer build indexer
 
-docker compose --profile indexer run --rm indexer python ingest.py /workspace
-docker compose --profile indexer run --rm indexer python ingest.py /workspace --force
-docker compose --profile indexer run --rm indexer python ingest.py /workspace --watch
+docker compose -f docker/docker-compose.yml --profile indexer run --rm indexer python -m codebrain.ingest /workspace
+docker compose -f docker/docker-compose.yml --profile indexer run --rm indexer python -m codebrain.ingest /workspace --force
+docker compose -f docker/docker-compose.yml --profile indexer run --rm indexer python -m codebrain.ingest /workspace --watch
 ```
 
 The repo root is mounted at `/workspace` inside the container. To index a different path, mount it: `-v /other/repo:/workspace`.
@@ -51,7 +51,7 @@ python -m desktop
 ```
 
 The desktop app provides:
-- A GUI for all `ingest.py` options (force, no-classify, worker count)
+- A GUI for all `codebrain/ingest.py` options (force, no-classify, worker count)
 - Multi-repo management — add, remove, and index any number of repos
 - Concurrent file watching across multiple repos simultaneously
 - Live progress bars and a scrolling file log during ingestion
@@ -64,8 +64,8 @@ The desktop app provides:
 After ingestion, run synthesis to identify logical modules and generate domain-specific intents:
 
 ```bash
-python synthesize_modules.py --repo <repo-name>
-python synthesize_modules.py --repo <repo-name> --mode logical --resolution 2.5
+python -m codebrain.synthesize_modules --repo <repo-name>
+python -m codebrain.synthesize_modules --repo <repo-name> --mode logical --resolution 2.5
 ```
 
 Options:
@@ -109,8 +109,8 @@ MCP_TRANSPORT=stdio node dist/index.js
 ### Docker (MCP + UI)
 
 ```bash
-docker compose build mcp
-docker compose up -d mcp
+docker compose -f docker/docker-compose.yml build mcp
+docker compose -f docker/docker-compose.yml up -d mcp
 ```
 
 The container publishes:

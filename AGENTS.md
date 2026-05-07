@@ -61,9 +61,9 @@ Keep these files focused on distinct purposes.
 
 ## Operational Rules
 
-- Treat `docker-compose.yml` as the source of truth for the runtime topology (postgres, mcp, indexer).
+- Treat `docker/docker-compose.yml` as the source of truth for the runtime topology (postgres, mcp, indexer).
 - Treat `codebrain.toml` as the source of truth for ingestion defaults shared across host and container runs.
-- Run ingestion through the `indexer` container service (`docker compose --profile indexer run --rm indexer python ingest.py ...`). The container ships with all toolchains required for parsing and indexing; bare-metal `python ingest.py` is no longer the supported path.
+- Run ingestion through the `indexer` container service (`docker compose -f docker/docker-compose.yml --profile indexer run --rm indexer python -m codebrain.ingest ...`). The container ships with all toolchains required for parsing and indexing; bare-metal `python -m codebrain.ingest` is no longer the supported path.
 - The MCP server is HTTP-first. Keep HTTP behavior as the default path and only preserve stdio mode when there is an active client need.
 - When changing runtime defaults, prefer updating config files and top-level constants rather than scattering literals. Boundary endpoints (`DATABASE_URL`, `EMBED_BASE_URL`) may also be overridden via environment variables for container/CI use.
 

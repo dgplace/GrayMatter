@@ -17,8 +17,8 @@ import networkx as nx
 from rich.console import Console
 from rich.progress import track
 
-from ingest import load_config, get_db
-from classifier import IntentClassifier
+from .ingest import load_config, get_db
+from .classifier import IntentClassifier
 
 console = Console()
 

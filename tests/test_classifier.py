@@ -3,7 +3,7 @@
 @brief Unit tests for the intent classifier wrapper.
 """
 
-from classifier import IntentClassifier
+from codebrain.classifier import IntentClassifier
 
 
 def _classifier() -> IntentClassifier:
