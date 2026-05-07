@@ -335,6 +335,57 @@ def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> Non
     assert "Classifier file analysis fallback for demo.py" in result["warnings"][0]
 
 
+def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) -> None:
+    """@brief Verify the upfront `--force` clear runs the four DELETEs in order.
+
+    Locks in the deadlock fix: per-file data must be cleared serially before
+    parallel workers start, in the same order used inside `process_file`.
+    """
+    delete_order: list[str] = []
+
+    class _ClearCursor:
+        def execute(self, query: str, params=None) -> None:
+            normalized = " ".join(query.strip().lower().split())
+            if normalized.startswith("delete from symbol_references"):
+                delete_order.append("symbol_references")
+            elif normalized.startswith("delete from dependencies"):
+                delete_order.append("dependencies")
+            elif normalized.startswith("delete from symbols"):
+                delete_order.append("symbols")
+            elif normalized.startswith("delete from code_chunks"):
+                delete_order.append("code_chunks")
+            assert params == ("repo",)
+
+    class _ClearConn:
+        def __init__(self) -> None:
+            self._cursor = _ClearCursor()
+            self.commits = 0
+            self.closed = False
+
+        def cursor(self) -> _ClearCursor:
+            return self._cursor
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_conn = _ClearConn()
+    monkeypatch.setattr(ingest, "get_db", lambda config: fake_conn)
+
+    ingest.clear_repo_per_file_data({"database": {"url": "ignored"}}, "repo")
+
+    assert delete_order == [
+        "symbol_references",
+        "dependencies",
+        "symbols",
+        "code_chunks",
+    ]
+    assert fake_conn.commits == 1
+    assert fake_conn.closed is True
+
+
 def test_apply_env_overrides_honors_classifier_base_url(monkeypatch) -> None:
     """@brief Verify CLASSIFIER_BASE_URL env var overrides the classifier endpoint.
 

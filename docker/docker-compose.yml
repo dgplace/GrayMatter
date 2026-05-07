@@ -31,7 +31,7 @@ services:
     environment:
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       EMBED_BASE_URL: http://host.docker.internal:11434
-      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-http://host.docker.internal:3000}
+      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-http://host.docker.internal:11434}
     working_dir: /workspace
     volumes:
       - ..:/workspace

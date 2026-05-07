@@ -968,6 +968,46 @@ def prune_stale_files(conn, repo_name: str, repo_root: Path, current_files: list
     return list(stale_paths)
 
 
+def clear_repo_per_file_data(config: dict, repo_name: str) -> None:
+    """@brief Serially drop all per-file rows for a repo before a `--force` re-ingest.
+
+    Required to avoid deadlocks under parallel re-ingest. Issuing the four
+    DELETEs from a single connection in dependency order means the cascade
+    work on `symbol_references` (from `code_chunks` and `symbols`) is fully
+    serialized. Subsequent per-file DELETEs in `process_file` then match
+    zero rows, take only table-level intent locks, and cannot deadlock.
+
+    @param config Parsed CodeBrain configuration dictionary.
+    @param repo_name Repository identifier whose per-file data should be cleared.
+    """
+    conn = get_db(config)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM symbol_references "
+            "WHERE source_file_id IN (SELECT id FROM files WHERE repo = %s)",
+            (repo_name,),
+        )
+        cur.execute(
+            "DELETE FROM dependencies "
+            "WHERE source_file_id IN (SELECT id FROM files WHERE repo = %s)",
+            (repo_name,),
+        )
+        cur.execute(
+            "DELETE FROM symbols "
+            "WHERE file_id IN (SELECT id FROM files WHERE repo = %s)",
+            (repo_name,),
+        )
+        cur.execute(
+            "DELETE FROM code_chunks "
+            "WHERE file_id IN (SELECT id FROM files WHERE repo = %s)",
+            (repo_name,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @click.command()
 @click.argument("repo_path", type=click.Path(exists=True))
 @click.option("--config", default="codebrain.toml", help="Config file path")
@@ -1049,6 +1089,15 @@ def main(
     if stale_paths:
         console.print(f"  Pruning [bold]{len(stale_paths)}[/] stale files from database")
     prune_conn.close()
+
+    # Under --force, serially pre-clear all per-file rows for this repo before
+    # parallel workers run. Concurrent per-file DELETEs on `symbol_references`
+    # otherwise deadlock through index-page contention even with disjoint row
+    # sets, because the cascade fan-out (code_chunks → symbol_references and
+    # symbols → symbol_references SET NULL) interleaves locks across workers.
+    # The per-file delete block in process_file becomes a no-op after this.
+    if force:
+        clear_repo_per_file_data(cfg, repo_name)
 
     stats = {
         "indexed": 0,
