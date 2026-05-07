@@ -295,6 +295,107 @@ def test_extract_symbol_references_deduplicates_and_skips_stopwords() -> None:
     ]
 
 
+def test_extract_symbol_relationships_parses_inheritance_edges_by_language() -> None:
+    """@brief Verify inheritance extraction emits extends/implements/mixin edges."""
+    python_edges = ingest.extract_symbol_relationships(
+        [
+            {
+                "symbol_name": "PhotoController",
+                "symbol_type": "class",
+                "signature": "class PhotoController(BaseController, LoggingMixin):",
+                "start_line": 7,
+            }
+        ],
+        "python",
+    )
+    assert python_edges == [
+        {
+            "source_symbol_name": "PhotoController",
+            "relationship_kind": "extends",
+            "target_name": "BaseController",
+            "external_module": None,
+            "line_no": 7,
+        },
+        {
+            "source_symbol_name": "PhotoController",
+            "relationship_kind": "mixin",
+            "target_name": "LoggingMixin",
+            "external_module": None,
+            "line_no": 7,
+        },
+    ]
+
+    ts_edges = ingest.extract_symbol_relationships(
+        [
+            {
+                "symbol_name": "PhotoService",
+                "symbol_type": "class",
+                "signature": "export class PhotoService extends BaseService implements Cacheable, Disposable {",
+                "start_line": 3,
+            }
+        ],
+        "typescript",
+    )
+    assert ts_edges == [
+        {
+            "source_symbol_name": "PhotoService",
+            "relationship_kind": "extends",
+            "target_name": "BaseService",
+            "external_module": None,
+            "line_no": 3,
+        },
+        {
+            "source_symbol_name": "PhotoService",
+            "relationship_kind": "implements",
+            "target_name": "Cacheable",
+            "external_module": None,
+            "line_no": 3,
+        },
+        {
+            "source_symbol_name": "PhotoService",
+            "relationship_kind": "implements",
+            "target_name": "Disposable",
+            "external_module": None,
+            "line_no": 3,
+        },
+    ]
+
+    csharp_edges = ingest.extract_symbol_relationships(
+        [
+            {
+                "symbol_name": "PhotoStore",
+                "symbol_type": "class",
+                "signature": "public class PhotoStore : Data.StoreBase, IPhotoStore, IDisposable {",
+                "start_line": 11,
+            }
+        ],
+        "csharp",
+    )
+    assert csharp_edges == [
+        {
+            "source_symbol_name": "PhotoStore",
+            "relationship_kind": "extends",
+            "target_name": "StoreBase",
+            "external_module": "Data",
+            "line_no": 11,
+        },
+        {
+            "source_symbol_name": "PhotoStore",
+            "relationship_kind": "implements",
+            "target_name": "IPhotoStore",
+            "external_module": None,
+            "line_no": 11,
+        },
+        {
+            "source_symbol_name": "PhotoStore",
+            "relationship_kind": "implements",
+            "target_name": "IDisposable",
+            "external_module": None,
+            "line_no": 11,
+        },
+    ]
+
+
 def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     """@brief Verify ingestion schema patches cover CODEBRAIN-15 additive columns and indexes."""
     patch_blob = "\n".join(ingest.SCHEMA_PATCHES)
@@ -341,7 +442,7 @@ def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> Non
 
 
 def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) -> None:
-    """@brief Verify the upfront `--force` clear runs the four DELETEs in order.
+    """@brief Verify the upfront `--force` clear runs the five DELETEs in order.
 
     Locks in the deadlock fix: per-file data must be cleared serially before
     parallel workers start, in the same order used inside `process_file`.
@@ -353,6 +454,8 @@ def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) 
             normalized = " ".join(query.strip().lower().split())
             if normalized.startswith("delete from symbol_references"):
                 delete_order.append("symbol_references")
+            elif normalized.startswith("delete from symbol_relationships"):
+                delete_order.append("symbol_relationships")
             elif normalized.startswith("delete from dependencies"):
                 delete_order.append("dependencies")
             elif normalized.startswith("delete from symbols"):
@@ -383,6 +486,7 @@ def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) 
 
     assert delete_order == [
         "symbol_references",
+        "symbol_relationships",
         "dependencies",
         "symbols",
         "code_chunks",
@@ -406,7 +510,7 @@ def test_apply_env_overrides_honors_classifier_base_url(monkeypatch) -> None:
     assert untouched["classifier"]["base_url"] == "http://example:1"
 
 
-def test_process_file_clears_symbol_references_before_code_chunks(monkeypatch, tmp_path) -> None:
+def test_process_file_clears_symbol_relationships_before_code_chunks(monkeypatch, tmp_path) -> None:
     """@brief Verify per-file re-ingest deletes references and dependencies before chunks/symbols.
 
     Locks in the deadlock fix: the cascade DELETE on symbol_references(source_chunk_id)
@@ -431,6 +535,9 @@ def test_process_file_clears_symbol_references_before_code_chunks(monkeypatch, t
                 return
             if normalized.startswith("delete from symbol_references"):
                 delete_order.append("symbol_references")
+                return
+            if normalized.startswith("delete from symbol_relationships"):
+                delete_order.append("symbol_relationships")
                 return
             if normalized.startswith("delete from dependencies"):
                 delete_order.append("dependencies")
@@ -487,6 +594,7 @@ def test_process_file_clears_symbol_references_before_code_chunks(monkeypatch, t
     assert result["status"] == "indexed"
     assert delete_order == [
         "symbol_references",
+        "symbol_relationships",
         "dependencies",
         "symbols",
         "code_chunks",

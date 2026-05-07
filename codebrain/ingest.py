@@ -341,6 +341,35 @@ SWIFT_PARAM_RE = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>.?[\]]*)"
 )
 SWIFT_MEMBER_CALL_RE = re.compile(r"\b([a-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+TS_EXTENDS_RE = re.compile(r"\bextends\s+([^{}]+?)(?:\bimplements\b|{)")
+TS_IMPLEMENTS_RE = re.compile(r"\bimplements\s+([^{}]+?){")
+PY_CLASS_BASES_RE = re.compile(r"^\s*class\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*:", re.IGNORECASE)
+JAVA_EXTENDS_RE = re.compile(r"\bextends\s+([^\s{]+)")
+JAVA_IMPLEMENTS_RE = re.compile(r"\bimplements\s+([^{}]+?){")
+CSHARP_BASES_RE = re.compile(r"\b(?:class|struct|record|interface)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*([^{}]+?){")
+CPP_BASES_RE = re.compile(r"\b(?:class|struct)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*([^{}]+?){")
+SWIFT_INHERIT_RE = re.compile(
+    r"\b(?:class|struct|enum|protocol|extension)\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*([^{}]+?)(?:where\b|{)"
+)
+RELATIONSHIP_MODIFIER_TOKENS = {
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "fileprivate",
+    "open",
+    "final",
+    "abstract",
+    "sealed",
+    "static",
+    "virtual",
+    "override",
+    "partial",
+    "new",
+    "readonly",
+    "mutating",
+    "nonmutating",
+}
 
 
 def ensure_schema(conn) -> None:
@@ -498,6 +527,222 @@ def extract_swift_service_edges(content: str, chunks: list[dict]) -> list[dict]:
     return edges
 
 
+def _split_top_level_csv(raw: str) -> list[str]:
+    """@brief Split a comma-separated type list while preserving nested generic groups.
+
+    @param raw Raw inheritance/conformance clause fragment.
+    @return Top-level comma-delimited tokens.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    pairs = {"<": ">", "(": ")", "[": "]"}
+    closing = set(pairs.values())
+
+    for char in raw:
+        if char in pairs:
+            depth += 1
+            current.append(char)
+            continue
+        if char in closing:
+            depth = max(depth - 1, 0)
+            current.append(char)
+            continue
+        if char == "," and depth == 0:
+            token = "".join(current).strip()
+            if token:
+                parts.append(token)
+            current = []
+            continue
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _strip_generic_args(raw: str) -> str:
+    """@brief Remove top-level generic argument groups from a type expression.
+
+    @param raw Type expression that may include `<...>` generic arguments.
+    @return Generic-stripped expression.
+    """
+    cleaned: list[str] = []
+    depth = 0
+    for char in raw:
+        if char == "<":
+            depth += 1
+            continue
+        if char == ">":
+            depth = max(depth - 1, 0)
+            continue
+        if depth == 0:
+            cleaned.append(char)
+    return "".join(cleaned)
+
+
+def _normalize_relationship_target(raw_target: str) -> tuple[Optional[str], Optional[str]]:
+    """@brief Normalize an extracted inheritance token into name + optional module.
+
+    @param raw_target Raw token captured from a language-specific inheritance clause.
+    @return Tuple of `(target_name, external_module)` where each value may be None.
+    """
+    candidate = raw_target.strip().rstrip("{").rstrip(":").strip()
+    if not candidate:
+        return None, None
+
+    if "(" in candidate and candidate.endswith(")"):
+        candidate = candidate.split("(", 1)[0].strip()
+    candidate = _strip_generic_args(candidate)
+    candidate = candidate.replace("&", " ").replace("*", " ").strip()
+    candidate = candidate.rstrip("?!").replace("[]", "")
+    tokens = [part for part in candidate.split() if part.lower() not in RELATIONSHIP_MODIFIER_TOKENS]
+    if not tokens:
+        return None, None
+
+    normalized = tokens[-1].strip()
+    if not normalized:
+        return None, None
+
+    external_module = None
+    if "::" in normalized:
+        namespace, _, symbol = normalized.rpartition("::")
+        external_module = namespace or None
+        normalized = symbol
+    elif "." in normalized:
+        namespace, _, symbol = normalized.rpartition(".")
+        external_module = namespace or None
+        normalized = symbol
+
+    normalized = normalized.strip()
+    if not normalized:
+        return None, external_module
+
+    return normalized, external_module
+
+
+def _relationship_kind_for_list_index(language: str, symbol_type: Optional[str], index: int) -> str:
+    """@brief Choose a structural edge kind for inheritance-style lists.
+
+    @param language Language name for the active declaration.
+    @param symbol_type Parsed symbol type for the declaration.
+    @param index Zero-based index inside the inheritance list.
+    @return Relationship kind (`extends`, `implements`, or `mixin`).
+    """
+    if language == "python":
+        return "extends" if index == 0 else "mixin"
+    if language == "swift":
+        if symbol_type == "class":
+            return "extends" if index == 0 else "implements"
+        if symbol_type == "protocol":
+            return "extends"
+        return "implements"
+    if language == "csharp":
+        if symbol_type == "interface":
+            return "extends"
+        return "extends" if index == 0 else "implements"
+    if language == "cpp":
+        return "extends" if index == 0 else "mixin"
+    return "extends" if index == 0 else "implements"
+
+
+def extract_symbol_relationships(chunks: list[dict], language: Optional[str]) -> list[dict]:
+    """@brief Extract inheritance/implements/mixin edges from declaration signatures.
+
+    @param chunks Parsed chunk records from the chunker.
+    @param language Normalized language label for the file.
+    @return Structural relationship rows ready for persistence.
+    """
+    if not language:
+        return []
+
+    relationships = []
+    seen: set[tuple[Optional[str], str, str, Optional[str], int]] = set()
+
+    for chunk in chunks:
+        symbol_name = chunk.get("symbol_name")
+        symbol_type = chunk.get("symbol_type")
+        signature = chunk.get("signature")
+        if not symbol_name or not signature:
+            continue
+        if symbol_type not in {"class", "struct", "interface", "protocol", "extension", "enum"}:
+            continue
+
+        extracted: list[tuple[str, str]] = []
+
+        if language in {"typescript", "javascript"}:
+            extends_match = TS_EXTENDS_RE.search(signature)
+            if extends_match:
+                for token in _split_top_level_csv(extends_match.group(1)):
+                    kind = "mixin" if "(" in token else "extends"
+                    extracted.append((kind, token))
+            implements_match = TS_IMPLEMENTS_RE.search(signature)
+            if implements_match:
+                for token in _split_top_level_csv(implements_match.group(1)):
+                    extracted.append(("implements", token))
+        elif language == "python":
+            bases_match = PY_CLASS_BASES_RE.search(signature)
+            if bases_match:
+                for idx, token in enumerate(_split_top_level_csv(bases_match.group(1))):
+                    extracted.append((_relationship_kind_for_list_index(language, symbol_type, idx), token))
+        elif language == "java":
+            if symbol_type == "interface":
+                extends_match = JAVA_EXTENDS_RE.search(signature)
+                if extends_match:
+                    for token in _split_top_level_csv(extends_match.group(1)):
+                        extracted.append(("extends", token))
+            else:
+                extends_match = JAVA_EXTENDS_RE.search(signature)
+                if extends_match:
+                    extracted.append(("extends", extends_match.group(1)))
+                implements_match = JAVA_IMPLEMENTS_RE.search(signature)
+                if implements_match:
+                    for token in _split_top_level_csv(implements_match.group(1)):
+                        extracted.append(("implements", token))
+        elif language == "csharp":
+            bases_match = CSHARP_BASES_RE.search(signature)
+            if bases_match:
+                for idx, token in enumerate(_split_top_level_csv(bases_match.group(1))):
+                    extracted.append((_relationship_kind_for_list_index(language, symbol_type, idx), token))
+        elif language == "cpp":
+            bases_match = CPP_BASES_RE.search(signature)
+            if bases_match:
+                for idx, token in enumerate(_split_top_level_csv(bases_match.group(1))):
+                    extracted.append((_relationship_kind_for_list_index(language, symbol_type, idx), token))
+        elif language == "swift":
+            inherit_match = SWIFT_INHERIT_RE.search(signature)
+            if inherit_match:
+                for idx, token in enumerate(_split_top_level_csv(inherit_match.group(1))):
+                    extracted.append((_relationship_kind_for_list_index(language, symbol_type, idx), token))
+
+        for relationship_kind, raw_target in extracted:
+            target_name, external_module = _normalize_relationship_target(raw_target)
+            if not target_name:
+                continue
+            dedupe_key = (
+                symbol_name,
+                relationship_kind,
+                target_name.lower(),
+                external_module.lower() if external_module else None,
+                int(chunk["start_line"]),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            relationships.append(
+                {
+                    "source_symbol_name": symbol_name,
+                    "relationship_kind": relationship_kind,
+                    "target_name": target_name,
+                    "external_module": external_module,
+                    "line_no": int(chunk["start_line"]),
+                }
+            )
+
+    return relationships
+
+
 def resolve_target_symbol(cur, target_name: str) -> tuple[Optional[int], Optional[int]]:
     """@brief Compatibility wrapper for resolver-owned symbol lookup.
 
@@ -628,11 +873,11 @@ def process_file(
                  file_summary, file_role, file_embedding, existing[0])
             )
             file_id = existing[0]
-            # Order matters under parallel re-ingest: delete from symbol_references
-            # and dependencies before code_chunks/symbols so the ON DELETE CASCADE
-            # from code_chunks(id) -> symbol_references(source_chunk_id) becomes a
-            # no-op. The row-by-row cascade otherwise deadlocks across workers.
+            # Order matters under parallel re-ingest: delete from relationship/
+            # reference edge tables before symbols/code_chunks so FK cascades are
+            # no-ops instead of lock amplification under worker concurrency.
             cur.execute("DELETE FROM symbol_references WHERE source_file_id = %s", (file_id,))
+            cur.execute("DELETE FROM symbol_relationships WHERE source_file_id = %s", (file_id,))
             cur.execute("DELETE FROM dependencies WHERE source_file_id = %s", (file_id,))
             cur.execute("DELETE FROM symbols WHERE file_id = %s", (file_id,))
             cur.execute("DELETE FROM code_chunks WHERE file_id = %s", (file_id,))
@@ -768,6 +1013,27 @@ def process_file(
                     )
                     file_symbol_ids.setdefault(member_symbol["symbol_name"], member_id)
                     symbol_count += 1
+
+        structural_edges = extract_symbol_relationships(chunks, language)
+        for edge in structural_edges:
+            source_symbol_id = file_symbol_ids.get(edge["source_symbol_name"])
+            if source_symbol_id is None:
+                continue
+            target_symbol_id, _ = resolve_target_symbol(cur, edge["target_name"])
+            cur.execute(
+                """INSERT INTO symbol_relationships
+                   (source_file_id, source_symbol_id, target_symbol_id, relationship_kind, target_name, external_module, line_no)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    file_id,
+                    source_symbol_id,
+                    target_symbol_id,
+                    edge["relationship_kind"],
+                    edge["target_name"],
+                    edge["external_module"],
+                    edge["line_no"],
+                ),
+            )
 
         # Extract and store dependencies
         deps = chunker.extract_dependencies(content, language, rel_path)
@@ -1025,9 +1291,10 @@ def prune_stale_files(conn, repo_name: str, repo_root: Path, current_files: list
 def clear_repo_per_file_data(config: dict, repo_name: str) -> None:
     """@brief Serially drop all per-file rows for a repo before a `--force` re-ingest.
 
-    Required to avoid deadlocks under parallel re-ingest. Issuing the four
+    Required to avoid deadlocks under parallel re-ingest. Issuing the five
     DELETEs from a single connection in dependency order means the cascade
-    work on `symbol_references` (from `code_chunks` and `symbols`) is fully
+    work on `symbol_references` and `symbol_relationships` (from `code_chunks`
+    and `symbols`) is fully
     serialized. Subsequent per-file DELETEs in `process_file` then match
     zero rows, take only table-level intent locks, and cannot deadlock.
 
@@ -1039,6 +1306,11 @@ def clear_repo_per_file_data(config: dict, repo_name: str) -> None:
         cur = conn.cursor()
         cur.execute(
             "DELETE FROM symbol_references "
+            "WHERE source_file_id IN (SELECT id FROM files WHERE repo = %s)",
+            (repo_name,),
+        )
+        cur.execute(
+            "DELETE FROM symbol_relationships "
             "WHERE source_file_id IN (SELECT id FROM files WHERE repo = %s)",
             (repo_name,),
         )
