@@ -6,7 +6,7 @@ ARG SCIP_PYTHON_VERSION=0.6.6
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl \
+        ca-certificates curl git \
         python3 python3-pip python3-venv \
         build-essential && \
     rm -rf /var/lib/apt/lists/*

@@ -1,5 +1,8 @@
 # LOG
 
+2026-05-07 Added `git` to the indexer image so containerized ingestion can resolve the repository toplevel and honor `.gitignore` entries such as `.claude/` instead of falling back to indexing ignored paths.
+2026-05-07 Fixed helper-script mount behavior: `scripts/index-repo.sh` and `scripts/watch-repo.sh` now mount the target repository at `/target` and ingest that path explicitly, avoiding docker compose's existing `/workspace` bind for the CodeBrain source tree.
+2026-05-07 Added `scripts/build-indexer.sh`, `scripts/index-repo.sh`, and `scripts/watch-repo.sh` so containerized ingestion no longer requires remembering the `/workspace` mount convention or raw docker compose invocation.
 2026-05-07 Implemented CODEBRAIN-46 Python exact reference resolution: added a scip-python resolver strategy, lowered ambiguous heuristic fallback confidence below 0.55 while preserving same-file matches, bundled scip-python in the indexer image, and added Python SCIP regression fixtures/tests.
 2026-05-07 Implemented CODEBRAIN-19 find_references resolved-edge prioritization: tool now joins on target_symbol_id for accurate target paths, surfaces resolution_confidence and resolution_method per result, defaults to filtering rows below 0.55, and adds optional `min_confidence`/`include_unresolved` parameters while keeping the existing input shape backward compatible.
 2026-05-07 Implemented CODEBRAIN-52 repo-root reorganization: moved Python ingestion sources (`ingest.py`, `chunker.py`, `classifier.py`, `embedder.py`, `synthesize_modules.py`, `desktop.py`) into the new `codebrain/` package, grouped Docker artifacts under `docker/`, retargeted Compose `build.context`/`dockerfile`/volume paths, and updated imports/tests/README/AGENTS/ARCHITECTURE references.
