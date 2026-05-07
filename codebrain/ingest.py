@@ -743,6 +743,7 @@ def process_file(
                 chunks,
                 language=language,
                 file_path=rel_path,
+                source_file_id=file_id,
                 repo_root=repo_root,
                 repo_name=repo_name,
             )

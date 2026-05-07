@@ -11,16 +11,44 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 HEURISTIC_NAME_CONFIDENCE = 0.55
+AMBIGUOUS_HEURISTIC_CONFIDENCE = 0.30
 EXACT_MATCH_CONFIDENCE = 1.0
 INCREMENTAL_REF_WARNING_THRESHOLD = 50_000
 INCREMENTAL_FILE_RATIO_WARNING_THRESHOLD = 0.10
 SCIP_DEFINITION_SYMBOL_ROLE = 1
 SCIP_TYPESCRIPT_LANGUAGES = frozenset({"typescript", "tsx", "javascript", "jsx"})
+SCIP_PYTHON_LANGUAGES = frozenset({"python"})
+PYTHON_PROJECT_MARKERS = frozenset(
+    {
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "Pipfile",
+        "poetry.lock",
+        "uv.lock",
+        "tox.ini",
+    }
+)
+SCIP_DISCOVERY_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        "node_modules",
+    }
+)
 
 REFERENCE_PATTERNS = [
     (re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b"), "type_reference"),
@@ -154,23 +182,110 @@ class TypeScriptScipResolverStrategy(ReferenceResolverStrategy):
                 stderr = (index_result.stderr or index_result.stdout).strip()
                 raise RuntimeError(f"scip-typescript index failed for {repo_root}: {stderr}")
 
-            print_cmd = ["scip", "print", "--json", str(index_path)]
-            print_result = subprocess.run(
-                print_cmd,
+            return _print_scip_index(repo_root, index_path)
+
+
+class PythonScipResolverStrategy(ReferenceResolverStrategy):
+    """@brief Resolve Python references with scip-python occurrences."""
+
+    name = "scip_python"
+    supported_languages = SCIP_PYTHON_LANGUAGES
+
+    def build_exact_match_index(self, repo_root: Path, rows: list[dict]) -> dict[tuple[str, int, str], dict]:
+        """@brief Map Python source references to exact declaration locations.
+
+        @param repo_root Repository root being indexed.
+        @param rows Resolver batch rows for Python source files.
+        @return Exact-match mapping keyed by source path, line number, and target
+                symbol name.
+        """
+        if (
+            not _has_python_project_markers(repo_root)
+            or not _has_supported_python_scip_runtime()
+            or not _has_scip_python_tools()
+        ):
+            return {}
+
+        scip_index = self._load_scip_index(repo_root)
+        definition_index = _build_scip_definition_index(scip_index)
+        candidate_paths = {
+            _normalize_relative_path(row["source_path"])
+            for row in rows
+            if row.get("source_path")
+        }
+        candidate_names = {row["target_name"] for row in rows}
+        exact_matches: dict[tuple[str, int, str], dict] = {}
+
+        for document in scip_index.get("documents", []):
+            relative_path = _normalize_relative_path(document.get("relative_path", ""))
+            if relative_path not in candidate_paths:
+                continue
+
+            for occurrence in document.get("occurrences", []):
+                symbol_roles = occurrence.get("symbol_roles", 0)
+                if symbol_roles & SCIP_DEFINITION_SYMBOL_ROLE:
+                    continue
+
+                symbol = occurrence.get("symbol")
+                target_name = _extract_scip_target_name(symbol)
+                if not symbol or not target_name or target_name not in candidate_names:
+                    continue
+
+                target_location = definition_index.get(symbol)
+                if not target_location:
+                    continue
+
+                key = _reference_key(relative_path, occurrence["range"][0] + 1, target_name)
+                exact_matches[key] = {
+                    "target_path": target_location["path"],
+                    "target_line": target_location["line_no"],
+                    "resolution_method": self.name,
+                }
+
+        return exact_matches
+
+    def _load_scip_index(self, repo_root: Path) -> dict:
+        """@brief Run scip-python and print the resulting SCIP index as JSON.
+
+        @param repo_root Repository root being indexed.
+        @return Parsed JSON object emitted by `scip print --json`.
+        """
+        if not _has_scip_python_tools():
+            raise RuntimeError(
+                "scip-python and scip must be available on PATH; "
+                "run ingestion through the codebrain indexer container."
+            )
+
+        with tempfile.TemporaryDirectory(prefix="codebrain-scip-python-") as tmpdir:
+            index_path = Path(tmpdir) / "index.scip"
+            index_cmd = [
+                "scip-python",
+                "index",
+                "--cwd",
+                str(repo_root),
+                "--project-name",
+                repo_root.name,
+                "--output",
+                str(index_path),
+                "--quiet",
+            ]
+            index_result = subprocess.run(
+                index_cmd,
                 cwd=repo_root,
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if print_result.returncode != 0:
-                stderr = (print_result.stderr or print_result.stdout).strip()
-                raise RuntimeError(f"scip print failed for {repo_root}: {stderr}")
+            if index_result.returncode != 0:
+                stderr = (index_result.stderr or index_result.stdout).strip()
+                raise RuntimeError(f"scip-python index failed for {repo_root}: {stderr}")
 
-        return json.loads(print_result.stdout)
+            return _print_scip_index(repo_root, index_path)
 
 
 RESOLVER_STRATEGIES: tuple[ReferenceResolverStrategy, ...] = (
     TypeScriptScipResolverStrategy(),
+    PythonScipResolverStrategy(),
 )
 
 
@@ -188,15 +303,36 @@ def _find_typescript_configs(repo_root: Path) -> list[Path]:
     """@brief Discover tsconfig files while skipping heavy generated directories."""
     configs = []
     for current_root, dirnames, filenames in os.walk(repo_root):
-        dirnames[:] = [dirname for dirname in dirnames if dirname not in {".git", "dist", "build", "node_modules"}]
+        dirnames[:] = [dirname for dirname in dirnames if dirname not in SCIP_DISCOVERY_EXCLUDED_DIRS]
         if "tsconfig.json" in filenames:
             configs.append(Path(current_root) / "tsconfig.json")
     return configs
 
 
+def _has_python_project_markers(repo_root: Path) -> bool:
+    """@brief Return whether a repository looks like a Python project."""
+    for current_root, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [dirname for dirname in dirnames if dirname not in SCIP_DISCOVERY_EXCLUDED_DIRS]
+        if PYTHON_PROJECT_MARKERS.intersection(filenames):
+            return True
+    return False
+
+
 def _has_scip_tools() -> bool:
     """@brief Return whether the SCIP CLI tools are available on PATH."""
     return shutil.which("scip-typescript") is not None and shutil.which("scip") is not None
+
+
+def _has_scip_python_tools() -> bool:
+    """@brief Return whether the Python SCIP CLI tools are available on PATH."""
+    return shutil.which("scip-python") is not None and shutil.which("scip") is not None
+
+
+def _has_supported_python_scip_runtime() -> bool:
+    """@brief Return whether the current runtime satisfies scip-python prerequisites."""
+    return sys.version_info >= (3, 10) and (
+        shutil.which("pip") is not None or shutil.which("pip3") is not None
+    )
 
 
 def _has_node_modules(repo_root: Path, tsconfig_paths: list[Path]) -> bool:
@@ -244,6 +380,104 @@ def _build_scip_definition_index(scip_index: dict) -> dict[str, dict]:
                 "line_no": occurrence["range"][0] + 1,
             }
     return definitions
+
+
+def _print_scip_index(repo_root: Path, index_path: Path) -> dict:
+    """@brief Render a binary SCIP index as JSON for resolver matching.
+
+    @param repo_root Repository root being indexed.
+    @param index_path Path to the generated `.scip` file.
+    @return Parsed JSON object emitted by `scip print --json`.
+    """
+    print_cmd = ["scip", "print", "--json", str(index_path)]
+    print_result = subprocess.run(
+        print_cmd,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if print_result.returncode != 0:
+        stderr = (print_result.stderr or print_result.stdout).strip()
+        raise RuntimeError(f"scip print failed for {repo_root}: {stderr}")
+    return json.loads(print_result.stdout)
+
+
+def _lookup_symbol_candidates(
+    cur,
+    target_name: str,
+    source_file_id: Optional[int] = None,
+    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
+) -> list[tuple[int, int]]:
+    """@brief Return ranked symbol candidates for heuristic fallback matching.
+
+    @param cur Open database cursor.
+    @param target_name Symbol name to resolve.
+    @param source_file_id Optional source file id used to prefer same-file matches.
+    @param cache Optional reusable candidate cache.
+    @return Ranked `(symbol_id, file_id)` candidate tuples.
+    """
+    cache_key = (target_name.lower(), source_file_id)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    ranked_source_file_id = source_file_id if source_file_id is not None else -1
+    cur.execute(
+        """
+        SELECT s.id, s.file_id
+        FROM symbols s
+        WHERE lower(s.name) = lower(%s)
+        ORDER BY
+            CASE WHEN s.file_id = %s THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+            s.is_exported DESC,
+            s.start_line
+        LIMIT 64
+        """,
+        (target_name, ranked_source_file_id),
+    )
+    candidates = [(row[0], row[1]) for row in cur.fetchall()]
+    if cache is not None:
+        cache[cache_key] = candidates
+    return candidates
+
+
+def _resolve_target_symbol_heuristic(
+    cur,
+    target_name: str,
+    source_file_id: Optional[int] = None,
+    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
+) -> tuple[Optional[int], Optional[int], float, str]:
+    """@brief Resolve a symbol by name while exposing heuristic confidence.
+
+    @param cur Open database cursor.
+    @param target_name Symbol name to resolve.
+    @param source_file_id Optional source file id used for same-file scoping.
+    @param cache Optional reusable candidate cache.
+    @return Tuple of `(target_symbol_id, target_file_id, confidence, method)`.
+    """
+    candidates = _lookup_symbol_candidates(
+        cur,
+        target_name,
+        source_file_id=source_file_id,
+        cache=cache,
+    )
+    if not candidates:
+        return (None, None, 0.0, "unresolved")
+
+    same_file_candidates = (
+        [candidate for candidate in candidates if candidate[1] == source_file_id]
+        if source_file_id is not None
+        else []
+    )
+    if len(same_file_candidates) == 1:
+        return (*same_file_candidates[0], HEURISTIC_NAME_CONFIDENCE, "heuristic_name")
+    if len(candidates) == 1:
+        return (*candidates[0], HEURISTIC_NAME_CONFIDENCE, "heuristic_name")
+
+    preferred_candidate = same_file_candidates[0] if same_file_candidates else candidates[0]
+    return (*preferred_candidate, AMBIGUOUS_HEURISTIC_CONFIDENCE, "heuristic_name_ambiguous")
 
 
 def _resolve_symbol_at_location(
@@ -318,7 +552,7 @@ def _build_resolved_reference(
     resolved = {
         key: value
         for key, value in reference.items()
-        if key not in {"source_path", "language"}
+        if key not in {"source_path", "language", "source_file_id"}
     }
     resolved.update(
         {
@@ -341,7 +575,7 @@ def _resolve_reference_rows(
     """@brief Resolve a batch of reference rows with exact strategies then fallback."""
     exact_matches = _collect_exact_matches(repo_root, rows)
     exact_lookup_cache: dict[tuple[str, str, int], tuple[Optional[int], Optional[int]]] = {}
-    name_lookup_cache: dict[str, tuple[Optional[int], Optional[int]]] = {}
+    name_lookup_cache: dict[tuple[str, Optional[int]], list[tuple[int, int]]] = {}
     resolved_rows = []
 
     for row in rows:
@@ -372,13 +606,12 @@ def _resolve_reference_rows(
                 )
                 continue
 
-        target_symbol_id, target_file_id = resolve_target_symbol(
+        target_symbol_id, target_file_id, resolution_confidence, resolution_method = _resolve_target_symbol_heuristic(
             cur,
             row["target_name"],
+            source_file_id=row.get("source_file_id"),
             cache=name_lookup_cache,
         )
-        resolution_method = "heuristic_name" if target_symbol_id else "unresolved"
-        resolution_confidence = HEURISTIC_NAME_CONFIDENCE if target_symbol_id else 0.0
         resolved_rows.append(
             _build_resolved_reference(
                 row,
@@ -437,7 +670,7 @@ def extract_symbol_references(chunks: list[dict]) -> list[dict]:
 def resolve_target_symbol(
     cur,
     target_name: str,
-    cache: Optional[dict[str, tuple[Optional[int], Optional[int]]]] = None,
+    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
 ) -> tuple[Optional[int], Optional[int]]:
     """@brief Resolve a target symbol name to a preferred symbol/file id pair.
 
@@ -446,29 +679,12 @@ def resolve_target_symbol(
     @param cache Optional lower-cased name lookup cache reused across a batch.
     @return Tuple of `(target_symbol_id, target_file_id)`, both nullable.
     """
-    cache_key = target_name.lower()
-    if cache is not None and cache_key in cache:
-        return cache[cache_key]
-
-    cur.execute(
-        """
-        SELECT s.id, s.file_id
-        FROM symbols s
-        WHERE lower(s.name) = lower(%s)
-        ORDER BY
-            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
-            CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
-            s.is_exported DESC,
-            s.start_line
-        LIMIT 1
-        """,
-        (target_name,),
+    target_symbol_id, target_file_id, _, _ = _resolve_target_symbol_heuristic(
+        cur,
+        target_name,
+        cache=cache,
     )
-    row = cur.fetchone()
-    resolved = (row[0], row[1]) if row else (None, None)
-    if cache is not None:
-        cache[cache_key] = resolved
-    return resolved
+    return (target_symbol_id, target_file_id)
 
 
 def resolve_references(
@@ -476,6 +692,7 @@ def resolve_references(
     chunks: list[dict],
     language: Optional[str] = None,
     file_path: Optional[str] = None,
+    source_file_id: Optional[int] = None,
     repo_root: Optional[Path] = None,
     repo_name: Optional[str] = None,
 ) -> list[dict]:
@@ -485,6 +702,7 @@ def resolve_references(
     @param chunks Chunk dictionaries emitted by the parser/chunker stage.
     @param language Language label for the source file.
     @param file_path Repository-relative source path for the file.
+    @param source_file_id Optional source file id for same-file heuristic fallback.
     @param repo_root Repository root on disk.
     @param repo_name Repository identifier stored in the database.
     @return Resolver records ready for persistence, with target ids, confidence,
@@ -496,6 +714,7 @@ def resolve_references(
             **reference,
             "source_path": _normalize_relative_path(file_path or ""),
             "language": language,
+            "source_file_id": source_file_id,
         }
         for reference in references
     ]
@@ -537,7 +756,8 @@ def refresh_repo_references(cur, repo_name: str, repo_root: Optional[Path] = Non
     """
     cur.execute(
         """
-        SELECT sr.id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no
+        SELECT sr.id, sr.source_file_id, f.path, f.language, sr.source_symbol_name,
+               sr.target_name, sr.reference_kind, sr.line_no
         FROM symbol_references sr
         JOIN files f ON f.id = sr.source_file_id
         WHERE f.repo = %s
@@ -548,11 +768,13 @@ def refresh_repo_references(cur, repo_name: str, repo_root: Optional[Path] = Non
     rows = [
         {
             "id": row[0],
-            "source_path": row[1],
-            "language": row[2],
-            "target_name": row[3],
-            "reference_kind": row[4],
-            "line_no": row[5],
+            "source_file_id": row[1],
+            "source_path": row[2],
+            "language": row[3],
+            "source_symbol_name": row[4],
+            "target_name": row[5],
+            "reference_kind": row[6],
+            "line_no": row[7],
         }
         for row in cur.fetchall()
     ]
@@ -608,7 +830,8 @@ def capture_incremental_refresh(cur, repo_name: str, file_id: int) -> dict:
 
     cur.execute(
         """
-        SELECT sr.id, sr.source_file_id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no
+        SELECT sr.id, sr.source_file_id, f.path, f.language, sr.source_symbol_name,
+               sr.target_name, sr.reference_kind, sr.line_no
         FROM symbol_references sr
         JOIN files f ON f.id = sr.source_file_id
         WHERE sr.target_symbol_id = ANY(%s)
@@ -623,9 +846,10 @@ def capture_incremental_refresh(cur, repo_name: str, file_id: int) -> dict:
             "source_file_id": row[1],
             "source_path": row[2],
             "language": row[3],
-            "target_name": row[4],
-            "reference_kind": row[5],
-            "line_no": row[6],
+            "source_symbol_name": row[4],
+            "target_name": row[5],
+            "reference_kind": row[6],
+            "line_no": row[7],
         }
         for row in cur.fetchall()
     ]

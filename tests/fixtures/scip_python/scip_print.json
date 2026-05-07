@@ -1,0 +1,87 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "scip-python",
+      "version": "0.8.0"
+    },
+    "project_root": "file:///probe",
+    "text_document_encoding": 1
+  },
+  "documents": [
+    {
+      "relative_path": "src/helpers.py",
+      "occurrences": [
+        {
+          "range": [
+            0,
+            0,
+            0
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers",
+          "symbol_roles": 1
+        },
+        {
+          "range": [
+            0,
+            6,
+            13
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#",
+          "symbol_roles": 1
+        },
+        {
+          "range": [
+            1,
+            8,
+            13
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#greet().",
+          "symbol_roles": 1
+        }
+      ],
+      "symbols": [
+        {
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#"
+        },
+        {
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#greet()."
+        }
+      ]
+    },
+    {
+      "relative_path": "src/main.py",
+      "occurrences": [
+        {
+          "range": [
+            2,
+            14,
+            21
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/main/run().",
+          "symbol_roles": 1
+        },
+        {
+          "range": [
+            3,
+            14,
+            21
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#"
+        },
+        {
+          "range": [
+            4,
+            19,
+            24
+          ],
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/helpers/Greeter#greet()."
+        }
+      ],
+      "symbols": [
+        {
+          "symbol": "scip-python python scip-python-fixture 0.1.0 src/main/run()."
+        }
+      ]
+    }
+  ]
+}

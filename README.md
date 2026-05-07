@@ -11,7 +11,7 @@ CodeBrain is a codebase indexing and MCP query system:
 - An embedding endpoint compatible with the configured embedding client (e.g. Ollama on the host at `:11434`)
 - An OpenAI-compatible chat endpoint for classification
 
-Postgres + pgvector, the MCP server, and the indexer toolchain (Node, Python, tree-sitter, SCIP) all run in containers managed by `docker/docker-compose.yml`.
+Postgres + pgvector, the MCP server, and the indexer toolchain (Node, Python, tree-sitter, `scip-typescript`, `scip-python`, and the base `scip` CLI) all run in containers managed by `docker/docker-compose.yml`.
 
 ## Configuration
 

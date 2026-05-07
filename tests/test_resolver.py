@@ -43,20 +43,39 @@ class _ResolverCursor:
                 and target_line == 2
             ):
                 self._pending_fetchone = (902, 91)
+            elif (
+                repo_name == "fixture-python"
+                and target_path == "src/helpers.py"
+                and target_name == "Greeter"
+                and target_line == 1
+            ):
+                self._pending_fetchone = (911, 191)
+            elif (
+                repo_name == "fixture-python"
+                and target_path == "src/helpers.py"
+                and target_name == "greet"
+                and target_line == 2
+            ):
+                self._pending_fetchone = (912, 191)
             else:
                 self._pending_fetchone = None
             self._pending_fetchall = []
             return
 
-        if normalized.startswith("select s.id, s.file_id from symbols s where lower(s.name) = lower(%s)"):
+        if normalized.startswith(
+            "select s.id, s.file_id from symbols s where lower(s.name) = lower(%s) order by case when s.file_id = %s then 0 else 1 end, case when s.is_primary_declaration then 0 else 1 end, case when s.declared_in_extension then 1 else 0 end, s.is_exported desc, s.start_line limit 64"
+        ):
             target_name = params[0].lower()
+            source_file_id = params[1]
             if target_name == "photoservice":
-                self._pending_fetchone = (101, 11)
+                self._pending_fetchall = [(101, 11)]
             elif target_name == "helper":
-                self._pending_fetchone = (202, 22)
+                self._pending_fetchall = [(203, 43), (202, 22)] if source_file_id == 43 else [(202, 22)]
+            elif target_name == "ambiguoushelper":
+                self._pending_fetchall = [(301, 31), (302, 32)]
             else:
-                self._pending_fetchone = None
-            self._pending_fetchall = []
+                self._pending_fetchall = []
+            self._pending_fetchone = None
             return
 
         if normalized.startswith("select id from symbols where file_id = %s"):
@@ -65,30 +84,35 @@ class _ResolverCursor:
             return
 
         if normalized.startswith(
-            "select sr.id, sr.source_file_id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where sr.target_symbol_id = any(%s) and sr.source_file_id <> %s"
+            "select sr.id, sr.source_file_id, f.path, f.language, sr.source_symbol_name, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where sr.target_symbol_id = any(%s) and sr.source_file_id <> %s"
         ):
             self._pending_fetchall = [
-                (301, 41, "src/a.py", "python", "PhotoService", "type_reference", 10),
-                (302, 42, "src/b.py", "python", "MissingService", "call", 11),
-                (303, 43, "src/c.py", "python", "helper", "call", 12),
+                (301, 41, "src/a.py", "python", "refreshPhotos", "PhotoService", "type_reference", 10),
+                (302, 42, "src/b.py", "python", "refreshPhotos", "MissingService", "call", 11),
+                (303, 43, "src/c.py", "python", "refreshPhotos", "helper", "call", 12),
             ]
             self._pending_fetchone = None
             return
 
         if normalized.startswith(
-            "select sr.id, f.path, f.language, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where f.repo = %s"
+            "select sr.id, sr.source_file_id, f.path, f.language, sr.source_symbol_name, sr.target_name, sr.reference_kind, sr.line_no from symbol_references sr join files f on f.id = sr.source_file_id where f.repo = %s"
         ):
             if params[0] == "fixture-repo":
                 self._pending_fetchall = [
-                    (501, "src/main.ts", "typescript", "Greeter", "type_reference", 1),
-                    (502, "src/main.ts", "typescript", "Greeter", "type_reference", 2),
-                    (503, "src/main.ts", "typescript", "greet", "member_call", 3),
+                    (501, 51, "src/main.ts", "typescript", "main", "Greeter", "type_reference", 1),
+                    (502, 51, "src/main.ts", "typescript", "main", "Greeter", "type_reference", 2),
+                    (503, 51, "src/main.ts", "typescript", "main", "greet", "member_call", 3),
+                ]
+            elif params[0] == "fixture-python":
+                self._pending_fetchall = [
+                    (601, 61, "src/main.py", "python", "run", "Greeter", "type_reference", 4),
+                    (602, 61, "src/main.py", "python", "run", "greet", "member_call", 5),
                 ]
             else:
                 self._pending_fetchall = [
-                    (401, "src/a.py", "python", "PhotoService", "type_reference", 10),
-                    (402, "src/b.py", "python", "MissingService", "call", 11),
-                    (403, "src/c.py", "python", "helper", "call", 12),
+                    (401, 41, "src/a.py", "python", "refreshPhotos", "PhotoService", "type_reference", 10),
+                    (402, 42, "src/b.py", "python", "refreshPhotos", "MissingService", "call", 11),
+                    (403, 43, "src/c.py", "python", "refreshPhotos", "helper", "call", 12),
                 ]
             self._pending_fetchone = None
             return
@@ -309,7 +333,7 @@ def test_reresolve_inbound_references_updates_only_captured_rows() -> None:
     assert cur.updated_rows == [
         (101, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "type_reference", 301),
         (None, 0.0, "unresolved", "call", 302),
-        (202, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 303),
+        (203, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 303),
     ]
 
 
@@ -323,7 +347,7 @@ def test_refresh_repo_references_updates_repo_rows_serially() -> None:
     assert cur.updated_rows == [
         (101, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "type_reference", 401),
         (None, 0.0, "unresolved", "call", 402),
-        (202, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 403),
+        (203, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 403),
     ]
 
 
@@ -344,6 +368,70 @@ def test_refresh_repo_references_prefers_scip_typescript_exact_matches(monkeypat
         (901, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "type_reference", 501),
         (901, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "type_reference", 502),
         (902, resolver.EXACT_MATCH_CONFIDENCE, "scip_typescript", "member_call", 503),
+    ]
+
+
+def test_refresh_repo_references_prefers_scip_python_exact_matches(monkeypatch) -> None:
+    """@brief Verify Python repo refresh uses SCIP matches before heuristic fallback."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_python"
+    fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
+    strategy = resolver.PythonScipResolverStrategy()
+    monkeypatch.setattr(resolver, "_has_scip_python_tools", lambda: True)
+    monkeypatch.setattr(resolver, "_has_supported_python_scip_runtime", lambda: True)
+    monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root: fixture_index)
+    monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-python", repo_root=fixture_root)
+
+    assert updated == 2
+    assert cur.updated_rows == [
+        (911, resolver.EXACT_MATCH_CONFIDENCE, "scip_python", "type_reference", 601),
+        (912, resolver.EXACT_MATCH_CONFIDENCE, "scip_python", "member_call", 602),
+    ]
+
+
+def test_resolve_reference_rows_marks_ambiguous_heuristic_matches_below_threshold() -> None:
+    """@brief Verify ambiguous fallback matches keep edges but lower confidence below 0.55."""
+    cur = _ResolverCursor()
+
+    resolved = resolver._resolve_reference_rows(
+        cur,
+        [
+            {
+                "id": 701,
+                "source_file_id": 43,
+                "source_path": "src/c.py",
+                "language": "python",
+                "source_symbol_name": "refreshPhotos",
+                "target_name": "helper",
+                "reference_kind": "call",
+                "line_no": 12,
+            },
+            {
+                "id": 702,
+                "source_file_id": 50,
+                "source_path": "src/d.py",
+                "language": "python",
+                "source_symbol_name": "refreshPhotos",
+                "target_name": "ambiguousHelper",
+                "reference_kind": "call",
+                "line_no": 13,
+            },
+        ],
+    )
+
+    assert [
+        (
+            row["target_symbol_id"],
+            row["target_file_id"],
+            row["resolution_confidence"],
+            row["resolution_method"],
+        )
+        for row in resolved
+    ] == [
+        (203, 43, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name"),
+        (301, 31, resolver.AMBIGUOUS_HEURISTIC_CONFIDENCE, "heuristic_name_ambiguous"),
     ]
 
 
