@@ -61,6 +61,8 @@ export type ReferenceRow = {
   reference_kind: string;
   source_symbol_name: string | null;
   target_paths: string[] | null;
+  resolution_confidence: number | null;
+  resolution_method: string | null;
 };
 
 /** @brief Cross-boundary coupling edge returned by analyze_coupling. */

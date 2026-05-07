@@ -337,15 +337,25 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "find_references",
-    "Finds indexed lexical and call references to an exact symbol name. Repository scope is required.",
+    "Finds indexed lexical and call references to an exact symbol name. Repository scope is required. Resolved (target_symbol_id-backed) edges are preferred; results below the confidence threshold are filtered out unless include_unresolved is set.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol name to find references for."),
       file: z.string().optional().describe("Optional target declaration file filter to disambiguate common names."),
       limit: z.number().optional().describe("Max references to return (default 25)."),
+      min_confidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe("Minimum resolution_confidence to include (default 0.55). Set to 0 to include unresolved heuristic name matches."),
+      include_unresolved: z
+        .boolean()
+        .optional()
+        .describe("When true, returns the full set including rows below the confidence threshold."),
     },
-    async ({ repo, name, file, limit = 25 }) => {
-      logToolInvocation("find_references", { repo, name, file, limit });
+    async ({ repo, name, file, limit = 25, min_confidence = 0.55, include_unresolved = false }) => {
+      logToolInvocation("find_references", { repo, name, file, limit, min_confidence, include_unresolved });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) {
@@ -359,13 +369,18 @@ export function registerTools(server: McpServer): void {
           sr.line_no,
           sr.reference_kind,
           sr.source_symbol_name,
-          array_remove(array_agg(DISTINCT tf.path), NULL) AS target_paths
+          sr.resolution_confidence,
+          sr.resolution_method,
+          array_remove(array_agg(DISTINCT COALESCE(rs_file.path, tf.path)), NULL) AS target_paths
         FROM symbol_references sr
         JOIN files sf ON sf.id = sr.source_file_id
-        LEFT JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+        LEFT JOIN symbols rs ON rs.id = sr.target_symbol_id
+        LEFT JOIN files rs_file ON rs_file.id = rs.file_id AND rs_file.repo = $2
+        LEFT JOIN symbols s ON sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name)
         LEFT JOIN files tf ON tf.id = s.file_id AND tf.repo = $2
         WHERE lower(sr.target_name) = lower($1)
           AND sf.repo = $2
+          AND ($5::boolean OR COALESCE(sr.resolution_confidence, 0) >= $4)
           AND (
             $3::text IS NULL
             OR EXISTS (
@@ -377,15 +392,18 @@ export function registerTools(server: McpServer): void {
                 AND tf2.path LIKE '%' || $3 || '%'
             )
           )
-        GROUP BY sf.path, sr.line_no, sr.reference_kind, sr.source_symbol_name
-        ORDER BY sf.path, sr.line_no
-        LIMIT $4
+        GROUP BY sf.path, sr.line_no, sr.reference_kind, sr.source_symbol_name, sr.resolution_confidence, sr.resolution_method
+        ORDER BY sr.resolution_confidence DESC NULLS LAST, sf.path, sr.line_no
+        LIMIT $6
       `,
-        [name, repo, file || null, limit],
+        [name, repo, file || null, min_confidence, include_unresolved, limit],
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No references found for "${name}" in repo \`${repo}\`.` }] };
+        const hint = !include_unresolved && min_confidence > 0
+          ? ` (confidence threshold ${min_confidence}; pass include_unresolved=true to see heuristic-only matches)`
+          : "";
+        return { content: [{ type: "text", text: `No references found for "${name}" in repo \`${repo}\`${hint}.` }] };
       }
 
       return { content: [{ type: "text", text: formatReferenceResults(result.rows as ReferenceRow[], name) }] };

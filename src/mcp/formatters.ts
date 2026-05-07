@@ -78,10 +78,18 @@ export function formatReferenceResults(rows: ReferenceRow[], name: string): stri
     rows
       .map((row) => {
         const targets = row.target_paths?.length ? ` -> ${row.target_paths.join(", ")}` : "";
+        const confidenceParts: string[] = [];
+        if (row.resolution_confidence != null) {
+          confidenceParts.push(`confidence: ${row.resolution_confidence.toFixed(2)}`);
+        }
+        if (row.resolution_method) {
+          confidenceParts.push(row.resolution_method);
+        }
+        const confidence = confidenceParts.length ? ` (${confidenceParts.join(", ")})` : "";
         return [
           `**${row.source_path}:${row.line_no}**`,
           row.source_symbol_name ? `  Source Symbol: \`${row.source_symbol_name}\`` : "",
-          `  Kind: ${row.reference_kind}${targets}`,
+          `  Kind: ${row.reference_kind}${targets}${confidence}`,
         ]
           .filter(Boolean)
           .join("\n");

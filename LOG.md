@@ -1,5 +1,6 @@
 # LOG
 
+2026-05-07 Implemented CODEBRAIN-19 find_references resolved-edge prioritization: tool now joins on target_symbol_id for accurate target paths, surfaces resolution_confidence and resolution_method per result, defaults to filtering rows below 0.55, and adds optional `min_confidence`/`include_unresolved` parameters while keeping the existing input shape backward compatible.
 2026-05-07 Implemented CODEBRAIN-52 repo-root reorganization: moved Python ingestion sources (`ingest.py`, `chunker.py`, `classifier.py`, `embedder.py`, `synthesize_modules.py`, `desktop.py`) into the new `codebrain/` package, grouped Docker artifacts under `docker/`, retargeted Compose `build.context`/`dockerfile`/volume paths, and updated imports/tests/README/AGENTS/ARCHITECTURE references.
 2026-05-07 Hardened CODEBRAIN-17 local fallback: TypeScript exact resolution now skips missing SCIP CLIs and continues with heuristic resolution instead of aborting bare-metal ingest runs.
 2026-05-07 Implemented CODEBRAIN-17 TypeScript exact reference resolution: added a strategy-based resolver path in resolver.py, integrated scip-typescript occurrence-to-symbol joins for full and incremental refresh, and covered it with a small TS SCIP fixture regression.
