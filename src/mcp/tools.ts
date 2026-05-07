@@ -77,6 +77,43 @@ async function requireRepository(repo: string): Promise<{ content: Array<{ type:
 }
 
 /**
+ * @brief Render resolved or unresolved relationship targets as readable labels.
+ * @param row Relationship row with optional resolved file/location columns.
+ * @returns Display label for a structural target symbol.
+ */
+function formatRelationshipTarget(row: Record<string, unknown>): string {
+  const targetName = String(row.target_name || "unknown");
+  const targetPath = row.target_path ? String(row.target_path) : null;
+  const targetStart = row.target_start_line ? Number(row.target_start_line) : null;
+  const targetEnd = row.target_end_line ? Number(row.target_end_line) : null;
+  if (targetPath && targetStart && targetEnd) {
+    return `${targetName} (${targetPath}:${targetStart}-${targetEnd})`;
+  }
+
+  const externalModule = row.external_module ? String(row.external_module) : null;
+  if (externalModule) {
+    return `${targetName} (external: ${externalModule})`;
+  }
+  return targetName;
+}
+
+/**
+ * @brief Build a stable symbol locator string for output headers.
+ * @param row Query row containing symbol/path/line metadata.
+ * @returns Human-readable symbol locator.
+ */
+function formatSymbolLocator(row: Record<string, unknown>): string {
+  const symbolName = String(row.root_symbol_name || row.symbol_name || "unknown");
+  const symbolPath = row.root_symbol_path ? String(row.root_symbol_path) : row.symbol_path ? String(row.symbol_path) : null;
+  const start = row.root_symbol_start_line ? Number(row.root_symbol_start_line) : row.symbol_start_line ? Number(row.symbol_start_line) : null;
+  const end = row.root_symbol_end_line ? Number(row.root_symbol_end_line) : row.symbol_end_line ? Number(row.symbol_end_line) : null;
+  if (symbolPath && start && end) {
+    return `${symbolName} (${symbolPath}:${start}-${end})`;
+  }
+  return symbolName;
+}
+
+/**
  * @brief Registers all CodeBrain MCP tools.
  * @param server MCP server instance.
  * @returns Void.
@@ -407,6 +444,265 @@ export function registerTools(server: McpServer): void {
       }
 
       return { content: [{ type: "text", text: formatReferenceResults(result.rows as ReferenceRow[], name) }] };
+    },
+  );
+
+  server.tool(
+    "find_supertypes",
+    "Returns transitive parent types/interfaces for a symbol by walking symbol_relationships where kind is extends/implements. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
+      max_depth: z.number().optional().describe("Depth limit for the transitive walk (default 4)."),
+    },
+    async ({ repo, symbol, max_depth = 4 }) => {
+      logToolInvocation("find_supertypes", { repo, symbol, max_depth });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const result = await query(
+        `
+        WITH start_symbols AS (
+          SELECT
+            s.id,
+            s.name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 25
+        ),
+        supertype_tree AS (
+          SELECT
+            ss.id AS root_symbol_id,
+            ss.name AS root_symbol_name,
+            ss.file_path AS root_symbol_path,
+            ss.start_line AS root_symbol_start_line,
+            ss.end_line AS root_symbol_end_line,
+            sr.source_symbol_id,
+            sr.target_symbol_id,
+            sr.relationship_kind,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            1 AS depth,
+            ARRAY[ss.id, COALESCE(sr.target_symbol_id, -1)]::int[] AS walk_path
+          FROM start_symbols ss
+          JOIN symbol_relationships sr ON sr.source_symbol_id = ss.id
+          WHERE sr.relationship_kind IN ('extends', 'implements')
+
+          UNION ALL
+
+          SELECT
+            st.root_symbol_id,
+            st.root_symbol_name,
+            st.root_symbol_path,
+            st.root_symbol_start_line,
+            st.root_symbol_end_line,
+            sr.source_symbol_id,
+            sr.target_symbol_id,
+            sr.relationship_kind,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            st.depth + 1 AS depth,
+            st.walk_path || COALESCE(sr.target_symbol_id, -1)
+          FROM supertype_tree st
+          JOIN symbol_relationships sr ON sr.source_symbol_id = st.target_symbol_id
+          WHERE st.depth < $3
+            AND st.target_symbol_id IS NOT NULL
+            AND sr.relationship_kind IN ('extends', 'implements')
+            AND NOT COALESCE(sr.target_symbol_id, -1) = ANY(st.walk_path)
+        )
+        SELECT DISTINCT
+          st.root_symbol_id,
+          st.root_symbol_name,
+          st.root_symbol_path,
+          st.root_symbol_start_line,
+          st.root_symbol_end_line,
+          st.relationship_kind,
+          st.target_name,
+          st.external_module,
+          st.depth,
+          tf.path AS target_path,
+          ts.start_line AS target_start_line,
+          ts.end_line AS target_end_line
+        FROM supertype_tree st
+        LEFT JOIN symbols ts ON ts.id = st.target_symbol_id
+        LEFT JOIN files tf ON tf.id = ts.file_id AND tf.repo = $1
+        ORDER BY st.root_symbol_name, st.depth, st.relationship_kind, st.target_name
+      `,
+        [repo, symbol, max_depth],
+      );
+
+      if (result.rows.length === 0) {
+        return { content: [{ type: "text", text: `No supertypes found for "${symbol}" in repo \`${repo}\`.` }] };
+      }
+
+      const lines = [`Supertypes for \`${symbol}\` in repo \`${repo}\`:`, ""];
+      let currentRoot = "";
+      for (const row of result.rows as Array<Record<string, unknown>>) {
+        const rootLabel = formatSymbolLocator(row);
+        if (rootLabel !== currentRoot) {
+          if (currentRoot) {
+            lines.push("");
+          }
+          lines.push(`- Root: ${rootLabel}`);
+          currentRoot = rootLabel;
+        }
+        const depth = Number(row.depth);
+        lines.push(`  depth ${depth} [${String(row.relationship_kind)}] -> ${formatRelationshipTarget(row)}`);
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
+    "find_subtypes",
+    "Returns transitive child types/interfaces for a symbol by walking symbol_relationships where kind is extends/implements. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
+      max_depth: z.number().optional().describe("Depth limit for the transitive walk (default 4)."),
+    },
+    async ({ repo, symbol, max_depth = 4 }) => {
+      logToolInvocation("find_subtypes", { repo, symbol, max_depth });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const result = await query(
+        `
+        WITH start_symbols AS (
+          SELECT
+            s.id,
+            s.name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 25
+        ),
+        subtype_tree AS (
+          SELECT
+            ss.id AS root_symbol_id,
+            ss.name AS root_symbol_name,
+            ss.file_path AS root_symbol_path,
+            ss.start_line AS root_symbol_start_line,
+            ss.end_line AS root_symbol_end_line,
+            sr.source_symbol_id,
+            sr.target_symbol_id,
+            sr.relationship_kind,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            1 AS depth,
+            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
+          FROM start_symbols ss
+          JOIN symbol_relationships sr
+            ON sr.relationship_kind IN ('extends', 'implements')
+           AND (
+             sr.target_symbol_id = ss.id
+             OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(ss.name))
+           )
+
+          UNION ALL
+
+          SELECT
+            st.root_symbol_id,
+            st.root_symbol_name,
+            st.root_symbol_path,
+            st.root_symbol_start_line,
+            st.root_symbol_end_line,
+            sr.source_symbol_id,
+            sr.target_symbol_id,
+            sr.relationship_kind,
+            sr.target_name,
+            sr.external_module,
+            sr.line_no,
+            st.depth + 1 AS depth,
+            st.walk_path || sr.source_symbol_id
+          FROM subtype_tree st
+          JOIN symbol_relationships sr
+            ON sr.target_symbol_id = st.source_symbol_id
+           AND sr.relationship_kind IN ('extends', 'implements')
+          WHERE st.depth < $3
+            AND NOT sr.source_symbol_id = ANY(st.walk_path)
+        )
+        SELECT DISTINCT
+          st.root_symbol_id,
+          st.root_symbol_name,
+          st.root_symbol_path,
+          st.root_symbol_start_line,
+          st.root_symbol_end_line,
+          st.relationship_kind,
+          st.target_name,
+          st.external_module,
+          st.depth,
+          child.name AS child_symbol_name,
+          cf.path AS child_path,
+          child.start_line AS child_start_line,
+          child.end_line AS child_end_line
+        FROM subtype_tree st
+        JOIN symbols child ON child.id = st.source_symbol_id
+        JOIN files cf ON cf.id = child.file_id AND cf.repo = $1
+        ORDER BY st.root_symbol_name, st.depth, child.name, cf.path
+      `,
+        [repo, symbol, max_depth],
+      );
+
+      if (result.rows.length === 0) {
+        return { content: [{ type: "text", text: `No subtypes found for "${symbol}" in repo \`${repo}\`.` }] };
+      }
+
+      const lines = [`Subtypes for \`${symbol}\` in repo \`${repo}\`:`, ""];
+      let currentRoot = "";
+      for (const row of result.rows as Array<Record<string, unknown>>) {
+        const rootLabel = formatSymbolLocator(row);
+        if (rootLabel !== currentRoot) {
+          if (currentRoot) {
+            lines.push("");
+          }
+          lines.push(`- Root: ${rootLabel}`);
+          currentRoot = rootLabel;
+        }
+        const depth = Number(row.depth);
+        const childName = String(row.child_symbol_name || "unknown");
+        const childPath = String(row.child_path || "unknown");
+        const childStart = Number(row.child_start_line || 0);
+        const childEnd = Number(row.child_end_line || 0);
+        lines.push(
+          `  depth ${depth} [${String(row.relationship_kind)}] <- ${childName} (${childPath}:${childStart}-${childEnd})`,
+        );
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   );
 

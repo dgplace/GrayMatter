@@ -1,5 +1,6 @@
 # LOG
 
+2026-05-07 Implemented CODEBRAIN-23 MCP inheritance traversal tools: added `find_supertypes` and `find_subtypes` with recursive `symbol_relationships` walks over `extends`/`implements`, depth limits, and unresolved edge handling in the rendered output.
 2026-05-07 Implemented CODEBRAIN-21 inheritance edge extraction/persistence: added language-specific extends/implements/mixin parsing for TS/JS, Python, Java, C#, C++, and Swift signatures, persisted rows to `symbol_relationships` with resolver-backed `target_symbol_id` when available, and updated re-ingest clear/delete order to replace structural edges per file without duplicates.
 2026-05-07 Implemented CODEBRAIN-20 symbol_relationships schema bootstrap: added table DDL and indexes to `schema.sql` plus additive startup patches in `codebrain/ingest.py` and `src/db.ts` with source-symbol CASCADE and target-symbol SET NULL semantics.
 2026-05-07 Updated `scripts/build.sh` to recreate the long-running Compose services (`postgres` and `mcp`) after rebuilding, so helper-driven rebuilds also restart the active container stack.

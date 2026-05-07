@@ -97,6 +97,18 @@ test("find_references tool exposes confidence threshold knobs and prefers resolv
   assert.match(toolsSource, /COALESCE\(rs_file\.path, tf\.path\)/);
 });
 
+test("find_supertypes and find_subtypes tools walk symbol_relationships with depth and unresolved support", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"find_supertypes"/);
+  assert.match(toolsSource, /"find_subtypes"/);
+  assert.match(toolsSource, /WITH start_symbols AS/);
+  assert.match(toolsSource, /WITH start_symbols AS[\s\S]*subtype_tree AS/);
+  assert.match(toolsSource, /relationship_kind IN \('extends', 'implements'\)/);
+  assert.match(toolsSource, /st\.depth < \$3/);
+  assert.match(toolsSource, /sr\.target_symbol_id IS NULL AND lower\(sr\.target_name\) = lower\(ss\.name\)/);
+});
+
 test("db schema patches include resolved reference migration columns and indexes", () => {
   const dbSource = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
 
