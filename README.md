@@ -37,6 +37,9 @@ Helper scripts:
 The repo path argument is optional; if omitted, the scripts index the current
 working directory.
 
+`./scripts/build.sh` rebuilds the Compose images and then recreates the
+long-running `postgres` and `mcp` containers.
+
 The helper scripts mount the target repository at `/target` inside the
 container so they do not conflict with the CodeBrain source mount at
 `/workspace`.
