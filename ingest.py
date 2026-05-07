@@ -724,8 +724,14 @@ def process_file(
                     ),
                 )
 
-        # Resolve and store lexical/call references through the resolver stage.
-        for reference in resolver.resolve_references(cur, chunks):
+        # Persist unresolved rows during parallel ingest; refresh cross-file
+        # target ids in a later serial pass once all symbols are stable.
+        reference_records = (
+            resolver.resolve_references(cur, chunks)
+            if incremental_update
+            else resolver.build_reference_records(chunks)
+        )
+        for reference in reference_records:
             cur.execute(
                 """INSERT INTO symbol_references
                    (source_file_id, source_chunk_id, source_symbol_name, target_name,
@@ -1114,6 +1120,16 @@ def main(
             console.print(f"  [yellow]![/] [dim]{warn_path}[/]: {warn_msg}")
         if len(classifier_warning_details) > 5:
             console.print(f"  [dim]... and {len(classifier_warning_details) - 5} more[/]")
+
+    if stats["indexed"]:
+        console.print("\n  [dim]Refreshing cross-file symbol references...[/]")
+        resolve_conn = get_db(cfg)
+        try:
+            cur = resolve_conn.cursor()
+            resolver.refresh_repo_references(cur, repo_name)
+            resolve_conn.commit()
+        finally:
+            resolve_conn.close()
 
     # Update ingestion run
     finish_conn = get_db(cfg)

@@ -47,6 +47,15 @@ class _ResolverCursor:
             self._pending_fetchone = None
             return
 
+        if normalized.startswith("select sr.id, sr.target_name, sr.reference_kind from symbol_references sr join files f on f.id = sr.source_file_id where f.repo = %s"):
+            self._pending_fetchall = [
+                (401, "PhotoService", "type_reference"),
+                (402, "MissingService", "call"),
+                (403, "helper", "call"),
+            ]
+            self._pending_fetchone = None
+            return
+
         if normalized.startswith("select count(*) from files where repo = %s"):
             self._pending_fetchone = (20,)
             self._pending_fetchall = []
@@ -168,6 +177,47 @@ def test_resolve_references_returns_uniform_resolver_shape() -> None:
     ]
 
 
+def test_build_reference_records_defers_cross_file_resolution() -> None:
+    """@brief Verify unresolved reference records can be persisted before a serial refresh pass."""
+    records = resolver.build_reference_records(
+        [
+            {
+                "content": "\n".join(["PhotoService()", "helper()"]),
+                "start_line": 1,
+                "end_line": 2,
+                "symbol_name": "refreshPhotos",
+            }
+        ],
+    )
+
+    assert records == [
+        {
+            "chunk_index": 0,
+            "source_symbol_name": "refreshPhotos",
+            "target_name": "PhotoService",
+            "reference_kind": "type_reference",
+            "line_no": 1,
+            "target_symbol_id": None,
+            "target_file_id": None,
+            "resolution_confidence": 0.0,
+            "resolution_method": "unresolved",
+            "reference_kind_v2": "type_reference",
+        },
+        {
+            "chunk_index": 0,
+            "source_symbol_name": "refreshPhotos",
+            "target_name": "helper",
+            "reference_kind": "call",
+            "line_no": 2,
+            "target_symbol_id": None,
+            "target_file_id": None,
+            "resolution_confidence": 0.0,
+            "resolution_method": "unresolved",
+            "reference_kind_v2": "call",
+        },
+    ]
+
+
 def test_capture_incremental_refresh_emits_warning_only_guardrails() -> None:
     """@brief Verify incremental refresh plans warn on high file fan-out without broadening scope."""
     cur = _ResolverCursor()
@@ -199,4 +249,18 @@ def test_reresolve_inbound_references_updates_only_captured_rows() -> None:
         (101, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "type_reference", 301),
         (None, 0.0, "unresolved", "call", 302),
         (202, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 303),
+    ]
+
+
+def test_refresh_repo_references_updates_repo_rows_serially() -> None:
+    """@brief Verify the serial repo refresh resolves previously persisted unresolved rows."""
+    cur = _ResolverCursor()
+
+    updated = resolver.refresh_repo_references(cur, "CodeBrain")
+
+    assert updated == 3
+    assert cur.updated_rows == [
+        (101, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "type_reference", 401),
+        (None, 0.0, "unresolved", "call", 402),
+        (202, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name", "call", 403),
     ]

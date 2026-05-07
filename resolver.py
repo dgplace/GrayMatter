@@ -139,6 +139,92 @@ def resolve_references(cur, chunks: list[dict]) -> list[dict]:
     return resolved_references
 
 
+def build_reference_records(chunks: list[dict]) -> list[dict]:
+    """@brief Build unresolved resolver records for later cross-file resolution.
+
+    @param chunks Chunk dictionaries emitted by the parser/chunker stage.
+    @return Resolver records with a stable unresolved shape suitable for
+            persistence before a later resolution pass.
+    """
+    references = extract_symbol_references(chunks)
+    unresolved_references = []
+
+    for reference in references:
+        unresolved_references.append(
+            {
+                **reference,
+                "target_symbol_id": None,
+                "target_file_id": None,
+                "resolution_confidence": 0.0,
+                "resolution_method": "unresolved",
+                "reference_kind_v2": reference["reference_kind"],
+            }
+        )
+
+    return unresolved_references
+
+
+def refresh_repo_references(cur, repo_name: str) -> int:
+    """@brief Re-resolve all symbol references for a repository in a serial pass.
+
+    @param cur Open database cursor.
+    @param repo_name Repository whose references should be refreshed.
+    @return Number of reference rows updated.
+    """
+    cur.execute(
+        """
+        SELECT sr.id, sr.target_name, sr.reference_kind
+        FROM symbol_references sr
+        JOIN files f ON f.id = sr.source_file_id
+        WHERE f.repo = %s
+        ORDER BY sr.id
+        """,
+        (repo_name,),
+    )
+    rows = [
+        {
+            "id": row[0],
+            "target_name": row[1],
+            "reference_kind": row[2],
+        }
+        for row in cur.fetchall()
+    ]
+    if not rows:
+        return 0
+
+    lookup_cache: dict[str, tuple[Optional[int], Optional[int]]] = {}
+    updated_rows = 0
+
+    for row in rows:
+        target_symbol_id, _ = resolve_target_symbol(
+            cur,
+            row["target_name"],
+            cache=lookup_cache,
+        )
+        resolution_method = "heuristic_name" if target_symbol_id else "unresolved"
+        resolution_confidence = HEURISTIC_NAME_CONFIDENCE if target_symbol_id else 0.0
+        cur.execute(
+            """
+            UPDATE symbol_references
+            SET target_symbol_id = %s,
+                resolution_confidence = %s,
+                resolution_method = %s,
+                reference_kind_v2 = %s
+            WHERE id = %s
+            """,
+            (
+                target_symbol_id,
+                resolution_confidence,
+                resolution_method,
+                row["reference_kind"],
+                row["id"],
+            ),
+        )
+        updated_rows += 1
+
+    return updated_rows
+
+
 def capture_incremental_refresh(cur, repo_name: str, file_id: int) -> dict:
     """@brief Capture inbound references that must be re-resolved after a file update.
 
