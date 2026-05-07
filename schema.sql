@@ -112,6 +112,27 @@ CREATE INDEX idx_symbol_refs_target_name_kind ON symbol_references(target_name, 
 CREATE INDEX idx_symbols_file_primary_name ON symbols(file_id, is_primary_declaration, name);
 
 -- ============================================================
+-- Symbol relationships: structural edges between declarations
+-- ============================================================
+CREATE TABLE symbol_relationships (
+    id              SERIAL PRIMARY KEY,
+    source_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    source_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+    relationship_kind TEXT NOT NULL,                 -- extends, implements, mixin, type_alias, returns, param_type, field_type
+    target_name     TEXT NOT NULL,                   -- fallback name when target symbol is unresolved/external
+    external_module TEXT,                            -- optional module/namespace for unresolved external targets
+    line_no         INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_symbol_rels_source_file ON symbol_relationships(source_file_id);
+CREATE INDEX idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id);
+CREATE INDEX idx_symbol_rels_target_symbol ON symbol_relationships(target_symbol_id) WHERE target_symbol_id IS NOT NULL;
+CREATE INDEX idx_symbol_rels_kind ON symbol_relationships(relationship_kind);
+CREATE INDEX idx_symbol_rels_target_name ON symbol_relationships(target_name);
+
+-- ============================================================
 -- Dependencies: directed graph of imports and calls
 -- ============================================================
 CREATE TABLE dependencies (

@@ -306,6 +306,11 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS symbol_relationships" in patch_blob
+    assert "REFERENCES symbols(id) ON DELETE CASCADE" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol" in patch_blob
 
 
 def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:

@@ -252,6 +252,60 @@ SCHEMA_PATCHES = [
     ON symbols(file_id, is_primary_declaration, name)
     """,
     """
+    CREATE TABLE IF NOT EXISTS symbol_relationships (
+        id SERIAL PRIMARY KEY,
+        source_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        source_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+        relationship_kind TEXT NOT NULL,
+        target_name TEXT NOT NULL,
+        external_module TEXT,
+        line_no INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    ALTER TABLE symbol_relationships
+    ADD COLUMN IF NOT EXISTS target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL
+    """,
+    """
+    ALTER TABLE symbol_relationships
+    ADD COLUMN IF NOT EXISTS relationship_kind TEXT
+    """,
+    """
+    ALTER TABLE symbol_relationships
+    ADD COLUMN IF NOT EXISTS target_name TEXT
+    """,
+    """
+    ALTER TABLE symbol_relationships
+    ADD COLUMN IF NOT EXISTS external_module TEXT
+    """,
+    """
+    ALTER TABLE symbol_relationships
+    ADD COLUMN IF NOT EXISTS line_no INTEGER
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file
+    ON symbol_relationships(source_file_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol
+    ON symbol_relationships(source_symbol_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol
+    ON symbol_relationships(target_symbol_id)
+    WHERE target_symbol_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_kind
+    ON symbol_relationships(relationship_kind)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_name
+    ON symbol_relationships(target_name)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS module_intents (
       repo            TEXT NOT NULL,
       module_path     TEXT NOT NULL,
