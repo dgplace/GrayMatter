@@ -20,7 +20,7 @@ Runtime defaults live in:
 - `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
-Container runs honor two environment overrides for endpoint values: `DATABASE_URL` and `EMBED_BASE_URL`. Both are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
+Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 
 ## Ingest a Repository
 
@@ -29,7 +29,7 @@ Container runs honor two environment overrides for endpoint values: `DATABASE_UR
 Helper scripts:
 
 ```bash
-./scripts/build-indexer.sh
+./scripts/build.sh
 ./scripts/index-repo.sh /absolute/path/to/repo --force
 ./scripts/watch-repo.sh /absolute/path/to/repo
 ```

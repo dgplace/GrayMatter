@@ -335,6 +335,108 @@ def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> Non
     assert "Classifier file analysis fallback for demo.py" in result["warnings"][0]
 
 
+def test_apply_env_overrides_honors_classifier_base_url(monkeypatch) -> None:
+    """@brief Verify CLASSIFIER_BASE_URL env var overrides the classifier endpoint.
+
+    Container/CI runs need to point the classifier at a host-reachable URL
+    without editing the toml; this mirrors the existing EMBED_BASE_URL override.
+    """
+    monkeypatch.setenv("CLASSIFIER_BASE_URL", "http://host.docker.internal:9001")
+    cfg = ingest._apply_env_overrides({"classifier": {"base_url": "http://example:1"}})
+    assert cfg["classifier"]["base_url"] == "http://host.docker.internal:9001"
+
+    monkeypatch.delenv("CLASSIFIER_BASE_URL", raising=False)
+    untouched = ingest._apply_env_overrides({"classifier": {"base_url": "http://example:1"}})
+    assert untouched["classifier"]["base_url"] == "http://example:1"
+
+
+def test_process_file_clears_symbol_references_before_code_chunks(monkeypatch, tmp_path) -> None:
+    """@brief Verify per-file re-ingest deletes references and dependencies before chunks/symbols.
+
+    Locks in the deadlock fix: the cascade DELETE on symbol_references(source_chunk_id)
+    must not fire under parallel re-ingest, so symbol_references and dependencies
+    must be cleared before code_chunks/symbols.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fpath = repo_root / "demo.py"
+    fpath.write_text("print('x')\n", encoding="utf-8")
+
+    delete_order: list[str] = []
+
+    class _DeleteOrderCursor:
+        def __init__(self) -> None:
+            self._pending_fetch: tuple | None = None
+
+        def execute(self, query: str, params=None) -> None:
+            normalized = " ".join(query.strip().lower().split())
+            if normalized.startswith("select id, hash from files"):
+                self._pending_fetch = (42, "stale-hash")
+                return
+            if normalized.startswith("delete from symbol_references"):
+                delete_order.append("symbol_references")
+                return
+            if normalized.startswith("delete from dependencies"):
+                delete_order.append("dependencies")
+                return
+            if normalized.startswith("delete from symbols"):
+                delete_order.append("symbols")
+                return
+            if normalized.startswith("delete from code_chunks"):
+                delete_order.append("code_chunks")
+                return
+            self._pending_fetch = None
+
+        def fetchone(self):
+            return self._pending_fetch
+
+    class _DeleteOrderConn:
+        def __init__(self) -> None:
+            self._cursor = _DeleteOrderCursor()
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    class _DeleteOrderPool:
+        def __init__(self) -> None:
+            self._conn = _DeleteOrderConn()
+
+        def getconn(self):
+            return self._conn
+
+        def putconn(self, conn) -> None:
+            return None
+
+    monkeypatch.setattr(ingest, "register_vector", lambda conn: None)
+
+    result = ingest.process_file(
+        fpath=fpath,
+        repo_root=repo_root,
+        repo_name="repo",
+        config={"languages": {"extensions": {"py": "python"}}},
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_FakeChunker(),
+        db_pool=_DeleteOrderPool(),
+        force=True,
+        no_classify=False,
+    )
+
+    assert result["status"] == "indexed"
+    assert delete_order == [
+        "symbol_references",
+        "dependencies",
+        "symbols",
+        "code_chunks",
+    ]
+
+
 def test_reindex_handler_on_deleted_executes_delete_query(monkeypatch) -> None:
     """@brief Verify ReindexHandler.on_deleted removes the file from the database."""
     from watchdog.events import FileDeletedEvent

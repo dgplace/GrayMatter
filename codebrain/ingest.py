@@ -78,6 +78,8 @@ def _apply_env_overrides(cfg: dict) -> dict:
         cfg.setdefault("database", {})["url"] = db_url
     if embed_url := os.environ.get("EMBED_BASE_URL"):
         cfg.setdefault("embeddings", {})["base_url"] = embed_url
+    if classifier_url := os.environ.get("CLASSIFIER_BASE_URL"):
+        cfg.setdefault("classifier", {})["base_url"] = classifier_url
     return cfg
 
 
@@ -572,10 +574,14 @@ def process_file(
                  file_summary, file_role, file_embedding, existing[0])
             )
             file_id = existing[0]
-            cur.execute("DELETE FROM code_chunks WHERE file_id = %s", (file_id,))
-            cur.execute("DELETE FROM symbols WHERE file_id = %s", (file_id,))
-            cur.execute("DELETE FROM dependencies WHERE source_file_id = %s", (file_id,))
+            # Order matters under parallel re-ingest: delete from symbol_references
+            # and dependencies before code_chunks/symbols so the ON DELETE CASCADE
+            # from code_chunks(id) -> symbol_references(source_chunk_id) becomes a
+            # no-op. The row-by-row cascade otherwise deadlocks across workers.
             cur.execute("DELETE FROM symbol_references WHERE source_file_id = %s", (file_id,))
+            cur.execute("DELETE FROM dependencies WHERE source_file_id = %s", (file_id,))
+            cur.execute("DELETE FROM symbols WHERE file_id = %s", (file_id,))
+            cur.execute("DELETE FROM code_chunks WHERE file_id = %s", (file_id,))
         else:
             cur.execute(
                 """INSERT INTO files (repo, path, language, size_bytes, line_count, hash, summary, role, embedding)
