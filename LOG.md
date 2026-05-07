@@ -1,5 +1,6 @@
 # LOG
 
+2026-05-07 Implemented CODEBRAIN-16 resolver stage: added resolver.py, moved symbol-reference extraction/resolution behind a uniform pipeline boundary, and enabled watch-mode selective inbound re-resolution with warning-only guardrails.
 2026-05-07 Added AGENTS.md cross-cutting maintenance limits: justification-or-split rules for files over 1000 lines and functions over 150 lines, plus mandatory file separation for tool handlers, language-specific parsers, and HTML/CSS assets.
 2026-05-07 Clarified README test setup to require the repo virtualenv for Python tests instead of assuming the host `python3` environment includes `pytest`.
 2026-05-07 Implemented CODEBRAIN-15 additive symbol_references schema/bootstrap migration: added resolved-target metadata columns plus reverse-lookup indexes in schema.sql, ingest.py, and MCP startup tests/docs while keeping existing reference queries unchanged.

@@ -15,6 +15,7 @@ It has two primary runtime concerns:
 Core files:
 - `ingest.py`
 - `chunker.py`
+- `resolver.py`
 - `embedder.py`
 - `classifier.py`
 
@@ -23,6 +24,7 @@ Responsibilities:
 - detect language from extension mapping
 - parse source with tree-sitter where supported
 - split files into semantically meaningful chunks
+- resolve lexical references into a uniform resolver record shape before persistence
 - classify chunks and files with an OpenAI-compatible chat model
 - generate embeddings
 - persist files, chunks, symbols, references, and dependencies into PostgreSQL
@@ -88,8 +90,9 @@ Design pattern:
 4. AST chunks are generated, with language-specific metadata where available.
 5. `classifier.py` summarizes files and classifies chunk intent.
 6. `embedder.py` generates file and chunk embeddings.
-7. `ingest.py` stores normalized records in PostgreSQL.
-8. Symbol references and dependency edges are derived and persisted, with symbol references retaining both lexical `target_name` and optional resolved-target metadata when available.
+7. `resolver.py` turns chunk-level lexical references into resolver records with `target_symbol_id`, `resolution_confidence`, `resolution_method`, and `reference_kind_v2` when possible.
+8. `ingest.py` stores normalized records in PostgreSQL.
+9. Watch-mode single-file updates use the resolver stage to re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
 

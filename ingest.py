@@ -8,6 +8,10 @@ and stores normalized metadata in PostgreSQL. Supports one-shot, forced, and
 watch-mode indexing flows.
 """
 
+# Large-file justification: this module still owns the CLI entrypoint, watch-mode
+# wiring, schema bootstrap, and per-file transaction boundary so ingestion
+# behavior remains in one place while pipeline stages are being split out.
+
 import hashlib
 import os
 import re
@@ -37,6 +41,7 @@ except ImportError:
 from chunker import ASTChunker
 from classifier import IntentClassifier
 from embedder import EmbeddingClient
+import resolver
 
 console = Console()
 
@@ -265,18 +270,6 @@ SCHEMA_PATCHES = [
     """,
 ]
 
-REFERENCE_PATTERNS = [
-    (re.compile(r"\b([A-Z][A-Za-z0-9_]*)\b"), "type_reference"),
-    (re.compile(r"(?<![.\w])([a-z_][A-Za-z0-9_]*)\s*\("), "call"),
-    (re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\("), "member_call"),
-]
-
-REFERENCE_STOPWORDS = {
-    "as", "catch", "class", "defer", "else", "enum", "extension", "for", "func",
-    "guard", "if", "import", "init", "in", "let", "private", "protocol", "public",
-    "return", "struct", "subscript", "switch", "throw", "try", "var", "where", "while",
-}
-
 SWIFT_TYPED_PROPERTY_RE = re.compile(
     r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:\w+\s+)*(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_<>.?[\]]*)",
     re.MULTILINE,
@@ -329,37 +322,12 @@ def insert_symbol(cur, file_id: int, chunk_id: Optional[int], symbol: dict, embe
 
 
 def extract_symbol_references(chunks: list[dict]) -> list[dict]:
-    references = []
+    """@brief Compatibility wrapper for resolver-owned lexical reference extraction.
 
-    for chunk_index, chunk in enumerate(chunks):
-        source_symbol_name = chunk.get("symbol_name") or chunk.get("parent_symbol")
-        seen = set()
-
-        for offset, line in enumerate(chunk["content"].split("\n")):
-            line_no = chunk["start_line"] + offset
-            for pattern, ref_kind in REFERENCE_PATTERNS:
-                for match in pattern.finditer(line):
-                    target_name = match.group(1)
-                    if (
-                        not target_name
-                        or target_name in REFERENCE_STOPWORDS
-                        or target_name == source_symbol_name
-                    ):
-                        continue
-
-                    key = (line_no, target_name, ref_kind)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    references.append({
-                        "chunk_index": chunk_index,
-                        "source_symbol_name": source_symbol_name,
-                        "target_name": target_name,
-                        "reference_kind": ref_kind,
-                        "line_no": line_no,
-                    })
-
-    return references
+    @param chunks Chunk dictionaries emitted by the parser/chunker stage.
+    @return Extracted lexical reference records.
+    """
+    return resolver.extract_symbol_references(chunks)
 
 
 def _line_number_for_offset(content: str, offset: int) -> int:
@@ -469,24 +437,13 @@ def extract_swift_service_edges(content: str, chunks: list[dict]) -> list[dict]:
 
 
 def resolve_target_symbol(cur, target_name: str) -> tuple[Optional[int], Optional[int]]:
-    cur.execute(
-        """
-        SELECT s.id, s.file_id
-        FROM symbols s
-        WHERE lower(s.name) = lower(%s)
-        ORDER BY
-            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
-            CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
-            s.is_exported DESC,
-            s.start_line
-        LIMIT 1
-        """,
-        (target_name,),
-    )
-    row = cur.fetchone()
-    if not row:
-        return None, None
-    return row[0], row[1]
+    """@brief Compatibility wrapper for resolver-owned symbol lookup.
+
+    @param cur Open database cursor.
+    @param target_name Symbol name to resolve.
+    @return Tuple of `(target_symbol_id, target_file_id)`, both nullable.
+    """
+    return resolver.resolve_target_symbol(cur, target_name)
 
 
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
@@ -521,6 +478,10 @@ def normalize_result_status(status: Optional[str]) -> str:
     return "errors"
 
 
+# Large-function justification: `process_file` is the single per-file
+# transaction boundary for ingestion, so chunk persistence, symbol persistence,
+# dependency extraction, resolver invocation, and warning propagation remain
+# co-located to keep rollback behavior explicit.
 def process_file(
     fpath: Path,
     repo_root: Path,
@@ -532,6 +493,7 @@ def process_file(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     force: bool = False,
     no_classify: bool = False,
+    incremental_update: bool = False,
 ) -> dict:
     """@brief Parse, classify, embed, and persist one file.
 
@@ -545,8 +507,10 @@ def process_file(
     @param db_pool Shared database connection pool.
     @param force Whether to bypass file hash skip checks.
     @param no_classify Whether to skip classifier calls.
+    @param incremental_update Whether to re-resolve impacted inbound references
+            for a single changed file instead of doing batch-style indexing.
     @return Result dictionary containing status, optional counters/error details,
-            and optional classifier warning messages under `warnings`.
+            and optional processing warning messages under `warnings`.
     """
     rel_path = str(fpath.relative_to(repo_root))
     language = detect_language(fpath, config)
@@ -575,7 +539,7 @@ def process_file(
         line_count = content.count("\n") + 1
 
         # Generate file-level summary + role (one LLM call) and embedding
-        classifier_warnings: list[str] = []
+        processing_warnings: list[str] = []
 
         if no_classify:
             file_summary, file_role = "", "unknown"
@@ -584,12 +548,16 @@ def process_file(
                 rel_path,
                 content[:3000],
                 language,
-                on_warning=classifier_warnings.append,
+                on_warning=processing_warnings.append,
             )
         file_embedding = embedder.embed(f"{rel_path}\n{file_summary}")
 
         # Upsert file record
+        incremental_refresh = None
         if existing:
+            if incremental_update:
+                incremental_refresh = resolver.capture_incremental_refresh(cur, repo_name, existing[0])
+                processing_warnings.extend(incremental_refresh["warnings"])
             cur.execute(
                 """UPDATE files SET language=%s, size_bytes=%s, line_count=%s, hash=%s,
                    summary=%s, role=%s, embedding=%s, indexed_at=NOW()
@@ -615,13 +583,15 @@ def process_file(
         chunks = chunker.chunk_file(content, language, rel_path)
 
         if not chunks:
+            if incremental_refresh:
+                resolver.re_resolve_inbound_references(cur, incremental_refresh)
             conn.commit()
             return {
                 "status": "indexed",
                 "path": rel_path,
                 "chunks": 0,
                 "symbols": 0,
-                "warnings": classifier_warnings,
+                "warnings": processing_warnings,
             }
 
         # --- Batch all embeddings for this file in one call ---
@@ -645,7 +615,7 @@ def process_file(
                 chunks,
                 language,
                 rel_path,
-                on_warning=classifier_warnings.append,
+                on_warning=processing_warnings.append,
             )
         # ------------------------------------------------------------------
 
@@ -754,21 +724,30 @@ def process_file(
                     ),
                 )
 
-        # Extract and store lexical/call references for later symbol resolution.
-        for reference in extract_symbol_references(chunks):
+        # Resolve and store lexical/call references through the resolver stage.
+        for reference in resolver.resolve_references(cur, chunks):
             cur.execute(
                 """INSERT INTO symbol_references
-                   (source_file_id, source_chunk_id, source_symbol_name, target_name, reference_kind, line_no)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                   (source_file_id, source_chunk_id, source_symbol_name, target_name,
+                    target_symbol_id, resolution_confidence, resolution_method,
+                    reference_kind, reference_kind_v2, line_no)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     file_id,
                     chunk_ids.get(reference["chunk_index"]),
                     reference.get("source_symbol_name"),
                     reference["target_name"],
+                    reference["target_symbol_id"],
+                    reference["resolution_confidence"],
+                    reference["resolution_method"],
                     reference["reference_kind"],
+                    reference["reference_kind_v2"],
                     reference["line_no"],
                 ),
             )
+
+        if incremental_refresh:
+            resolver.re_resolve_inbound_references(cur, incremental_refresh)
 
         conn.commit()
         return {
@@ -776,7 +755,7 @@ def process_file(
             "path": rel_path,
             "chunks": chunk_count,
             "symbols": symbol_count,
-            "warnings": classifier_warnings,
+            "warnings": processing_warnings,
         }
 
     except Exception as e:
@@ -788,7 +767,7 @@ def process_file(
             "status": "error",
             "path": rel_path,
             "error": str(e),
-            "warnings": classifier_warnings if "classifier_warnings" in locals() else [],
+            "warnings": processing_warnings if "processing_warnings" in locals() else [],
         }
     finally:
         db_pool.putconn(conn)
@@ -896,6 +875,11 @@ class ReindexHandler(FileSystemEventHandler):
             self._handle_change(Path(event.dest_path))
 
     def _handle_change(self, fpath: Path):
+        """@brief Re-index a changed file using selective incremental resolution refresh.
+
+        @param fpath Absolute path that changed on disk.
+        @return None.
+        """
         if (
             not should_exclude(fpath, self.repo_root, self.config.get("ingestion", {}).get("exclude", []))
             and not is_gitignored(fpath, self.repo_root)
@@ -913,6 +897,7 @@ class ReindexHandler(FileSystemEventHandler):
                     self.chunker,
                     self.db_pool,
                     no_classify=self.no_classify,
+                    incremental_update=True,
                 )
                 if watch_result.get("error"):
                     console.print(
