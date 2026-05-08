@@ -27,6 +27,28 @@ def test_parse_json_strips_markdown_fences() -> None:
     assert parsed == {"summary": "ok", "role": "service"}
 
 
+def test_parse_json_extracts_first_balanced_json_segment() -> None:
+    """@brief Verify parser tolerates leading/trailing prose around JSON."""
+    classifier = _classifier()
+
+    parsed = classifier._parse_json(
+        'I will now respond in JSON.\n{"summary":"ok","role":"service"}\nDone.',
+    )
+
+    assert parsed == {"summary": "ok", "role": "service"}
+
+
+def test_parse_json_rejects_empty_responses() -> None:
+    """@brief Verify parser reports empty classifier payloads clearly."""
+    classifier = _classifier()
+
+    try:
+        classifier._parse_json("   ")
+        raise AssertionError("Expected ValueError for empty payload")
+    except ValueError as exc:
+        assert "Empty classifier response" in str(exc)
+
+
 def test_classify_chunks_batch_normalizes_invalid_output(monkeypatch) -> None:
     """@brief Verify invalid intents and short model responses fall back safely."""
     classifier = _classifier()
@@ -66,6 +88,24 @@ def test_analyze_file_reports_warning_on_fallback(monkeypatch) -> None:
 
     assert len(warnings) == 1
     assert "Classifier file analysis fallback for demo.py" in warnings[0]
+
+
+def test_analyze_file_handles_leading_text_before_json(monkeypatch) -> None:
+    """@brief Verify file analysis can parse JSON wrapped in auxiliary text."""
+    classifier = _classifier()
+    monkeypatch.setattr(
+        classifier,
+        "_generate",
+        lambda prompt, max_tokens=200: (
+            "Sure, here is the JSON:\n"
+            '{"summary":"Parses inputs","role":"utility library"}'
+        ),
+    )
+
+    summary, role = classifier.analyze_file("demo.py", "print('x')", "python")
+
+    assert summary == "Parses inputs"
+    assert role == "utility library"
 
 
 def test_classify_chunks_batch_reports_warning_on_fallback(monkeypatch) -> None:

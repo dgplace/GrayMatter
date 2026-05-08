@@ -88,7 +88,55 @@ class IntentClassifier:
             },
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        message = response.json()["choices"][0]["message"]
+        content = message.get("content") or ""
+        return str(content).strip()
+
+    def _extract_first_json_segment(self, raw: str) -> str:
+        """@brief Extract the first balanced JSON object/array from freeform text.
+
+        @param raw Raw model response text.
+        @return JSON substring candidate.
+        @raises ValueError When no balanced JSON segment is found.
+        """
+        start = None
+        for idx, ch in enumerate(raw):
+            if ch in "{[":
+                start = idx
+                break
+
+        if start is None:
+            raise ValueError("No JSON object/array found in classifier response")
+
+        opener = raw[start]
+        closer = "}" if opener == "{" else "]"
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for idx in range(start, len(raw)):
+            ch = raw[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == "\"":
+                    in_string = False
+                continue
+
+            if ch == "\"":
+                in_string = True
+                continue
+            if ch == opener:
+                depth += 1
+                continue
+            if ch == closer:
+                depth -= 1
+                if depth == 0:
+                    return raw[start : idx + 1]
+
+        raise ValueError("Unbalanced JSON object/array in classifier response")
 
     def _parse_json(self, raw: str) -> dict | list:
         """@brief Parse JSON output, removing fenced code blocks when present.
@@ -97,9 +145,15 @@ class IntentClassifier:
         @return Parsed JSON object or array.
         """
         cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError("Empty classifier response")
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            candidate = self._extract_first_json_segment(cleaned)
+            return json.loads(candidate)
 
     def _emit_warning(
         self,
