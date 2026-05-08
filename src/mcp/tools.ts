@@ -1,6 +1,7 @@
 /**
  * @file src/mcp/tools.ts
  * @brief MCP tool registration for repo-scoped search, symbols, references, and stats.
+ * @note Large-file justification: MCP tool definitions are intentionally centralized to keep schema + handler registration in one review surface.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -18,19 +19,16 @@ import {
 } from "../repositories/store.js";
 import {
   formatCouplingAnalysis,
-  formatCycles,
   formatModularizationSeams,
   formatModuleInterface,
   formatReferenceResults,
   formatSearchResults,
   formatSymbolResults,
 } from "./formatters.js";
-import { findCycles, rankNodesByCycleParticipation } from "./graph.js";
 import { logToolInvocation } from "./logging.js";
 import { keywordSearch } from "./search.js";
 import type {
   CouplingEdgeRow,
-  GraphEdge,
   ModuleInterfaceRow,
   ReferenceRow,
   SearchRow,
@@ -137,6 +135,7 @@ function impactCategory(edgeKind: string): "calls" | "instantiations" | "structu
 /**
  * @brief Registers all CodeBrain MCP tools.
  * @param server MCP server instance.
+ * @note Large-function justification: keeping tool schema and handler wiring in one function preserves a single, explicit MCP registry.
  * @returns Void.
  */
 export function registerTools(server: McpServer): void {
@@ -155,6 +154,10 @@ export function registerTools(server: McpServer): void {
       for (const repo of repos) {
         lines.push(`- **${repo.repo}** - files: ${repo.total_files}, lines: ${repo.total_lines.toLocaleString()}, chunks: ${repo.total_chunks}, symbols: ${repo.total_symbols}`);
       }
+      lines.push(
+        "",
+        "Tool naming note: dependency/impact traversal tools use `find_*` names (`find_call_graph`, `find_cycles`, `find_impact`, `find_external_dependencies`).",
+      );
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
@@ -598,7 +601,7 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
-    "call_graph",
+    "find_call_graph",
     "Returns a bounded forward (callees) or reverse (callers) call graph for a symbol using resolved target_symbol_id edges. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
@@ -607,7 +610,7 @@ export function registerTools(server: McpServer): void {
       depth: z.number().int().min(1).max(8).optional().describe("Maximum graph depth to traverse (default 3)."),
     },
     async ({ repo, symbol, direction = "forward", depth = 3 }) => {
-      logToolInvocation("call_graph", { repo, symbol, direction, depth });
+      logToolInvocation("find_call_graph", { repo, symbol, direction, depth });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) {
@@ -1805,80 +1808,14 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
-    "find_dependency_cycles",
-    "Detects circular dependency chains in the file dependency graph. Cycles are the primary obstacle to modularization. Repository scope is required.",
-    {
-      repo: z.string().min(1).describe("Repository name. Required."),
-      path_prefix: z.string().optional()
-        .describe("Optional path prefix to scope cycle detection to a subsystem."),
-      max_cycle_length: z.number().optional()
-        .describe("Maximum cycle length to search for (default 6, max 10)."),
-    },
-    async ({ repo, path_prefix = "", max_cycle_length = 6 }) => {
-      const clampedMax = Math.min(max_cycle_length, 10);
-      logToolInvocation("find_dependency_cycles", { repo, path_prefix, max_cycle_length: clampedMax });
-
-      const repoCheck = await requireRepository(repo);
-      if (repoCheck) return repoCheck;
-
-      // Extract directed file-to-file edge list
-      const result = await query(
-        `
-        WITH scoped_files AS (
-          SELECT id, path FROM files
-          WHERE repo = $1 AND path LIKE $2 || '%'
-        ),
-        dep_edges AS (
-          SELECT DISTINCT
-            sf.path AS source,
-            tf.path AS target
-          FROM dependencies d
-          JOIN scoped_files sf ON sf.id = d.source_file_id
-          JOIN scoped_files tf ON tf.id = d.target_file_id
-          WHERE sf.path <> tf.path
-        ),
-        ref_edges AS (
-          SELECT DISTINCT
-            sf.path AS source,
-            tf.path AS target
-          FROM symbol_references sr
-          JOIN scoped_files sf ON sf.id = sr.source_file_id
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
-          JOIN scoped_files tf ON tf.id = s.file_id
-          WHERE sf.path <> tf.path
-        )
-        SELECT DISTINCT source, target FROM dep_edges
-        UNION
-        SELECT DISTINCT source, target FROM ref_edges
-        ORDER BY source, target
-        `,
-        [repo, path_prefix],
-      );
-
-      const edges = result.rows as GraphEdge[];
-      if (edges.length === 0) {
-        return { content: [{ type: "text", text: `No dependency edges found under \`${path_prefix || "(entire repo)"}\` in repo \`${repo}\`.` }] };
-      }
-
-      const cycles = findCycles(edges, clampedMax);
-      if (cycles.length === 0) {
-        return { content: [{ type: "text", text: `No dependency cycles found under \`${path_prefix || "(entire repo)"}\` in repo \`${repo}\`. The dependency graph is acyclic.` }] };
-      }
-
-      const rankings = rankNodesByCycleParticipation(cycles);
-      const text = formatCycles(repo, path_prefix, cycles, rankings);
-      return { content: [{ type: "text", text }] };
-    },
-  );
-
-  server.tool(
-    "cycles",
+    "find_cycles",
     "Returns persisted dependency cycles for a repository from dependency_cycles materialization. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().optional().describe("Optional path prefix to filter cycle members."),
     },
-    async ({ repo }) => {
-      logToolInvocation("cycles", { repo });
+    async ({ repo, path_prefix = "" }) => {
+      logToolInvocation("find_cycles", { repo, path_prefix });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) return repoCheck;
@@ -1892,17 +1829,26 @@ export function registerTools(server: McpServer): void {
           member_paths
         FROM dependency_cycles
         WHERE repo = $1
+          AND (
+            $2 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(member_paths) AS member_path
+              WHERE member_path LIKE $2 || '%'
+            )
+          )
         ORDER BY cycle_size DESC, cycle_hash
         `,
-        [repo],
+        [repo, path_prefix],
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No dependency cycles found for repo \`${repo}\`.` }] };
+        const scope = path_prefix ? ` under \`${path_prefix}\`` : "";
+        return { content: [{ type: "text", text: `No dependency cycles found for repo \`${repo}\`${scope}.` }] };
       }
 
       const lines: string[] = [
-        `Dependency cycles for \`${repo}\``,
+        `Dependency cycles for \`${repo}\`${path_prefix ? ` (path prefix: \`${path_prefix}\`)` : ""}`,
         "",
         `Cycles found: ${result.rows.length}`,
         "",
@@ -1932,7 +1878,104 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
-    "impact_of",
+    "find_external_dependencies",
+    "Summarizes third-party package usage by module and version, and optionally lists consumers for a specific package. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      path_prefix: z.string().optional().describe("Optional source-file path prefix filter."),
+      package_name: z.string().optional().describe("Optional external package to inspect consumer locations for."),
+      limit: z.number().int().min(1).max(500).optional()
+        .describe("Maximum consumer rows returned when package_name is provided (default 100)."),
+    },
+    async ({ repo, path_prefix = "", package_name, limit = 100 }) => {
+      logToolInvocation("find_external_dependencies", { repo, path_prefix, package_name, limit });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const summaryResult = await query(
+        `
+        SELECT
+          d.external_module,
+          COALESCE(NULLIF(d.external_version, ''), '(unknown)') AS external_version,
+          COUNT(*)::integer AS usage_count,
+          COUNT(DISTINCT sf.path)::integer AS consumer_file_count
+        FROM dependencies d
+        JOIN files sf ON sf.id = d.source_file_id
+        WHERE sf.repo = $1
+          AND COALESCE(d.is_external, d.external_module IS NOT NULL)
+          AND d.external_module IS NOT NULL
+          AND ($2 = '' OR sf.path LIKE $2 || '%')
+        GROUP BY d.external_module, COALESCE(NULLIF(d.external_version, ''), '(unknown)')
+        ORDER BY usage_count DESC, d.external_module, external_version
+        `,
+        [repo, path_prefix],
+      );
+
+      if (summaryResult.rows.length === 0) {
+        const scope = path_prefix ? ` under \`${path_prefix}\`` : "";
+        return { content: [{ type: "text", text: `No external dependencies found for repo \`${repo}\`${scope}.` }] };
+      }
+
+      const lines = [
+        `External dependencies for \`${repo}\`${path_prefix ? ` (path prefix: \`${path_prefix}\`)` : ""}:`,
+        "",
+        "| Package | Version | Usage Count | Consumer Files |",
+        "|---|---|---:|---:|",
+      ];
+
+      for (const row of summaryResult.rows as Array<Record<string, unknown>>) {
+        lines.push(
+          `| ${String(row.external_module)} | ${String(row.external_version)} | ${Number(row.usage_count)} | ${Number(row.consumer_file_count)} |`,
+        );
+      }
+
+      if (package_name && package_name.trim()) {
+        const consumerResult = await query(
+          `
+          SELECT
+            sf.path AS consumer_path,
+            COALESCE(ss.name, '(file-level import)') AS consumer_symbol,
+            d.kind,
+            COALESCE(NULLIF(d.external_version, ''), '(unknown)') AS external_version,
+            COUNT(*)::integer AS usage_count
+          FROM dependencies d
+          JOIN files sf ON sf.id = d.source_file_id
+          LEFT JOIN symbols ss ON ss.id = d.source_symbol_id
+          WHERE sf.repo = $1
+            AND COALESCE(d.is_external, d.external_module IS NOT NULL)
+            AND d.external_module IS NOT NULL
+            AND ($2 = '' OR sf.path LIKE $2 || '%')
+            AND lower(d.external_module) = lower($3)
+          GROUP BY sf.path, COALESCE(ss.name, '(file-level import)'), d.kind, COALESCE(NULLIF(d.external_version, ''), '(unknown)')
+          ORDER BY usage_count DESC, sf.path, consumer_symbol, d.kind
+          LIMIT $4
+          `,
+          [repo, path_prefix, package_name, limit],
+        );
+
+        lines.push("", `Consumers for package \`${package_name}\`:`, "");
+        if (consumerResult.rows.length === 0) {
+          lines.push("No consumers found in the selected scope.");
+        } else {
+          lines.push("| Consumer File | Consumer Symbol | Kind | Version | Usage Count |");
+          lines.push("|---|---|---|---|---:|");
+          for (const row of consumerResult.rows as Array<Record<string, unknown>>) {
+            lines.push(
+              `| ${String(row.consumer_path)} | ${String(row.consumer_symbol)} | ${String(row.kind)} | ${String(row.external_version)} | ${Number(row.usage_count)} |`,
+            );
+          }
+        }
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
+    "find_impact",
     "Answers what may break if a symbol changes by reverse-traversing confidence-scored edges. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
@@ -1942,7 +1985,7 @@ export function registerTools(server: McpServer): void {
         .describe("Traversal confidence floor (default 0.55; values below are excluded)."),
     },
     async ({ repo, symbol, depth = 5, min_confidence = 0.55 }) => {
-      logToolInvocation("impact_of", { repo, symbol, depth, min_confidence });
+      logToolInvocation("find_impact", { repo, symbol, depth, min_confidence });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) return repoCheck;

@@ -123,10 +123,11 @@ test("find_implementations tool filters for implements edges and returns impleme
   assert.match(toolsSource, /impl\.end_line AS implementer_end_line/);
 });
 
-test("call_graph tool supports forward and reverse traversal with depth bounds and cycle guards", () => {
+test("find_call_graph tool supports forward and reverse traversal with depth bounds and cycle guards", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
-  assert.match(toolsSource, /"call_graph"/);
+  assert.match(toolsSource, /"find_call_graph"/);
+  assert.doesNotMatch(toolsSource, /"call_graph"/);
   assert.match(toolsSource, /direction:\s*z\s*\.\s*enum\(\["forward",\s*"reverse"\]\)/);
   assert.match(toolsSource, /depth:\s*z\s*\.\s*number\(\)\.int\(\)\.min\(1\)\.max\(8\)/);
   assert.match(toolsSource, /JOIN symbol_references sr ON sr\.source_symbol_id = ss\.id/);
@@ -173,21 +174,25 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /min_confidence\s+REAL DEFAULT 0\.55/);
 });
 
-test("cycles tool reads persisted dependency_cycles rows for a repository", () => {
+test("find_cycles tool reads persisted dependency_cycles rows for a repository and supports path_prefix filtering", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
-  assert.match(toolsSource, /"cycles"/);
+  assert.match(toolsSource, /"find_cycles"/);
+  assert.doesNotMatch(toolsSource, /"find_dependency_cycles"/);
   assert.match(toolsSource, /FROM dependency_cycles/);
   assert.match(toolsSource, /WHERE repo = \$1/);
+  assert.match(toolsSource, /FROM unnest\(member_paths\) AS member_path/);
+  assert.match(toolsSource, /member_path LIKE \$2 \|\| '%'/);
   assert.match(toolsSource, /No dependency cycles found for repo/);
   assert.match(toolsSource, /member_file_ids/);
   assert.match(toolsSource, /member_paths/);
 });
 
-test("impact_of tool wraps SQL impact_of function with confidence-band output", () => {
+test("find_impact tool wraps SQL impact_of function with confidence-band output", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
-  assert.match(toolsSource, /"impact_of"/);
+  assert.match(toolsSource, /"find_impact"/);
+  assert.doesNotMatch(toolsSource, /"impact_of"/);
   assert.match(toolsSource, /min_confidence:\s*z\s*\.\s*number\(\)\.min\(0\)\.max\(1\)\.optional\(\)/);
   assert.match(toolsSource, /depth:\s*z\s*\.\s*number\(\)\.int\(\)\.min\(1\)\.max\(8\)\.optional\(\)/);
   assert.match(toolsSource, /async \(\{ repo, symbol, depth = 5, min_confidence = 0\.55 \}\)/);
@@ -195,4 +200,15 @@ test("impact_of tool wraps SQL impact_of function with confidence-band output", 
   assert.match(toolsSource, /Likely impact \(confidence >= 0\.75\)/);
   assert.match(toolsSource, /Possible impact \(0\.55 <= confidence < 0\.75\)/);
   assert.match(toolsSource, /impactCategory/);
+});
+
+test("find_external_dependencies tool groups by external_module and external_version and supports package consumer lookup", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"find_external_dependencies"/);
+  assert.match(toolsSource, /package_name:\s*z\s*\.\s*string\(\)\.optional\(\)/);
+  assert.match(toolsSource, /COALESCE\(d\.is_external, d\.external_module IS NOT NULL\)/);
+  assert.match(toolsSource, /GROUP BY d\.external_module, COALESCE\(NULLIF\(d\.external_version, ''\), '\(unknown\)'\)/);
+  assert.match(toolsSource, /Consumers for package/);
+  assert.match(toolsSource, /lower\(d\.external_module\) = lower\(\$3\)/);
 });

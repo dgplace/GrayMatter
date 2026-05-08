@@ -133,7 +133,7 @@ Semantic search combines vector similarity with keyword fallback and result fusi
 
 ### Refactoring analysis layer
 
-The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_dependency_cycles`, `find_modularization_seams`) operate on the same indexed data without re-ingestion. They compose SQL queries over the `dependencies`, `symbol_references`, and `symbols` tables to answer structural questions. Graph algorithms (cycle detection) live in `src/mcp/graph.ts` as pure functions operating on in-memory edge lists extracted from the database. This keeps graph logic testable and separated from SQL and MCP concerns.
+The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_cycles`, `find_modularization_seams`) operate on the same indexed data without re-ingestion. They compose SQL queries over the `dependencies`, `symbol_references`, `symbols`, and `dependency_cycles` materialization table to answer structural questions. Cycle analysis is served from persisted SCC snapshots to keep query-time behavior consistent across callers and avoid duplicate implementations.
 
 ### Module intent synthesis
 

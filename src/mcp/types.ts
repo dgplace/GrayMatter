@@ -91,12 +91,6 @@ export type ModuleInterfaceRow = {
   ref_kinds: string[] | null;
 };
 
-/** @brief Lightweight directed edge for graph algorithms. */
-export type GraphEdge = {
-  source: string;
-  target: string;
-};
-
 /** @brief Cross-boundary seam edge for modularization planning. */
 export type SeamRow = {
   direction: string;

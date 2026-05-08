@@ -143,6 +143,7 @@ The container publishes:
 - Repo scoping is mandatory for query tools.
 - Start with `list_repositories` to discover valid repository names.
 - Pass `repo` into tools such as `semantic_search`, `find_symbol`, `find_references`, `trace_dependencies`, `get_file_map`, `get_intent`, and `codebase_stats`.
+- Dependency/impact tools follow `find_*` naming: `find_call_graph`, `find_cycles`, `find_impact`, and `find_external_dependencies`.
 
 ## Run Tests
 

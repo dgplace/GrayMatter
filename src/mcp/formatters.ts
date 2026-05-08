@@ -226,48 +226,6 @@ export function formatModuleInterface(
 }
 
 /**
- * @brief Formats dependency cycle detection results.
- * @param repo Repository name.
- * @param pathPrefix Scope prefix used.
- * @param cycles Array of cycles (each an array of file paths).
- * @param rankings Files ranked by cycle participation count.
- * @returns Markdown cycle report.
- */
-export function formatCycles(
-  repo: string,
-  pathPrefix: string,
-  cycles: string[][],
-  rankings: Array<{ node: string; cycleCount: number }>,
-): string {
-  const lines = [
-    `# Dependency Cycles in ${repo}`,
-    "",
-    `**Scope:** ${pathPrefix || "(entire repo)"}`,
-    `**Cycles found:** ${cycles.length}`,
-    "",
-  ];
-
-  for (let i = 0; i < cycles.length; i++) {
-    const cycle = cycles[i];
-    const label = cycle.length === 2 ? "Mutual dependency" : `length ${cycle.length}`;
-    lines.push(`## Cycle ${i + 1} (${label})`);
-    lines.push(`  ${cycle.join(" -> ")} -> ${cycle[0]}`);
-    lines.push("");
-  }
-
-  if (rankings.length > 0) {
-    lines.push("## Files by cycle participation", "");
-    lines.push("| File | Cycles |");
-    lines.push("|------|--------|");
-    for (const { node, cycleCount } of rankings.slice(0, 20)) {
-      lines.push(`| ${node} | ${cycleCount} |`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-/**
  * @brief Formats modularization seam analysis results.
  * @param pathPrefix The module path prefix to extract.
  * @param requiredInterface Symbols that external code calls into (must preserve).
