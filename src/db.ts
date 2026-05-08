@@ -31,6 +31,7 @@ const SCHEMA_PATCHES = [
   `ALTER TABLE symbol_references ADD COLUMN IF NOT EXISTS resolution_confidence REAL`,
   `ALTER TABLE symbol_references ADD COLUMN IF NOT EXISTS resolution_method TEXT`,
   `ALTER TABLE symbol_references ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT`,
+  `UPDATE symbol_references SET reference_kind_v2 = reference_kind WHERE reference_kind_v2 IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_symbols_container ON symbols(container_symbol)`,
   `CREATE INDEX IF NOT EXISTS idx_symbols_primary ON symbols(is_primary_declaration)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_file ON symbol_references(source_file_id)`,

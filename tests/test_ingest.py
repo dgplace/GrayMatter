@@ -404,6 +404,9 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "ADD COLUMN IF NOT EXISTS resolution_confidence REAL" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS resolution_method TEXT" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT" in patch_blob
+    assert "UPDATE symbol_references" in patch_blob
+    assert "SET reference_kind_v2 = reference_kind" in patch_blob
+    assert "WHERE reference_kind_v2 IS NULL" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name" in patch_blob

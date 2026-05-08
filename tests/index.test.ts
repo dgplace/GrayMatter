@@ -89,8 +89,11 @@ test("formatReferenceResults omits confidence suffix when no resolution metadata
 test("find_references tool exposes confidence threshold knobs and prefers resolved target_symbol_id", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
+  assert.match(toolsSource, /reference_kind:\s*z\s*\.\s*enum\(\["call",\s*"member_call",\s*"type_reference",\s*"instantiation"\]\)/);
   assert.match(toolsSource, /min_confidence:\s*z\s*\.\s*number/);
   assert.match(toolsSource, /include_unresolved:\s*z\s*\.\s*boolean/);
+  assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\)\s+AS\s+reference_kind/);
+  assert.match(toolsSource, /\(\$7::text IS NULL OR COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) = \$7\)/);
   assert.match(toolsSource, /COALESCE\(sr\.resolution_confidence, 0\) >= \$4/);
   assert.match(toolsSource, /LEFT JOIN symbols rs ON rs\.id = sr\.target_symbol_id/);
   assert.match(toolsSource, /sr\.target_symbol_id IS NULL AND lower\(s\.name\) = lower\(sr\.target_name\)/);

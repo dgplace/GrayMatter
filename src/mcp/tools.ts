@@ -379,6 +379,10 @@ export function registerTools(server: McpServer): void {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol name to find references for."),
       file: z.string().optional().describe("Optional target declaration file filter to disambiguate common names."),
+      reference_kind: z
+        .enum(["call", "member_call", "type_reference", "instantiation"])
+        .optional()
+        .describe("Optional richer reference kind filter. When omitted, all kinds are returned."),
       limit: z.number().optional().describe("Max references to return (default 25)."),
       min_confidence: z
         .number()
@@ -391,8 +395,8 @@ export function registerTools(server: McpServer): void {
         .optional()
         .describe("When true, returns the full set including rows below the confidence threshold."),
     },
-    async ({ repo, name, file, limit = 25, min_confidence = 0.55, include_unresolved = false }) => {
-      logToolInvocation("find_references", { repo, name, file, limit, min_confidence, include_unresolved });
+    async ({ repo, name, file, reference_kind, limit = 25, min_confidence = 0.55, include_unresolved = false }) => {
+      logToolInvocation("find_references", { repo, name, file, reference_kind, limit, min_confidence, include_unresolved });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) {
@@ -404,7 +408,7 @@ export function registerTools(server: McpServer): void {
         SELECT
           sf.path AS source_path,
           sr.line_no,
-          sr.reference_kind,
+          COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
           sr.source_symbol_name,
           sr.resolution_confidence,
           sr.resolution_method,
@@ -417,6 +421,7 @@ export function registerTools(server: McpServer): void {
         LEFT JOIN files tf ON tf.id = s.file_id AND tf.repo = $2
         WHERE lower(sr.target_name) = lower($1)
           AND sf.repo = $2
+          AND ($7::text IS NULL OR COALESCE(sr.reference_kind_v2, sr.reference_kind) = $7)
           AND ($5::boolean OR COALESCE(sr.resolution_confidence, 0) >= $4)
           AND (
             $3::text IS NULL
@@ -429,11 +434,11 @@ export function registerTools(server: McpServer): void {
                 AND tf2.path LIKE '%' || $3 || '%'
             )
           )
-        GROUP BY sf.path, sr.line_no, sr.reference_kind, sr.source_symbol_name, sr.resolution_confidence, sr.resolution_method
+        GROUP BY sf.path, sr.line_no, COALESCE(sr.reference_kind_v2, sr.reference_kind), sr.source_symbol_name, sr.resolution_confidence, sr.resolution_method
         ORDER BY sr.resolution_confidence DESC NULLS LAST, sf.path, sr.line_no
         LIMIT $6
       `,
-        [name, repo, file || null, min_confidence, include_unresolved, limit],
+        [name, repo, file || null, min_confidence, include_unresolved, limit, reference_kind || null],
       );
 
       if (result.rows.length === 0) {

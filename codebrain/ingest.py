@@ -215,6 +215,11 @@ SCHEMA_PATCHES = [
     ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT
     """,
     """
+    UPDATE symbol_references
+    SET reference_kind_v2 = reference_kind
+    WHERE reference_kind_v2 IS NULL
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_symbols_container
     ON symbols(container_symbol)
     """,

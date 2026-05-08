@@ -1,3 +1,4 @@
+2026-05-08 Implemented CODEBRAIN-25: find_references now filters by richer reference_kind_v2 with legacy fallback, and schema bootstraps backfill missing reference_kind_v2 values from reference_kind.
 # LOG
 
 2026-05-08 Hardened classifier JSON parsing to tolerate empty/noisy completions by extracting the first balanced JSON object/array from model output, reducing benign analyze-file fallback warnings during ingestion.
