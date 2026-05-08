@@ -420,6 +420,8 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "ADD COLUMN IF NOT EXISTS local_alias TEXT" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS is_external BOOLEAN" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS external_version TEXT" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS dependency_cycles" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo" in patch_blob
 
 
 def test_candidate_internal_import_paths_supports_python_and_typescript() -> None:
@@ -511,6 +513,68 @@ def test_external_version_for_package_uses_manifest_maps() -> None:
         manifests,
     ) == "3.12.0"
     assert ingest._external_version_for_package("System", "System", "csharp", manifests) is None
+
+
+def test_tarjan_strongly_connected_components_detects_cycles_and_acyclic_nodes() -> None:
+    """@brief Verify Tarjan SCC decomposition groups cyclic subgraphs correctly."""
+    components = ingest._tarjan_strongly_connected_components(
+        {
+            1: {2},
+            2: {1, 3},
+            3: set(),
+            4: {4},
+        }
+    )
+    normalized = {tuple(sorted(component)) for component in components}
+    assert normalized == {(1, 2), (3,), (4,)}
+
+
+def test_materialize_dependency_cycles_replaces_repo_rows() -> None:
+    """@brief Verify cycle materialization clears prior rows and inserts detected SCC cycles."""
+
+    class _CycleCursor:
+        def __init__(self) -> None:
+            self.deleted_repo = None
+            self.inserted_rows: list[tuple] = []
+            self._rows = [
+                (1, "a.py", 2, "b.py"),
+                (2, "b.py", 1, "a.py"),
+                (3, "c.py", 3, "c.py"),
+                (4, "d.py", 5, "e.py"),
+            ]
+
+        def execute(self, query: str, params=None) -> None:
+            normalized = " ".join(query.strip().lower().split())
+            if normalized.startswith("select d.source_file_id"):
+                return
+            if normalized.startswith("delete from dependency_cycles"):
+                self.deleted_repo = params[0]
+                return
+            if normalized.startswith("insert into dependency_cycles"):
+                self.inserted_rows.append(params)
+                return
+            raise AssertionError(f"Unexpected query: {query}")
+
+        def fetchall(self):
+            return self._rows
+
+    class _CycleConn:
+        def __init__(self) -> None:
+            self.cursor_instance = _CycleCursor()
+            self.commits = 0
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def commit(self) -> None:
+            self.commits += 1
+
+    conn = _CycleConn()
+    count = ingest.materialize_dependency_cycles(conn, "repo")
+    assert count == 2
+    assert conn.cursor_instance.deleted_repo == "repo"
+    assert conn.commits == 1
+    assert len(conn.cursor_instance.inserted_rows) == 2
 
 
 def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:

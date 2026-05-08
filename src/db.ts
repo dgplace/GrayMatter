@@ -62,6 +62,17 @@ const SCHEMA_PATCHES = [
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS local_alias TEXT`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS is_external BOOLEAN`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS external_version TEXT`,
+  `CREATE TABLE IF NOT EXISTS dependency_cycles (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      cycle_hash TEXT NOT NULL,
+      member_file_ids INTEGER[] NOT NULL,
+      member_paths TEXT[] NOT NULL,
+      cycle_size INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(repo, cycle_hash)
+    )`,
+  `CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles(repo)`,
   `CREATE INDEX IF NOT EXISTS idx_deps_imported_symbol ON dependencies(imported_symbol_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file ON symbol_relationships(source_file_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id)`,

@@ -63,3 +63,4 @@
 2026-05-06 Clarified AGENTS.md self-discovery policy: when coding CodeBrain, agents should use CodeBrain MCP tools as the primary repo discovery path, re-ingest when index data is stale, and use rg as a precision/validation complement.
 2026-05-08 CODEBRAIN-30 added dependency import metadata columns (imported_symbol_id/imported_name/local_alias/is_external), Python+TypeScript alias-aware import extraction, and internal import-to-exported-symbol resolution during ingestion.
 2026-05-08 CODEBRAIN-31 added internal/external import classification heuristics across supported languages plus npm/pip/maven manifest version pinning persisted as dependencies.external_version.
+2026-05-08 CODEBRAIN-32 added Tarjan SCC dependency-cycle materialization into dependency_cycles with deterministic cycle_hash values and repo-scoped replace semantics on each ingest run.

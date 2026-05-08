@@ -313,6 +313,22 @@ SCHEMA_PATCHES = [
     ADD COLUMN IF NOT EXISTS external_version TEXT
     """,
     """
+    CREATE TABLE IF NOT EXISTS dependency_cycles (
+        id SERIAL PRIMARY KEY,
+        repo TEXT NOT NULL,
+        cycle_hash TEXT NOT NULL,
+        member_file_ids INTEGER[] NOT NULL,
+        member_paths TEXT[] NOT NULL,
+        cycle_size INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(repo, cycle_hash)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo
+    ON dependency_cycles(repo)
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file
     ON symbol_relationships(source_file_id)
     """,
@@ -1146,6 +1162,117 @@ def _external_version_for_package(
     return None
 
 
+def _tarjan_strongly_connected_components(adjacency: dict[int, set[int]]) -> list[list[int]]:
+    """@brief Compute strongly connected components for a directed graph.
+
+    @param adjacency Directed graph adjacency keyed by node id.
+    @return List of strongly connected components as node-id lists.
+    """
+    index = 0
+    index_map: dict[int, int] = {}
+    low_link_map: dict[int, int] = {}
+    stack: list[int] = []
+    on_stack: set[int] = set()
+    components: list[list[int]] = []
+
+    def strong_connect(node: int) -> None:
+        nonlocal index
+        index_map[node] = index
+        low_link_map[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+
+        for neighbor in adjacency.get(node, set()):
+            if neighbor not in index_map:
+                strong_connect(neighbor)
+                low_link_map[node] = min(low_link_map[node], low_link_map[neighbor])
+            elif neighbor in on_stack:
+                low_link_map[node] = min(low_link_map[node], index_map[neighbor])
+
+        if low_link_map[node] == index_map[node]:
+            component: list[int] = []
+            while stack:
+                current = stack.pop()
+                on_stack.remove(current)
+                component.append(current)
+                if current == node:
+                    break
+            components.append(component)
+
+    for node in adjacency:
+        if node not in index_map:
+            strong_connect(node)
+    return components
+
+
+def materialize_dependency_cycles(conn, repo_name: str) -> int:
+    """@brief Rebuild dependency cycle rows for a repository using SCC detection.
+
+    @param conn Open database connection.
+    @param repo_name Repository identifier.
+    @return Number of cycle rows written for the repository.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT d.source_file_id, sf.path, d.target_file_id, tf.path
+        FROM dependencies d
+        JOIN files sf ON sf.id = d.source_file_id
+        JOIN files tf ON tf.id = d.target_file_id
+        WHERE sf.repo = %s
+          AND tf.repo = %s
+          AND d.target_file_id IS NOT NULL
+        """,
+        (repo_name, repo_name),
+    )
+    rows = cur.fetchall()
+
+    adjacency: dict[int, set[int]] = {}
+    file_paths: dict[int, str] = {}
+    for source_file_id, source_path, target_file_id, target_path in rows:
+        source_id = int(source_file_id)
+        target_id = int(target_file_id)
+        adjacency.setdefault(source_id, set()).add(target_id)
+        adjacency.setdefault(target_id, set())
+        file_paths[source_id] = source_path
+        file_paths[target_id] = target_path
+
+    components = _tarjan_strongly_connected_components(adjacency)
+    cycle_rows: list[tuple[str, list[int], list[str], int]] = []
+    for component in components:
+        component_ids = sorted(component)
+        if len(component_ids) == 1:
+            node = component_ids[0]
+            if node not in adjacency.get(node, set()):
+                continue
+        member_pairs = sorted(
+            ((member_id, file_paths.get(member_id, str(member_id))) for member_id in component_ids),
+            key=lambda pair: pair[1],
+        )
+        member_file_ids = [member_id for member_id, _ in member_pairs]
+        member_paths = [path for _, path in member_pairs]
+        cycle_hash = hashlib.sha256("\n".join(member_paths).encode("utf-8")).hexdigest()
+        cycle_rows.append((cycle_hash, member_file_ids, member_paths, len(member_file_ids)))
+
+    cur.execute("DELETE FROM dependency_cycles WHERE repo = %s", (repo_name,))
+    for cycle_hash, member_file_ids, member_paths, cycle_size in cycle_rows:
+        cur.execute(
+            """
+            INSERT INTO dependency_cycles (repo, cycle_hash, member_file_ids, member_paths, cycle_size)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (repo, cycle_hash) DO UPDATE
+            SET member_file_ids = EXCLUDED.member_file_ids,
+                member_paths = EXCLUDED.member_paths,
+                cycle_size = EXCLUDED.cycle_size,
+                created_at = NOW()
+            """,
+            (repo_name, cycle_hash, member_file_ids, member_paths, cycle_size),
+        )
+    conn.commit()
+    return len(cycle_rows)
+
+
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
     """Walk the repository, respecting excludes and .gitignore."""
     excludes = config.get("ingestion", {}).get("exclude", [])
@@ -1965,6 +2092,13 @@ def main(
         finally:
             resolve_conn.close()
 
+    console.print("\n  [dim]Materializing dependency cycles...[/]")
+    cycle_conn = get_db(cfg)
+    try:
+        cycle_count = materialize_dependency_cycles(cycle_conn, repo_name)
+    finally:
+        cycle_conn.close()
+
     # Update ingestion run
     finish_conn = get_db(cfg)
     cur = finish_conn.cursor()
@@ -1987,6 +2121,7 @@ def main(
     console.print(f"  Classifier fallbacks: {stats['classifier_fallbacks']}")
     console.print(f"  Chunks created: {stats['chunks']}")
     console.print(f"  Symbols extracted: {stats['symbols']}")
+    console.print(f"  Dependency cycles materialized: {cycle_count}")
 
     if watch:
         console.print(f"\n[bold cyan]Watching for changes...[/] (Ctrl+C to stop)")

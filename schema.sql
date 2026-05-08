@@ -160,6 +160,22 @@ CREATE INDEX idx_deps_kind ON dependencies(kind);
 CREATE INDEX idx_deps_source_target ON dependencies(source_file_id, target_file_id);
 
 -- ============================================================
+-- Dependency cycles: SCC materialization per repository
+-- ============================================================
+CREATE TABLE dependency_cycles (
+    id              SERIAL PRIMARY KEY,
+    repo            TEXT NOT NULL,
+    cycle_hash      TEXT NOT NULL,
+    member_file_ids INTEGER[] NOT NULL,
+    member_paths    TEXT[] NOT NULL,
+    cycle_size      INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(repo, cycle_hash)
+);
+
+CREATE INDEX idx_dependency_cycles_repo ON dependency_cycles(repo);
+
+-- ============================================================
 -- Ingestion runs: track what was indexed when
 -- ============================================================
 CREATE TABLE ingestion_runs (
