@@ -55,6 +55,16 @@ REFERENCE_PATTERNS = [
     (re.compile(r"(?<![.\w])([a-z_][A-Za-z0-9_]*)\s*\("), "call"),
     (re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\("), "member_call"),
 ]
+LANGUAGE_CLASS_SYMBOL_TYPES = frozenset({"class", "struct"})
+NEW_OPERATOR_INSTANTIATION_PATTERN = re.compile(
+    r"\bnew\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)?)\s*(?:<[^>]+>)?\s*\("
+)
+CPP_STACK_INSTANTIATION_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z0-9_]*)\s+[a-z_][A-Za-z0-9_]*\s*(?:[;=,(])"
+)
+SWIFT_INIT_INSTANTIATION_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\.init\s*\(")
+SWIFT_CALL_INSTANTIATION_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*\(")
+PYTHON_CLASS_CALL_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*\(")
 
 REFERENCE_STOPWORDS = {
     "as", "catch", "class", "defer", "else", "enum", "extension", "for", "func",
@@ -625,14 +635,65 @@ def _resolve_reference_rows(
     return resolved_rows
 
 
-def extract_symbol_references(chunks: list[dict]) -> list[dict]:
-    """@brief Extract lexical/call references from parsed chunks.
+def _extract_declared_class_names(chunks: list[dict]) -> set[str]:
+    """@brief Collect class-like symbol names declared within the current file."""
+    return {
+        str(chunk.get("symbol_name"))
+        for chunk in chunks
+        if chunk.get("symbol_name") and chunk.get("symbol_type") in LANGUAGE_CLASS_SYMBOL_TYPES
+    }
+
+
+def _extract_instantiation_targets_for_line(
+    line: str,
+    language: Optional[str],
+    declared_class_names: set[str],
+) -> list[str]:
+    """@brief Return class names instantiated on a source line for a language."""
+    normalized_language = (language or "").lower()
+    targets: list[str] = []
+
+    if normalized_language in {"typescript", "javascript", "java", "csharp", "cpp"}:
+        for match in NEW_OPERATOR_INSTANTIATION_PATTERN.finditer(line):
+            dotted_name = match.group(1)
+            targets.append(dotted_name.rsplit(".", 1)[-1])
+
+    if normalized_language == "cpp":
+        for match in CPP_STACK_INSTANTIATION_PATTERN.finditer(line):
+            targets.append(match.group(1))
+
+    if normalized_language == "swift":
+        for match in SWIFT_INIT_INSTANTIATION_PATTERN.finditer(line):
+            targets.append(match.group(1))
+        for match in SWIFT_CALL_INSTANTIATION_PATTERN.finditer(line):
+            targets.append(match.group(1))
+
+    if normalized_language == "python":
+        for match in PYTHON_CLASS_CALL_PATTERN.finditer(line):
+            class_name = match.group(1)
+            if class_name in declared_class_names:
+                targets.append(class_name)
+
+    seen = set()
+    unique_targets = []
+    for target in targets:
+        if target in seen:
+            continue
+        seen.add(target)
+        unique_targets.append(target)
+    return unique_targets
+
+
+def extract_symbol_references(chunks: list[dict], language: Optional[str] = None) -> list[dict]:
+    """@brief Extract lexical, call, and class-instantiation references from chunks.
 
     @param chunks Chunk dictionaries emitted by the parser/chunker stage.
+    @param language Optional CodeBrain language label for language-specific extraction.
     @return Reference records with source symbol, chunk index, target name, kind,
             and line number.
     """
     references = []
+    declared_class_names = _extract_declared_class_names(chunks)
 
     for chunk_index, chunk in enumerate(chunks):
         source_symbol_name = chunk.get("symbol_name") or chunk.get("parent_symbol")
@@ -663,6 +724,23 @@ def extract_symbol_references(chunks: list[dict]) -> list[dict]:
                             "line_no": line_no,
                         }
                     )
+
+            for target_name in _extract_instantiation_targets_for_line(line, language, declared_class_names):
+                if not target_name or target_name == source_symbol_name:
+                    continue
+                key = (line_no, target_name, "instantiation")
+                if key in seen:
+                    continue
+                seen.add(key)
+                references.append(
+                    {
+                        "chunk_index": chunk_index,
+                        "source_symbol_name": source_symbol_name,
+                        "target_name": target_name,
+                        "reference_kind": "instantiation",
+                        "line_no": line_no,
+                    }
+                )
 
     return references
 
@@ -708,7 +786,7 @@ def resolve_references(
     @return Resolver records ready for persistence, with target ids, confidence,
             method, and richer reference kind fields populated.
     """
-    references = extract_symbol_references(chunks)
+    references = extract_symbol_references(chunks, language=language)
     rows = [
         {
             **reference,

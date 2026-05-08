@@ -183,6 +183,155 @@ def test_extract_symbol_references_deduplicates_and_skips_stopwords() -> None:
     ]
 
 
+def test_extract_symbol_references_emits_instantiation_edges_across_languages() -> None:
+    """@brief Verify CODEBRAIN-26 instantiation extraction across supported language forms."""
+    cases = [
+        {
+            "language": "typescript",
+            "chunks": [
+                {
+                    "content": "\n".join(["const svc = new PhotoService();", "new helper();", "helper();"]),
+                    "start_line": 10,
+                    "end_line": 12,
+                    "symbol_name": "bootstrap",
+                    "symbol_type": "function",
+                }
+            ],
+            "expected": {(10, "PhotoService")},
+            "unexpected": {(11, "helper")},
+        },
+        {
+            "language": "java",
+            "chunks": [
+                {
+                    "content": "\n".join(["PhotoService svc = new PhotoService();", "helper();"]),
+                    "start_line": 20,
+                    "end_line": 21,
+                    "symbol_name": "bootstrap",
+                    "symbol_type": "function",
+                }
+            ],
+            "expected": {(20, "PhotoService")},
+            "unexpected": {(21, "helper")},
+        },
+        {
+            "language": "csharp",
+            "chunks": [
+                {
+                    "content": "\n".join(["var svc = new PhotoService();", "new helper();"]),
+                    "start_line": 30,
+                    "end_line": 31,
+                    "symbol_name": "bootstrap",
+                    "symbol_type": "method",
+                }
+            ],
+            "expected": {(30, "PhotoService")},
+            "unexpected": {(31, "helper")},
+        },
+        {
+            "language": "cpp",
+            "chunks": [
+                {
+                    "content": "\n".join(["auto ptr = new PhotoService();", "PhotoService svc;", "helper();"]),
+                    "start_line": 40,
+                    "end_line": 42,
+                    "symbol_name": "main",
+                    "symbol_type": "function",
+                }
+            ],
+            "expected": {(40, "PhotoService"), (41, "PhotoService")},
+            "unexpected": {(42, "helper")},
+        },
+        {
+            "language": "swift",
+            "chunks": [
+                {
+                    "content": "\n".join(["let svc = PhotoService()", "let svc2 = PhotoService.init()", "helper()"]),
+                    "start_line": 50,
+                    "end_line": 52,
+                    "symbol_name": "bootstrap",
+                    "symbol_type": "function",
+                }
+            ],
+            "expected": {(50, "PhotoService"), (51, "PhotoService")},
+            "unexpected": {(52, "helper")},
+        },
+        {
+            "language": "python",
+            "chunks": [
+                {
+                    "content": "class PhotoService:\n    pass",
+                    "start_line": 60,
+                    "end_line": 61,
+                    "symbol_name": "PhotoService",
+                    "symbol_type": "class",
+                },
+                {
+                    "content": "\n".join(["svc = PhotoService()", "factory = ServiceFactory()", "helper()"]),
+                    "start_line": 70,
+                    "end_line": 72,
+                    "symbol_name": "bootstrap",
+                    "symbol_type": "function",
+                },
+            ],
+            "expected": {(70, "PhotoService")},
+            "unexpected": {(71, "ServiceFactory"), (72, "helper")},
+        },
+    ]
+
+    for case in cases:
+        references = resolver.extract_symbol_references(case["chunks"], language=case["language"])
+        instantiations = {
+            (ref["line_no"], ref["target_name"])
+            for ref in references
+            if ref["reference_kind"] == "instantiation"
+        }
+        assert case["expected"].issubset(instantiations)
+        assert case["unexpected"].isdisjoint(instantiations)
+
+
+def test_resolve_references_marks_python_class_calls_as_instantiation() -> None:
+    """@brief Verify Python class constructor calls resolve as instantiation references."""
+    cur = _ResolverCursor()
+    resolved = resolver.resolve_references(
+        cur,
+        [
+            {
+                "content": "class PhotoService:\n    pass",
+                "start_line": 1,
+                "end_line": 2,
+                "symbol_name": "PhotoService",
+                "symbol_type": "class",
+            },
+            {
+                "content": "svc = PhotoService()\nhelper()",
+                "start_line": 5,
+                "end_line": 6,
+                "symbol_name": "bootstrap",
+                "symbol_type": "function",
+            },
+        ],
+        language="python",
+        source_file_id=11,
+    )
+
+    instantiations = [row for row in resolved if row["reference_kind"] == "instantiation"]
+    assert instantiations == [
+        {
+            "chunk_index": 1,
+            "source_symbol_name": "bootstrap",
+            "target_name": "PhotoService",
+            "reference_kind": "instantiation",
+            "line_no": 5,
+            "target_symbol_id": 101,
+            "target_file_id": 11,
+            "resolution_confidence": resolver.HEURISTIC_NAME_CONFIDENCE,
+            "resolution_method": "heuristic_name",
+            "reference_kind_v2": "instantiation",
+        }
+    ]
+
+
 def test_resolve_references_returns_uniform_resolver_shape() -> None:
     """@brief Verify resolver records always include method, confidence, and richer kind fields."""
     cur = _ResolverCursor()
