@@ -123,6 +123,20 @@ test("find_implementations tool filters for implements edges and returns impleme
   assert.match(toolsSource, /impl\.end_line AS implementer_end_line/);
 });
 
+test("call_graph tool supports forward and reverse traversal with depth bounds and cycle guards", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"call_graph"/);
+  assert.match(toolsSource, /direction:\s*z\s*\.\s*enum\(\["forward",\s*"reverse"\]\)/);
+  assert.match(toolsSource, /depth:\s*z\s*\.\s*number\(\)\.int\(\)\.min\(1\)\.max\(8\)/);
+  assert.match(toolsSource, /JOIN symbol_references sr ON sr\.source_symbol_id = ss\.id/);
+  assert.match(toolsSource, /JOIN symbol_references sr ON sr\.target_symbol_id = ss\.id/);
+  assert.match(toolsSource, /ct\.depth < \$3/);
+  assert.match(toolsSource, /AND NOT sr\.target_symbol_id = ANY\(ct\.walk_path\)/);
+  assert.match(toolsSource, /AND NOT sr\.source_symbol_id = ANY\(ct\.walk_path\)/);
+  assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) IN \('call', 'member_call', 'instantiation'\)/);
+});
+
 test("db schema patches include resolved reference migration columns and indexes", () => {
   const dbSource = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
 

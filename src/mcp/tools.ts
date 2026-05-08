@@ -577,6 +577,236 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "call_graph",
+    "Returns a bounded forward (callees) or reverse (callers) call graph for a symbol using resolved target_symbol_id edges. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
+      direction: z.enum(["forward", "reverse"]).optional().describe("Traversal direction: forward for callees, reverse for callers."),
+      depth: z.number().int().min(1).max(8).optional().describe("Maximum graph depth to traverse (default 3)."),
+    },
+    async ({ repo, symbol, direction = "forward", depth = 3 }) => {
+      logToolInvocation("call_graph", { repo, symbol, direction, depth });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const graphSql = direction === "forward"
+        ? `
+        WITH start_symbols AS (
+          SELECT
+            s.id,
+            s.name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 25
+        ),
+        call_tree AS (
+          SELECT
+            ss.id AS root_symbol_id,
+            ss.name AS root_symbol_name,
+            ss.file_path AS root_symbol_path,
+            ss.start_line AS root_symbol_start_line,
+            ss.end_line AS root_symbol_end_line,
+            sr.source_symbol_id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no,
+            1 AS depth,
+            ARRAY[ss.id, sr.target_symbol_id]::int[] AS walk_path
+          FROM start_symbols ss
+          JOIN symbol_references sr ON sr.source_symbol_id = ss.id
+          WHERE sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+
+          UNION ALL
+
+          SELECT
+            ct.root_symbol_id,
+            ct.root_symbol_name,
+            ct.root_symbol_path,
+            ct.root_symbol_start_line,
+            ct.root_symbol_end_line,
+            sr.source_symbol_id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no,
+            ct.depth + 1 AS depth,
+            ct.walk_path || sr.target_symbol_id
+          FROM call_tree ct
+          JOIN symbol_references sr ON sr.source_symbol_id = ct.to_symbol_id
+          WHERE ct.depth < $3
+            AND sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+            AND NOT sr.target_symbol_id = ANY(ct.walk_path)
+        )
+        SELECT DISTINCT
+          ct.root_symbol_id,
+          ct.root_symbol_name,
+          ct.root_symbol_path,
+          ct.root_symbol_start_line,
+          ct.root_symbol_end_line,
+          ct.depth,
+          ct.reference_kind,
+          ct.line_no,
+          from_symbol.name AS from_symbol_name,
+          from_file.path AS from_path,
+          from_symbol.start_line AS from_start_line,
+          from_symbol.end_line AS from_end_line,
+          to_symbol.name AS to_symbol_name,
+          to_file.path AS to_path,
+          to_symbol.start_line AS to_start_line,
+          to_symbol.end_line AS to_end_line
+        FROM call_tree ct
+        JOIN symbols from_symbol ON from_symbol.id = ct.from_symbol_id
+        JOIN files from_file ON from_file.id = from_symbol.file_id AND from_file.repo = $1
+        JOIN symbols to_symbol ON to_symbol.id = ct.to_symbol_id
+        JOIN files to_file ON to_file.id = to_symbol.file_id AND to_file.repo = $1
+        ORDER BY ct.root_symbol_name, ct.depth, from_file.path, ct.line_no, to_file.path
+        `
+        : `
+        WITH start_symbols AS (
+          SELECT
+            s.id,
+            s.name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 25
+        ),
+        call_tree AS (
+          SELECT
+            ss.id AS root_symbol_id,
+            ss.name AS root_symbol_name,
+            ss.file_path AS root_symbol_path,
+            ss.start_line AS root_symbol_start_line,
+            ss.end_line AS root_symbol_end_line,
+            sr.source_symbol_id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no,
+            1 AS depth,
+            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
+          FROM start_symbols ss
+          JOIN symbol_references sr ON sr.target_symbol_id = ss.id
+          WHERE sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+
+          UNION ALL
+
+          SELECT
+            ct.root_symbol_id,
+            ct.root_symbol_name,
+            ct.root_symbol_path,
+            ct.root_symbol_start_line,
+            ct.root_symbol_end_line,
+            sr.source_symbol_id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no,
+            ct.depth + 1 AS depth,
+            ct.walk_path || sr.source_symbol_id
+          FROM call_tree ct
+          JOIN symbol_references sr ON sr.target_symbol_id = ct.from_symbol_id
+          WHERE ct.depth < $3
+            AND sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+            AND NOT sr.source_symbol_id = ANY(ct.walk_path)
+        )
+        SELECT DISTINCT
+          ct.root_symbol_id,
+          ct.root_symbol_name,
+          ct.root_symbol_path,
+          ct.root_symbol_start_line,
+          ct.root_symbol_end_line,
+          ct.depth,
+          ct.reference_kind,
+          ct.line_no,
+          from_symbol.name AS from_symbol_name,
+          from_file.path AS from_path,
+          from_symbol.start_line AS from_start_line,
+          from_symbol.end_line AS from_end_line,
+          to_symbol.name AS to_symbol_name,
+          to_file.path AS to_path,
+          to_symbol.start_line AS to_start_line,
+          to_symbol.end_line AS to_end_line
+        FROM call_tree ct
+        JOIN symbols from_symbol ON from_symbol.id = ct.from_symbol_id
+        JOIN files from_file ON from_file.id = from_symbol.file_id AND from_file.repo = $1
+        JOIN symbols to_symbol ON to_symbol.id = ct.to_symbol_id
+        JOIN files to_file ON to_file.id = to_symbol.file_id AND to_file.repo = $1
+        ORDER BY ct.root_symbol_name, ct.depth, from_file.path, ct.line_no, to_file.path
+        `;
+
+      const result = await query(graphSql, [repo, symbol, depth]);
+      if (result.rows.length === 0) {
+        return {
+          content: [{ type: "text", text: `No ${direction === "forward" ? "callees" : "callers"} found for "${symbol}" in repo \`${repo}\`.` }],
+        };
+      }
+
+      const lines = [
+        `Call graph (${direction}) for \`${symbol}\` in repo \`${repo}\` (depth <= ${depth}):`,
+        "",
+      ];
+      let currentRoot = "";
+
+      for (const row of result.rows as Array<Record<string, unknown>>) {
+        const rootLabel = formatSymbolLocator(row);
+        if (rootLabel !== currentRoot) {
+          if (currentRoot) {
+            lines.push("");
+          }
+          lines.push(`- Root: ${rootLabel}`);
+          currentRoot = rootLabel;
+        }
+
+        const edgeDepth = Number(row.depth);
+        const fromName = String(row.from_symbol_name || "unknown");
+        const fromPath = String(row.from_path || "unknown");
+        const fromStart = Number(row.from_start_line || 0);
+        const fromEnd = Number(row.from_end_line || 0);
+        const toName = String(row.to_symbol_name || "unknown");
+        const toPath = String(row.to_path || "unknown");
+        const toStart = Number(row.to_start_line || 0);
+        const toEnd = Number(row.to_end_line || 0);
+        const edgeLine = Number(row.line_no || 0);
+        const kind = String(row.reference_kind || "call");
+        lines.push(
+          `  depth ${edgeDepth} ${fromName} (${fromPath}:${fromStart}-${fromEnd}) -> ${toName} (${toPath}:${toStart}-${toEnd}) [${kind}] @L${edgeLine}`,
+        );
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
     "find_subtypes",
     "Returns transitive child types/interfaces for a symbol by walking symbol_relationships where kind is extends/implements. Repository scope is required.",
     {

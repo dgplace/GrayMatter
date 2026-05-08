@@ -1,3 +1,4 @@
+2026-05-08 Implemented CODEBRAIN-28: added MCP call_graph(symbol,direction,depth) with recursive forward/reverse traversal over resolved target_symbol_id call edges, depth bounds, and cycle-safe walk paths.
 2026-05-08 Implemented CODEBRAIN-26 instantiation extraction: resolver now emits reference_kind_v2='instantiation' for class-construction patterns across TS/JS, Java/C#, C++, Swift, and Python class calls, with negative guards against non-class tagging.
 2026-05-08 Implemented CODEBRAIN-25: find_references now filters by richer reference_kind_v2 with legacy fallback, and schema bootstraps backfill missing reference_kind_v2 values from reference_kind.
 # LOG
