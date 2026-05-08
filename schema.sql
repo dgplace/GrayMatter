@@ -147,6 +147,7 @@ CREATE TABLE dependencies (
     is_external     BOOLEAN,
     kind            TEXT NOT NULL,                    -- import, call, type_reference, inheritance
     external_module TEXT,                             -- for unresolved / third-party imports
+    external_version TEXT,                            -- optional version from language manifests
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

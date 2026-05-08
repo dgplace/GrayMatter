@@ -61,6 +61,7 @@ const SCHEMA_PATCHES = [
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS imported_name TEXT`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS local_alias TEXT`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS is_external BOOLEAN`,
+  `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS external_version TEXT`,
   `CREATE INDEX IF NOT EXISTS idx_deps_imported_symbol ON dependencies(imported_symbol_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file ON symbol_relationships(source_file_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id)`,

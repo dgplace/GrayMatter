@@ -13,12 +13,14 @@ watch-mode indexing flows.
 # behavior remains in one place while pipeline stages are being split out.
 
 import hashlib
+import json
 import os
 import posixpath
 import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
@@ -305,6 +307,10 @@ SCHEMA_PATCHES = [
     """
     ALTER TABLE dependencies
     ADD COLUMN IF NOT EXISTS is_external BOOLEAN
+    """,
+    """
+    ALTER TABLE dependencies
+    ADD COLUMN IF NOT EXISTS external_version TEXT
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file
@@ -803,6 +809,34 @@ def _candidate_internal_import_paths(
                 candidates.append(posixpath.join(base, f"index{extension}"))
         return [candidate for candidate in candidates if candidate and not candidate.startswith("../")]
 
+    if language == "java":
+        base = module.replace(".", "/")
+        if not base:
+            return []
+        return [f"{base}.java"]
+
+    if language in {"c", "cpp"}:
+        source_dir = posixpath.dirname(source_rel_path)
+        if module.startswith("/"):
+            normalized = posixpath.normpath(module.lstrip("/"))
+            return [normalized] if normalized and not normalized.startswith("../") else []
+        candidates = [
+            posixpath.normpath(posixpath.join(source_dir, module)),
+            posixpath.normpath(module),
+        ]
+        return [candidate for candidate in candidates if candidate and not candidate.startswith("../")]
+
+    if language in {"csharp", "swift"}:
+        base = module.replace(".", "/")
+        candidates = [base] if base else []
+        if base and not posixpath.splitext(base)[1]:
+            if language == "csharp":
+                candidates.append(f"{base}.cs")
+            else:
+                candidates.append(f"{base}.swift")
+                candidates.append(posixpath.join("Sources", base, f"{module}.swift"))
+        return [candidate for candidate in candidates if candidate and not candidate.startswith("../")]
+
     if language != "python":
         return []
 
@@ -849,10 +883,18 @@ def _resolve_internal_import_target_file_id(
             """
             SELECT id
             FROM files
-            WHERE repo = %s AND path = %s
+            WHERE repo = %s
+              AND (
+                  path = %s
+                  OR path LIKE %s
+              )
             LIMIT 1
             """,
-            (repo_name, candidate),
+            (
+                repo_name,
+                candidate,
+                f"{candidate}.%",
+            ),
         )
         row = cur.fetchone()
         if row:
@@ -891,6 +933,217 @@ def _resolve_imported_symbol_id(
     )
     row = cur.fetchone()
     return int(row[0]) if row else None
+
+
+@lru_cache(maxsize=32)
+def _manifest_versions(repo_root_str: str) -> dict[str, dict[str, str]]:
+    """@brief Build per-ecosystem package-version maps from repository manifests.
+
+    @param repo_root_str Absolute repository root path string.
+    @return Mapping keyed by ecosystem name (`npm`, `pip`, `maven`).
+    """
+    repo_root = Path(repo_root_str)
+    return {
+        "npm": _npm_manifest_versions(repo_root),
+        "pip": _pip_manifest_versions(repo_root),
+        "maven": _maven_manifest_versions(repo_root),
+    }
+
+
+def _npm_manifest_versions(repo_root: Path) -> dict[str, str]:
+    """@brief Parse npm dependency versions from package.json files.
+
+    @param repo_root Repository root path.
+    @return Mapping of npm package name to declared version specifier.
+    """
+    versions: dict[str, str] = {}
+    for package_json in repo_root.rglob("package.json"):
+        if "node_modules" in package_json.parts:
+            continue
+        try:
+            data = json.loads(package_json.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for section in (
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        ):
+            deps = data.get(section, {})
+            if isinstance(deps, dict):
+                for name, version in deps.items():
+                    if isinstance(name, str) and isinstance(version, str) and name not in versions:
+                        versions[name] = version
+    return versions
+
+
+def _pip_manifest_versions(repo_root: Path) -> dict[str, str]:
+    """@brief Parse Python package versions from requirements and pyproject files.
+
+    @param repo_root Repository root path.
+    @return Mapping of package name to version or constraint specifier.
+    """
+    versions: dict[str, str] = {}
+    requirement_pattern = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*([<>=!~]{1,2}\s*[^;#\s]+)?")
+
+    for requirements_file in repo_root.rglob("requirements.txt"):
+        if ".venv" in requirements_file.parts:
+            continue
+        try:
+            for line in requirements_file.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+                    continue
+                if "@" in stripped and "://" in stripped:
+                    continue
+                match = requirement_pattern.match(stripped)
+                if not match:
+                    continue
+                package = match.group(1).lower().replace("_", "-")
+                raw_version = (match.group(2) or "").replace(" ", "")
+                if package and package not in versions:
+                    versions[package] = raw_version or "unversioned"
+        except Exception:
+            continue
+
+    for pyproject_file in repo_root.rglob("pyproject.toml"):
+        try:
+            with pyproject_file.open("rb") as handle:
+                data = tomllib.load(handle)
+        except Exception:
+            continue
+
+        project_deps = data.get("project", {}).get("dependencies", [])
+        if isinstance(project_deps, list):
+            for raw_dep in project_deps:
+                if not isinstance(raw_dep, str):
+                    continue
+                match = requirement_pattern.match(raw_dep)
+                if not match:
+                    continue
+                package = match.group(1).lower().replace("_", "-")
+                raw_version = (match.group(2) or "").replace(" ", "")
+                if package and package not in versions:
+                    versions[package] = raw_version or "unversioned"
+
+        poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
+        if isinstance(poetry_deps, dict):
+            for package, raw_version in poetry_deps.items():
+                if not isinstance(package, str) or package.lower() == "python":
+                    continue
+                normalized_package = package.lower().replace("_", "-")
+                if isinstance(raw_version, str):
+                    versions.setdefault(normalized_package, raw_version or "unversioned")
+                elif isinstance(raw_version, dict):
+                    version_value = raw_version.get("version")
+                    if isinstance(version_value, str):
+                        versions.setdefault(normalized_package, version_value or "unversioned")
+
+    return versions
+
+
+def _maven_manifest_versions(repo_root: Path) -> dict[str, str]:
+    """@brief Parse Maven dependency versions from pom.xml files.
+
+    @param repo_root Repository root path.
+    @return Mapping of group-id and group:artifact keys to version strings.
+    """
+    versions: dict[str, str] = {}
+    for pom_file in repo_root.rglob("pom.xml"):
+        try:
+            root = ET.parse(pom_file).getroot()
+        except Exception:
+            continue
+
+        namespace_match = re.match(r"^\{(.+)\}", root.tag)
+        namespace = {"m": namespace_match.group(1)} if namespace_match else {}
+        dependency_query = ".//m:dependencies/m:dependency" if namespace else ".//dependencies/dependency"
+        group_query = "m:groupId" if namespace else "groupId"
+        artifact_query = "m:artifactId" if namespace else "artifactId"
+        version_query = "m:version" if namespace else "version"
+
+        for dep in root.findall(dependency_query, namespace):
+            group_node = dep.find(group_query, namespace)
+            artifact_node = dep.find(artifact_query, namespace)
+            version_node = dep.find(version_query, namespace)
+            if group_node is None or artifact_node is None or version_node is None:
+                continue
+            group_id = (group_node.text or "").strip()
+            artifact_id = (artifact_node.text or "").strip()
+            version = (version_node.text or "").strip()
+            if not group_id or not artifact_id or not version:
+                continue
+            versions.setdefault(group_id, version)
+            versions.setdefault(f"{group_id}:{artifact_id}", version)
+    return versions
+
+
+def _external_package_from_module(module: str, language: Optional[str]) -> str:
+    """@brief Normalize an imported module token to an external package name.
+
+    @param module Parsed module token from dependency extraction.
+    @param language Source file language.
+    @return External package identifier used for storage and version lookup.
+    """
+    if language in {"typescript", "javascript", "tsx", "jsx"}:
+        if module.startswith("@"):
+            parts = module.split("/")
+            return "/".join(parts[:2]) if len(parts) >= 2 else module
+        return module.split("/", 1)[0]
+
+    if language == "python":
+        return module.split(".", 1)[0].replace("_", "-")
+
+    if language == "java":
+        parts = module.split(".")
+        if len(parts) >= 3:
+            return ".".join(parts[:3])
+        return module
+
+    if language in {"c", "cpp"}:
+        token = module.strip("<>\"")
+        return token.split("/", 1)[0]
+
+    if language in {"csharp", "swift"}:
+        return module
+
+    return module
+
+
+def _external_version_for_package(
+    package_name: str,
+    module: str,
+    language: Optional[str],
+    manifest_versions: dict[str, dict[str, str]],
+) -> Optional[str]:
+    """@brief Resolve external dependency version from manifest maps.
+
+    @param package_name Normalized external package name.
+    @param module Full module token.
+    @param language Source language.
+    @param manifest_versions Cached ecosystem version maps.
+    @return Version string when manifest data exists, otherwise None.
+    """
+    if language in {"typescript", "javascript", "tsx", "jsx"}:
+        return manifest_versions.get("npm", {}).get(package_name)
+
+    if language == "python":
+        return manifest_versions.get("pip", {}).get(package_name.lower().replace("_", "-"))
+
+    if language == "java":
+        maven_versions = manifest_versions.get("maven", {})
+        if package_name in maven_versions:
+            return maven_versions[package_name]
+        prefix_matches = [
+            (key, value)
+            for key, value in maven_versions.items()
+            if ":" not in key and (module == key or module.startswith(f"{key}."))
+        ]
+        if prefix_matches:
+            prefix_matches.sort(key=lambda row: len(row[0]), reverse=True)
+            return prefix_matches[0][1]
+    return None
 
 
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
@@ -1176,6 +1429,7 @@ def process_file(
             )
 
         # Extract and store dependencies
+        manifest_versions = _manifest_versions(str(repo_root))
         deps = chunker.extract_dependencies(content, language, rel_path)
         for dep in deps:
             module = dep.get("module")
@@ -1189,16 +1443,29 @@ def process_file(
                 language,
             ) if module else None
             is_external = target_file_id is None
+            if language in {"c", "cpp"} and dep.get("raw", "").startswith("#include \""):
+                is_external = False
             imported_symbol_id = _resolve_imported_symbol_id(cur, target_file_id, imported_name)
+            external_module = None
+            external_version = None
+            if is_external and module:
+                external_module = _external_package_from_module(module, language)
+                external_version = _external_version_for_package(
+                    external_module,
+                    module,
+                    language,
+                    manifest_versions,
+                )
             cur.execute(
                 """INSERT INTO dependencies
-                   (source_file_id, target_file_id, kind, external_module, imported_name, local_alias, imported_symbol_id, is_external)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (source_file_id, target_file_id, kind, external_module, external_version, imported_name, local_alias, imported_symbol_id, is_external)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     file_id,
                     target_file_id,
                     dep["kind"],
-                    module if is_external else None,
+                    external_module,
+                    external_version,
                     imported_name,
                     local_alias,
                     imported_symbol_id,

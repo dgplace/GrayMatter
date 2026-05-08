@@ -419,6 +419,7 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "ADD COLUMN IF NOT EXISTS imported_name TEXT" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS local_alias TEXT" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS is_external BOOLEAN" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS external_version TEXT" in patch_blob
 
 
 def test_candidate_internal_import_paths_supports_python_and_typescript() -> None:
@@ -483,6 +484,33 @@ def test_resolve_imported_symbol_id_uses_exported_symbols_only() -> None:
     assert params == (77, "PhotoService")
     assert ingest._resolve_imported_symbol_id(cursor, 77, "*") is None
     assert ingest._resolve_imported_symbol_id(cursor, None, "PhotoService") is None
+
+
+def test_external_package_from_module_normalizes_language_specific_names() -> None:
+    """@brief Verify external package name normalization for supported language ecosystems."""
+    assert ingest._external_package_from_module("@scope/ui/button", "typescript") == "@scope/ui"
+    assert ingest._external_package_from_module("react/jsx-runtime", "typescript") == "react"
+    assert ingest._external_package_from_module("requests.sessions", "python") == "requests"
+    assert ingest._external_package_from_module("org.apache.commons.lang3.StringUtils", "java") == "org.apache.commons"
+    assert ingest._external_package_from_module("vector", "cpp") == "vector"
+
+
+def test_external_version_for_package_uses_manifest_maps() -> None:
+    """@brief Verify version lookups return ecosystem-specific manifest matches when available."""
+    manifests = {
+        "npm": {"react": "^18.2.0"},
+        "pip": {"requests": "==2.31.0"},
+        "maven": {"org.apache.commons": "3.12.0"},
+    }
+    assert ingest._external_version_for_package("react", "react/jsx-runtime", "typescript", manifests) == "^18.2.0"
+    assert ingest._external_version_for_package("requests", "requests.sessions", "python", manifests) == "==2.31.0"
+    assert ingest._external_version_for_package(
+        "org.apache.commons",
+        "org.apache.commons.lang3.StringUtils",
+        "java",
+        manifests,
+    ) == "3.12.0"
+    assert ingest._external_version_for_package("System", "System", "csharp", manifests) is None
 
 
 def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:
