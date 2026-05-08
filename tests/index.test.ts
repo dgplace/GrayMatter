@@ -137,6 +137,17 @@ test("call_graph tool supports forward and reverse traversal with depth bounds a
   assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) IN \('call', 'member_call', 'instantiation'\)/);
 });
 
+test("find_instantiations tool filters instantiation references and returns source + containing symbol context", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"find_instantiations"/);
+  assert.match(toolsSource, /s\.kind IN \('class', 'struct'\)/);
+  assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) = 'instantiation'/);
+  assert.match(toolsSource, /ss\.name AS containing_symbol_name/);
+  assert.match(toolsSource, /No class symbol matches found for/);
+  assert.match(toolsSource, /No instantiations found for/);
+});
+
 test("db schema patches include resolved reference migration columns and indexes", () => {
   const dbSource = readFileSync(new URL("../src/db.ts", import.meta.url), "utf8");
 

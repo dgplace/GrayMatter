@@ -942,6 +942,108 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "find_instantiations",
+    "Returns all instantiation sites for a class symbol by filtering reference_kind_v2='instantiation'. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().describe("Class symbol name or qualified suffix to inspect."),
+      limit: z.number().int().min(1).max(200).optional().describe("Maximum number of instantiation rows to return (default 100)."),
+    },
+    async ({ repo, symbol, limit = 100 }) => {
+      logToolInvocation("find_instantiations", { repo, symbol, limit });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const classResult = await query(
+        `
+        SELECT
+          s.id,
+          s.name,
+          s.kind,
+          f.path AS class_path,
+          s.start_line,
+          s.end_line
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE f.repo = $1
+          AND (
+            lower(s.name) = lower($2)
+            OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+          )
+          AND s.kind IN ('class', 'struct')
+        ORDER BY
+          CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+          CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+          s.start_line
+        LIMIT 25
+      `,
+        [repo, symbol],
+      );
+
+      if (classResult.rows.length === 0) {
+        return {
+          content: [{ type: "text", text: `No class symbol matches found for "${symbol}" in repo \`${repo}\`. Returning 0 instantiations.` }],
+        };
+      }
+
+      const classIds = (classResult.rows as Array<Record<string, unknown>>).map((row) => Number(row.id));
+      const instantiationResult = await query(
+        `
+        SELECT
+          sr.target_symbol_id,
+          tc.name AS class_name,
+          tcf.path AS class_path,
+          tc.start_line AS class_start_line,
+          tc.end_line AS class_end_line,
+          sf.path AS source_path,
+          sr.line_no,
+          ss.name AS containing_symbol_name,
+          ss.start_line AS containing_symbol_start_line,
+          ss.end_line AS containing_symbol_end_line
+        FROM symbol_references sr
+        JOIN symbols tc ON tc.id = sr.target_symbol_id
+        JOIN files tcf ON tcf.id = tc.file_id AND tcf.repo = $1
+        JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+        LEFT JOIN symbols ss ON ss.id = sr.source_symbol_id
+        WHERE sr.target_symbol_id = ANY($2::int[])
+          AND COALESCE(sr.reference_kind_v2, sr.reference_kind) = 'instantiation'
+        ORDER BY tc.name, sf.path, sr.line_no
+        LIMIT $3
+      `,
+        [repo, classIds, limit],
+      );
+
+      if (instantiationResult.rows.length === 0) {
+        return {
+          content: [{ type: "text", text: `No instantiations found for "${symbol}" in repo \`${repo}\`.` }],
+        };
+      }
+
+      const lines = [`Instantiations for \`${symbol}\` in repo \`${repo}\`:`, ""];
+      for (const row of instantiationResult.rows as Array<Record<string, unknown>>) {
+        const className = String(row.class_name || "unknown");
+        const classPath = String(row.class_path || "unknown");
+        const classStart = Number(row.class_start_line || 0);
+        const classEnd = Number(row.class_end_line || 0);
+        const sourcePath = String(row.source_path || "unknown");
+        const lineNo = Number(row.line_no || 0);
+        const containerName = String(row.containing_symbol_name || "unknown");
+        const containerStart = Number(row.containing_symbol_start_line || 0);
+        const containerEnd = Number(row.containing_symbol_end_line || 0);
+
+        lines.push(
+          `- ${sourcePath}:${lineNo} in ${containerName} (${containerStart}-${containerEnd}) instantiates ${className} (${classPath}:${classStart}-${classEnd})`,
+        );
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
     "find_implementations",
     "Returns direct and transitive implementers for an interface/abstract symbol by walking symbol_relationships with kind=implements. Repository scope is required.",
     {
