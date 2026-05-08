@@ -252,6 +252,11 @@ SCHEMA_PATCHES = [
     WHERE target_symbol_id IS NOT NULL
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_symbol_refs_reverse_lookup
+    ON symbol_references(target_symbol_id, source_file_id, source_symbol_name)
+    WHERE target_symbol_id IS NOT NULL
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind
     ON symbol_references(target_name, reference_kind)
     """,
@@ -313,6 +318,15 @@ SCHEMA_PATCHES = [
     ADD COLUMN IF NOT EXISTS external_version TEXT
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_deps_target_symbol
+    ON dependencies(target_symbol_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_deps_reverse_lookup
+    ON dependencies(target_symbol_id, source_file_id, source_symbol_id)
+    WHERE target_symbol_id IS NOT NULL
+    """,
+    """
     CREATE TABLE IF NOT EXISTS dependency_cycles (
         id SERIAL PRIMARY KEY,
         repo TEXT NOT NULL,
@@ -339,6 +353,11 @@ SCHEMA_PATCHES = [
     """
     CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol
     ON symbol_relationships(target_symbol_id)
+    WHERE target_symbol_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup
+    ON symbol_relationships(target_symbol_id, source_symbol_id)
     WHERE target_symbol_id IS NOT NULL
     """,
     """

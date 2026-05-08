@@ -156,6 +156,7 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /ADD COLUMN IF NOT EXISTS resolution_method TEXT/);
   assert.match(dbSource, /ADD COLUMN IF NOT EXISTS reference_kind_v2 TEXT/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_reverse_lookup/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS symbol_relationships/);
@@ -163,6 +164,9 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /target_symbol_id INTEGER REFERENCES symbols\(id\) ON DELETE SET NULL/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_deps_target_symbol/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_deps_reverse_lookup/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS dependency_cycles/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles/);
 });

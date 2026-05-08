@@ -39,6 +39,7 @@ const SCHEMA_PATCHES = [
   `CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name ON symbol_references(target_name)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_refs_kind ON symbol_references(reference_kind)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol ON symbol_references(target_symbol_id) WHERE target_symbol_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_refs_reverse_lookup ON symbol_references(target_symbol_id, source_file_id, source_symbol_name) WHERE target_symbol_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind ON symbol_references(target_name, reference_kind)`,
   `CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name ON symbols(file_id, is_primary_declaration, name)`,
   `CREATE TABLE IF NOT EXISTS symbol_relationships (
@@ -62,6 +63,8 @@ const SCHEMA_PATCHES = [
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS local_alias TEXT`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS is_external BOOLEAN`,
   `ALTER TABLE dependencies ADD COLUMN IF NOT EXISTS external_version TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_deps_target_symbol ON dependencies(target_symbol_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_deps_reverse_lookup ON dependencies(target_symbol_id, source_file_id, source_symbol_id) WHERE target_symbol_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS dependency_cycles (
       id SERIAL PRIMARY KEY,
       repo TEXT NOT NULL,
@@ -77,6 +80,7 @@ const SCHEMA_PATCHES = [
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file ON symbol_relationships(source_file_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol ON symbol_relationships(target_symbol_id) WHERE target_symbol_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup ON symbol_relationships(target_symbol_id, source_symbol_id) WHERE target_symbol_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_kind ON symbol_relationships(relationship_kind)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_name ON symbol_relationships(target_name)`,
   `CREATE TABLE IF NOT EXISTS module_intents (

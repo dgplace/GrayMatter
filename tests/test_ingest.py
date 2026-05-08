@@ -420,6 +420,10 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "ADD COLUMN IF NOT EXISTS local_alias TEXT" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS is_external BOOLEAN" in patch_blob
     assert "ADD COLUMN IF NOT EXISTS external_version TEXT" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_deps_target_symbol" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_deps_reverse_lookup" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_reverse_lookup" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS dependency_cycles" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo" in patch_blob
 

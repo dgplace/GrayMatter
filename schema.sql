@@ -108,6 +108,8 @@ CREATE INDEX idx_symbol_refs_source_chunk ON symbol_references(source_chunk_id);
 CREATE INDEX idx_symbol_refs_target_name ON symbol_references(target_name);
 CREATE INDEX idx_symbol_refs_kind ON symbol_references(reference_kind);
 CREATE INDEX idx_symbol_refs_target_symbol ON symbol_references(target_symbol_id) WHERE target_symbol_id IS NOT NULL;
+CREATE INDEX idx_symbol_refs_reverse_lookup ON symbol_references(target_symbol_id, source_file_id, source_symbol_name)
+    WHERE target_symbol_id IS NOT NULL;
 CREATE INDEX idx_symbol_refs_target_name_kind ON symbol_references(target_name, reference_kind);
 CREATE INDEX idx_symbols_file_primary_name ON symbols(file_id, is_primary_declaration, name);
 
@@ -129,6 +131,8 @@ CREATE TABLE symbol_relationships (
 CREATE INDEX idx_symbol_rels_source_file ON symbol_relationships(source_file_id);
 CREATE INDEX idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id);
 CREATE INDEX idx_symbol_rels_target_symbol ON symbol_relationships(target_symbol_id) WHERE target_symbol_id IS NOT NULL;
+CREATE INDEX idx_symbol_rels_reverse_lookup ON symbol_relationships(target_symbol_id, source_symbol_id)
+    WHERE target_symbol_id IS NOT NULL;
 CREATE INDEX idx_symbol_rels_kind ON symbol_relationships(relationship_kind);
 CREATE INDEX idx_symbol_rels_target_name ON symbol_relationships(target_name);
 
@@ -155,6 +159,8 @@ CREATE INDEX idx_deps_source_file ON dependencies(source_file_id);
 CREATE INDEX idx_deps_target_file ON dependencies(target_file_id);
 CREATE INDEX idx_deps_source_symbol ON dependencies(source_symbol_id);
 CREATE INDEX idx_deps_target_symbol ON dependencies(target_symbol_id);
+CREATE INDEX idx_deps_reverse_lookup ON dependencies(target_symbol_id, source_file_id, source_symbol_id)
+    WHERE target_symbol_id IS NOT NULL;
 CREATE INDEX idx_deps_imported_symbol ON dependencies(imported_symbol_id);
 CREATE INDEX idx_deps_kind ON dependencies(kind);
 CREATE INDEX idx_deps_source_target ON dependencies(source_file_id, target_file_id);
