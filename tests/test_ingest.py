@@ -426,6 +426,8 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS dependency_cycles" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo" in patch_blob
+    assert "CREATE OR REPLACE FUNCTION impact_of" in patch_blob
+    assert "min_confidence   REAL DEFAULT 0.55" in patch_blob
 
 
 def test_candidate_internal_import_paths_supports_python_and_typescript() -> None:

@@ -66,3 +66,4 @@
 2026-05-08 CODEBRAIN-32 added Tarjan SCC dependency-cycle materialization into dependency_cycles with deterministic cycle_hash values and repo-scoped replace semantics on each ingest run.
 2026-05-08 CODEBRAIN-33 added a new MCP `cycles(repo)` tool that reads dependency_cycles and returns ordered human-readable cycle members with file ids and paths.
 2026-05-08 CODEBRAIN-34 added reverse-traversal composite indexes on symbol_references/symbol_relationships/dependencies target_symbol_id access paths to keep blast-radius queries performant at scale.
+2026-05-08 CODEBRAIN-35 added SQL function impact_of(symbol_id, max_depth, min_confidence default 0.55) for reverse traversal across relationships/references/dependencies with confidence filtering and cycle-safe depth bounds.

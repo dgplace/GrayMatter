@@ -343,6 +343,104 @@ SCHEMA_PATCHES = [
     ON dependency_cycles(repo)
     """,
     """
+    CREATE OR REPLACE FUNCTION impact_of(
+        input_symbol_id  INTEGER,
+        max_depth        INTEGER,
+        min_confidence   REAL DEFAULT 0.55
+    )
+    RETURNS TABLE (
+        affected_symbol_id      INTEGER,
+        affected_file_id        INTEGER,
+        affected_file_path      TEXT,
+        affected_symbol_name    TEXT,
+        depth                   INTEGER,
+        edge_kind               TEXT,
+        path_min_confidence     REAL
+    ) AS $$
+    BEGIN
+        RETURN QUERY
+        WITH RECURSIVE reverse_edges AS (
+            SELECT
+                sr.target_symbol_id,
+                sr.source_symbol_id,
+                sr.relationship_kind AS edge_kind,
+                1.0::REAL AS edge_confidence
+            FROM symbol_relationships sr
+            WHERE sr.target_symbol_id IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                refs.target_symbol_id,
+                source_symbols.source_symbol_id,
+                COALESCE(refs.reference_kind_v2, refs.reference_kind) AS edge_kind,
+                COALESCE(refs.resolution_confidence, 0.55)::REAL AS edge_confidence
+            FROM symbol_references refs
+            JOIN LATERAL (
+                SELECT s.id AS source_symbol_id
+                FROM symbols s
+                WHERE s.file_id = refs.source_file_id
+                  AND refs.source_symbol_name IS NOT NULL
+                  AND lower(s.name) = lower(refs.source_symbol_name)
+                ORDER BY
+                    CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+                    s.start_line
+                LIMIT 1
+            ) source_symbols ON TRUE
+            WHERE refs.target_symbol_id IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                d.target_symbol_id,
+                d.source_symbol_id,
+                d.kind AS edge_kind,
+                1.0::REAL AS edge_confidence
+            FROM dependencies d
+            WHERE d.target_symbol_id IS NOT NULL
+              AND d.source_symbol_id IS NOT NULL
+        ),
+        walk AS (
+            SELECT
+                input_symbol_id AS symbol_id,
+                0 AS depth,
+                NULL::TEXT AS edge_kind,
+                1.0::REAL AS path_min_confidence,
+                ARRAY[input_symbol_id]::INTEGER[] AS visited
+
+            UNION ALL
+
+            SELECT
+                re.source_symbol_id AS symbol_id,
+                walk.depth + 1 AS depth,
+                re.edge_kind,
+                LEAST(walk.path_min_confidence, re.edge_confidence)::REAL AS path_min_confidence,
+                walk.visited || re.source_symbol_id AS visited
+            FROM walk
+            JOIN reverse_edges re
+              ON re.target_symbol_id = walk.symbol_id
+            WHERE walk.depth < max_depth
+              AND re.source_symbol_id IS NOT NULL
+              AND re.edge_confidence >= min_confidence
+              AND NOT re.source_symbol_id = ANY(walk.visited)
+        )
+        SELECT
+            s.id AS affected_symbol_id,
+            f.id AS affected_file_id,
+            f.path AS affected_file_path,
+            s.name AS affected_symbol_name,
+            walk.depth,
+            walk.edge_kind,
+            walk.path_min_confidence
+        FROM walk
+        JOIN symbols s ON s.id = walk.symbol_id
+        JOIN files f ON f.id = s.file_id
+        WHERE walk.depth > 0
+        ORDER BY walk.depth, walk.path_min_confidence DESC, f.path, s.name;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file
     ON symbol_relationships(source_file_id)
     """,
