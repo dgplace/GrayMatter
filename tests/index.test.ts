@@ -183,3 +183,16 @@ test("cycles tool reads persisted dependency_cycles rows for a repository", () =
   assert.match(toolsSource, /member_file_ids/);
   assert.match(toolsSource, /member_paths/);
 });
+
+test("impact_of tool wraps SQL impact_of function with confidence-band output", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"impact_of"/);
+  assert.match(toolsSource, /min_confidence:\s*z\s*\.\s*number\(\)\.min\(0\)\.max\(1\)\.optional\(\)/);
+  assert.match(toolsSource, /depth:\s*z\s*\.\s*number\(\)\.int\(\)\.min\(1\)\.max\(8\)\.optional\(\)/);
+  assert.match(toolsSource, /async \(\{ repo, symbol, depth = 5, min_confidence = 0\.55 \}\)/);
+  assert.match(toolsSource, /FROM impact_of\(\$1, \$2, \$3\)/);
+  assert.match(toolsSource, /Likely impact \(confidence >= 0\.75\)/);
+  assert.match(toolsSource, /Possible impact \(0\.55 <= confidence < 0\.75\)/);
+  assert.match(toolsSource, /impactCategory/);
+});

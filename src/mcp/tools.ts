@@ -114,6 +114,27 @@ function formatSymbolLocator(row: Record<string, unknown>): string {
 }
 
 /**
+ * @brief Maps raw edge kinds to the normalized impact categories shown in MCP output.
+ * @param edgeKind Raw traversal edge kind.
+ * @returns One of calls, instantiations, structural, imports, or other.
+ */
+function impactCategory(edgeKind: string): "calls" | "instantiations" | "structural" | "imports" | "other" {
+  if (edgeKind === "instantiation" || edgeKind === "injection") {
+    return "instantiations";
+  }
+  if (edgeKind === "import") {
+    return "imports";
+  }
+  if (["extends", "implements", "mixin", "type_alias", "inheritance"].includes(edgeKind)) {
+    return "structural";
+  }
+  if (["call", "member_call", "service_usage"].includes(edgeKind)) {
+    return "calls";
+  }
+  return "other";
+}
+
+/**
  * @brief Registers all CodeBrain MCP tools.
  * @param server MCP server instance.
  * @returns Void.
@@ -1905,6 +1926,171 @@ export function registerTools(server: McpServer): void {
         }
         lines.push("");
       }
+
+      return { content: [{ type: "text", text: lines.join("\n").trim() }] };
+    },
+  );
+
+  server.tool(
+    "impact_of",
+    "Answers what may break if a symbol changes by reverse-traversing confidence-scored edges. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+      symbol: z.string().min(1).describe("Symbol identifier: numeric symbol id, exact name, or qualified name."),
+      depth: z.number().int().min(1).max(8).optional().describe("Maximum reverse traversal depth (default 5)."),
+      min_confidence: z.number().min(0).max(1).optional()
+        .describe("Traversal confidence floor (default 0.55; values below are excluded)."),
+    },
+    async ({ repo, symbol, depth = 5, min_confidence = 0.55 }) => {
+      logToolInvocation("impact_of", { repo, symbol, depth, min_confidence });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      const numericSymbolId = Number(symbol);
+      let rootSymbolQueryResult;
+      if (Number.isInteger(numericSymbolId) && numericSymbolId > 0) {
+        rootSymbolQueryResult = await query(
+          `
+          SELECT s.id, s.name, s.qualified_name, f.path
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND s.id = $2
+          LIMIT 1
+          `,
+          [repo, numericSymbolId],
+        );
+      } else {
+        rootSymbolQueryResult = await query(
+          `
+          SELECT s.id, s.name, s.qualified_name, f.path
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              s.qualified_name = $2
+              OR s.name = $2
+              OR s.qualified_name ILIKE '%' || $2 || '%'
+              OR s.name ILIKE '%' || $2 || '%'
+            )
+          ORDER BY
+            CASE
+              WHEN s.qualified_name = $2 THEN 0
+              WHEN s.name = $2 THEN 1
+              ELSE 2
+            END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            CASE WHEN s.is_exported THEN 0 ELSE 1 END,
+            f.path,
+            s.start_line
+          LIMIT 1
+          `,
+          [repo, symbol],
+        );
+      }
+
+      if (rootSymbolQueryResult.rows.length === 0) {
+        return { content: [{ type: "text", text: `No symbol match found for \`${symbol}\` in repo \`${repo}\`.` }] };
+      }
+
+      const rootRow = rootSymbolQueryResult.rows[0] as Record<string, unknown>;
+      const rootSymbolId = Number(rootRow.id);
+      const rootSymbolName = String(rootRow.name);
+      const rootQualifiedName = rootRow.qualified_name ? String(rootRow.qualified_name) : rootSymbolName;
+      const rootPath = String(rootRow.path);
+
+      const impactResult = await query(
+        `
+        SELECT
+          affected_symbol_id,
+          affected_file_id,
+          affected_file_path,
+          affected_symbol_name,
+          depth,
+          edge_kind,
+          path_min_confidence
+        FROM impact_of($1, $2, $3)
+        `,
+        [rootSymbolId, depth, min_confidence],
+      );
+
+      if (impactResult.rows.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: `No impacted symbols found for \`${rootQualifiedName}\` (${rootPath}) with depth=${depth} and min_confidence=${min_confidence.toFixed(2)}.`,
+          }],
+        };
+      }
+
+      type ImpactRow = {
+        affected_symbol_id: number;
+        affected_file_id: number;
+        affected_file_path: string;
+        affected_symbol_name: string;
+        depth: number;
+        edge_kind: string;
+        path_min_confidence: number;
+      };
+
+      const rows = impactResult.rows.map((row) => {
+        const raw = row as Record<string, unknown>;
+        return {
+          affected_symbol_id: Number(raw.affected_symbol_id),
+          affected_file_id: Number(raw.affected_file_id),
+          affected_file_path: String(raw.affected_file_path),
+          affected_symbol_name: String(raw.affected_symbol_name),
+          depth: Number(raw.depth),
+          edge_kind: String(raw.edge_kind || "unknown"),
+          path_min_confidence: Number(raw.path_min_confidence || 0),
+        } satisfies ImpactRow;
+      });
+
+      const likelyImpact = rows.filter((row) => row.path_min_confidence >= 0.75);
+      const possibleImpact = rows.filter((row) => row.path_min_confidence >= min_confidence && row.path_min_confidence < 0.75);
+
+      const formatBand = (title: string, bandRows: ImpactRow[]): string[] => {
+        if (bandRows.length === 0) {
+          return [`${title}: none`, ""];
+        }
+        const grouped = new Map<string, ImpactRow[]>();
+        for (const row of bandRows) {
+          const category = impactCategory(row.edge_kind);
+          if (!grouped.has(category)) {
+            grouped.set(category, []);
+          }
+          grouped.get(category)!.push(row);
+        }
+
+        const lines: string[] = [`${title}: ${bandRows.length}`];
+        for (const category of ["calls", "instantiations", "structural", "imports", "other"]) {
+          const categoryRows = grouped.get(category);
+          if (!categoryRows || categoryRows.length === 0) {
+            continue;
+          }
+          lines.push(`- ${category}:`);
+          for (const row of categoryRows.slice(0, 60)) {
+            lines.push(
+              `  - [symbol ${row.affected_symbol_id}] ${row.affected_symbol_name} (${row.affected_file_path}, depth ${row.depth}, edge ${row.edge_kind}, confidence ${row.path_min_confidence.toFixed(2)})`,
+            );
+          }
+          if (categoryRows.length > 60) {
+            lines.push(`  - ... ${categoryRows.length - 60} more`);
+          }
+        }
+        lines.push("");
+        return lines;
+      };
+
+      const lines = [
+        `Impact analysis for \`${rootQualifiedName}\` (symbol ${rootSymbolId}, ${rootPath})`,
+        `Traversal depth: ${depth}`,
+        `min_confidence: ${min_confidence.toFixed(2)} (default 0.55)`,
+        "",
+        ...formatBand("Likely impact (confidence >= 0.75)", likelyImpact),
+        ...formatBand("Possible impact (0.55 <= confidence < 0.75)", possibleImpact),
+      ];
 
       return { content: [{ type: "text", text: lines.join("\n").trim() }] };
     },
