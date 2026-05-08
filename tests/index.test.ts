@@ -163,4 +163,17 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /target_symbol_id INTEGER REFERENCES symbols\(id\) ON DELETE SET NULL/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS dependency_cycles/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles/);
+});
+
+test("cycles tool reads persisted dependency_cycles rows for a repository", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"cycles"/);
+  assert.match(toolsSource, /FROM dependency_cycles/);
+  assert.match(toolsSource, /WHERE repo = \$1/);
+  assert.match(toolsSource, /No dependency cycles found for repo/);
+  assert.match(toolsSource, /member_file_ids/);
+  assert.match(toolsSource, /member_paths/);
 });

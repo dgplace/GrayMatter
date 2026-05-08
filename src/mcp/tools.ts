@@ -1851,6 +1851,66 @@ export function registerTools(server: McpServer): void {
   );
 
   server.tool(
+    "cycles",
+    "Returns persisted dependency cycles for a repository from dependency_cycles materialization. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name. Required."),
+    },
+    async ({ repo }) => {
+      logToolInvocation("cycles", { repo });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) return repoCheck;
+
+      const result = await query(
+        `
+        SELECT
+          cycle_hash,
+          cycle_size,
+          member_file_ids,
+          member_paths
+        FROM dependency_cycles
+        WHERE repo = $1
+        ORDER BY cycle_size DESC, cycle_hash
+        `,
+        [repo],
+      );
+
+      if (result.rows.length === 0) {
+        return { content: [{ type: "text", text: `No dependency cycles found for repo \`${repo}\`.` }] };
+      }
+
+      const lines: string[] = [
+        `Dependency cycles for \`${repo}\``,
+        "",
+        `Cycles found: ${result.rows.length}`,
+        "",
+      ];
+
+      for (let i = 0; i < result.rows.length; i++) {
+        const row = result.rows[i] as Record<string, unknown>;
+        const memberPaths = Array.isArray(row.member_paths)
+          ? row.member_paths.map((value) => String(value))
+          : [];
+        const memberFileIds = Array.isArray(row.member_file_ids)
+          ? row.member_file_ids.map((value) => Number(value))
+          : [];
+        const cycleSize = Number(row.cycle_size);
+
+        lines.push(`Cycle ${i + 1} (${cycleSize} files)`);
+        for (let j = 0; j < memberPaths.length; j++) {
+          const fileId = memberFileIds[j];
+          const fileIdText = Number.isFinite(fileId) ? `[${fileId}] ` : "";
+          lines.push(`- ${fileIdText}${memberPaths[j]}`);
+        }
+        lines.push("");
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n").trim() }] };
+    },
+  );
+
+  server.tool(
     "find_modularization_seams",
     "Produces a comprehensive extraction plan for a subsystem: required interfaces, dependencies to inject, and cross-boundary seams to cut. Use this to plan modularizing a component so it can be replaced. Repository scope is required.",
     {
