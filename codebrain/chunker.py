@@ -118,6 +118,9 @@ IMPORT_PATTERNS = {
     ],
 }
 
+TS_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+PY_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 # Map language names to tree-sitter language modules
 LANGUAGE_MODULES = {}
 
@@ -700,21 +703,225 @@ class ASTChunker:
 
         return chunks
 
+    def _build_dependency_row(
+        self,
+        module: str,
+        kind: str,
+        raw: str,
+        imported_name: Optional[str] = None,
+        local_alias: Optional[str] = None,
+    ) -> dict:
+        """@brief Build a normalized dependency row.
+
+        @param module Imported module or namespace token.
+        @param kind Dependency edge kind.
+        @param raw Raw source line that produced the edge.
+        @param imported_name Imported exported symbol name when available.
+        @param local_alias Local alias bound in source when available.
+        @return Dependency dictionary persisted by ingest.
+        """
+        return {
+            "module": module,
+            "kind": kind,
+            "raw": raw,
+            "imported_name": imported_name,
+            "local_alias": local_alias,
+        }
+
+    def _extract_python_dependencies(self, line: str) -> list[dict]:
+        """@brief Extract Python import edges with imported name and alias details.
+
+        @param line Trimmed Python source line.
+        @return Zero or more normalized dependency rows.
+        """
+        from_match = re.match(r"^from\s+([A-Za-z0-9_\.]+)\s+import\s+(.+)$", line)
+        if from_match:
+            module = from_match.group(1)
+            raw_targets = from_match.group(2).strip()
+            dependencies: list[dict] = []
+            for raw_target in [part.strip() for part in raw_targets.split(",") if part.strip()]:
+                alias_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$", raw_target)
+                if alias_match:
+                    imported_name = alias_match.group(1)
+                    local_alias = alias_match.group(2)
+                elif raw_target == "*":
+                    imported_name = "*"
+                    local_alias = None
+                elif PY_IDENTIFIER_PATTERN.match(raw_target):
+                    imported_name = raw_target
+                    local_alias = raw_target
+                else:
+                    continue
+                dependencies.append(
+                    self._build_dependency_row(
+                        module=module,
+                        kind="import",
+                        raw=line,
+                        imported_name=imported_name,
+                        local_alias=local_alias,
+                    )
+                )
+            return dependencies
+
+        import_match = re.match(r"^import\s+(.+)$", line)
+        if not import_match:
+            return []
+
+        dependencies = []
+        for raw_module in [part.strip() for part in import_match.group(1).split(",") if part.strip()]:
+            alias_match = re.match(r"^([A-Za-z0-9_\.]+)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$", raw_module)
+            if alias_match:
+                module = alias_match.group(1)
+                local_alias = alias_match.group(2)
+            else:
+                module = raw_module
+                local_alias = module.rsplit(".", 1)[-1]
+            imported_name = module.rsplit(".", 1)[-1]
+            dependencies.append(
+                self._build_dependency_row(
+                    module=module,
+                    kind="import",
+                    raw=line,
+                    imported_name=imported_name if PY_IDENTIFIER_PATTERN.match(imported_name) else None,
+                    local_alias=local_alias if PY_IDENTIFIER_PATTERN.match(local_alias) else None,
+                )
+            )
+        return dependencies
+
+    def _extract_typescript_dependencies(self, line: str) -> list[dict]:
+        """@brief Extract TypeScript/JavaScript import edges with alias details.
+
+        @param line Trimmed TypeScript/JavaScript source line.
+        @return Zero or more normalized dependency rows.
+        """
+        dependencies: list[dict] = []
+
+        side_effect_match = re.match(r"^import\s+['\"]([^'\"]+)['\"];?$", line)
+        if side_effect_match:
+            return [self._build_dependency_row(module=side_effect_match.group(1), kind="import", raw=line)]
+
+        require_match = re.search(r"require\(['\"]([^'\"]+)['\"]\)", line)
+        if require_match:
+            return [self._build_dependency_row(module=require_match.group(1), kind="import", raw=line)]
+
+        from_match = re.match(r"^import\s+(.+?)\s+from\s+['\"]([^'\"]+)['\"];?$", line)
+        if not from_match:
+            return []
+
+        spec = from_match.group(1).strip()
+        module = from_match.group(2).strip()
+
+        def add_named_imports(spec_block: str) -> None:
+            inner = spec_block.strip().strip("{}").strip()
+            for raw_part in [part.strip() for part in inner.split(",") if part.strip()]:
+                normalized = raw_part[5:].strip() if raw_part.startswith("type ") else raw_part
+                alias_match = re.match(
+                    r"^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$",
+                    normalized,
+                )
+                if not alias_match:
+                    continue
+                imported_name = alias_match.group(1)
+                local_alias = alias_match.group(2) or imported_name
+                dependencies.append(
+                    self._build_dependency_row(
+                        module=module,
+                        kind="import",
+                        raw=line,
+                        imported_name=imported_name,
+                        local_alias=local_alias,
+                    )
+                )
+
+        if spec.startswith("{") and spec.endswith("}"):
+            add_named_imports(spec)
+            return dependencies
+
+        namespace_match = re.match(r"^\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$", spec)
+        if namespace_match:
+            dependencies.append(
+                self._build_dependency_row(
+                    module=module,
+                    kind="import",
+                    raw=line,
+                    imported_name="*",
+                    local_alias=namespace_match.group(1),
+                )
+            )
+            return dependencies
+
+        if "," in spec:
+            default_part, remainder = [part.strip() for part in spec.split(",", 1)]
+            if TS_IDENTIFIER_PATTERN.match(default_part):
+                dependencies.append(
+                    self._build_dependency_row(
+                        module=module,
+                        kind="import",
+                        raw=line,
+                        imported_name="default",
+                        local_alias=default_part,
+                    )
+                )
+            if remainder.startswith("{") and remainder.endswith("}"):
+                add_named_imports(remainder)
+            elif remainder.startswith("* as "):
+                namespace_alias = remainder[5:].strip()
+                if TS_IDENTIFIER_PATTERN.match(namespace_alias):
+                    dependencies.append(
+                        self._build_dependency_row(
+                            module=module,
+                            kind="import",
+                            raw=line,
+                            imported_name="*",
+                            local_alias=namespace_alias,
+                        )
+                    )
+            return dependencies
+
+        if TS_IDENTIFIER_PATTERN.match(spec):
+            dependencies.append(
+                self._build_dependency_row(
+                    module=module,
+                    kind="import",
+                    raw=line,
+                    imported_name="default",
+                    local_alias=spec,
+                )
+            )
+        return dependencies
+
     def extract_dependencies(self, content: str, language: Optional[str], file_path: str) -> list[dict]:
-        """Extract import/dependency information from source code."""
+        """@brief Extract import/dependency information from source code.
+
+        @param content File contents.
+        @param language Normalized CodeBrain language label.
+        @param file_path Repository-relative source file path.
+        @return Dependency rows containing module and optional import alias metadata.
+        """
         if not language or language not in IMPORT_PATTERNS:
             return []
 
         deps = []
-        patterns = IMPORT_PATTERNS[language]
+        normalized_language = "typescript" if language in {"tsx", "jsx"} else language
+        patterns = IMPORT_PATTERNS.get(normalized_language, IMPORT_PATTERNS.get(language, []))
 
         for line in content.split("\n"):
             line = line.strip()
+            if not line:
+                continue
+
+            if normalized_language == "python":
+                deps.extend(self._extract_python_dependencies(line))
+                continue
+            if normalized_language in {"typescript", "javascript"}:
+                deps.extend(self._extract_typescript_dependencies(line))
+                continue
+
             for pattern, kind in patterns:
                 match = re.search(pattern, line)
                 if match:
                     module = match.group(1)
-                    deps.append({"module": module, "kind": kind, "raw": line})
+                    deps.append(self._build_dependency_row(module=module, kind=kind, raw=line))
                     break
 
         return deps

@@ -141,6 +141,10 @@ CREATE TABLE dependencies (
     target_file_id  INTEGER REFERENCES files(id) ON DELETE CASCADE,  -- NULL for external deps
     source_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
     target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+    imported_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
+    imported_name   TEXT,
+    local_alias     TEXT,
+    is_external     BOOLEAN,
     kind            TEXT NOT NULL,                    -- import, call, type_reference, inheritance
     external_module TEXT,                             -- for unresolved / third-party imports
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -150,6 +154,7 @@ CREATE INDEX idx_deps_source_file ON dependencies(source_file_id);
 CREATE INDEX idx_deps_target_file ON dependencies(target_file_id);
 CREATE INDEX idx_deps_source_symbol ON dependencies(source_symbol_id);
 CREATE INDEX idx_deps_target_symbol ON dependencies(target_symbol_id);
+CREATE INDEX idx_deps_imported_symbol ON dependencies(imported_symbol_id);
 CREATE INDEX idx_deps_kind ON dependencies(kind);
 CREATE INDEX idx_deps_source_target ON dependencies(source_file_id, target_file_id);
 

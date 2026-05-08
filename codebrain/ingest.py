@@ -14,6 +14,7 @@ watch-mode indexing flows.
 
 import hashlib
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -288,6 +289,22 @@ SCHEMA_PATCHES = [
     """
     ALTER TABLE symbol_relationships
     ADD COLUMN IF NOT EXISTS line_no INTEGER
+    """,
+    """
+    ALTER TABLE dependencies
+    ADD COLUMN IF NOT EXISTS imported_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL
+    """,
+    """
+    ALTER TABLE dependencies
+    ADD COLUMN IF NOT EXISTS imported_name TEXT
+    """,
+    """
+    ALTER TABLE dependencies
+    ADD COLUMN IF NOT EXISTS local_alias TEXT
+    """,
+    """
+    ALTER TABLE dependencies
+    ADD COLUMN IF NOT EXISTS is_external BOOLEAN
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file
@@ -758,6 +775,124 @@ def resolve_target_symbol(cur, target_name: str) -> tuple[Optional[int], Optiona
     return resolver.resolve_target_symbol(cur, target_name)
 
 
+def _candidate_internal_import_paths(
+    source_rel_path: str,
+    module: str,
+    language: Optional[str],
+) -> list[str]:
+    """@brief Build repository-relative candidate file paths for an import.
+
+    @param source_rel_path Source file path relative to the repository root.
+    @param module Imported module token from the parser.
+    @param language Language label for import semantics.
+    @return Ordered candidate file paths that could back the import.
+    """
+    if not module:
+        return []
+
+    if language in {"typescript", "javascript", "tsx", "jsx"}:
+        if not module.startswith("."):
+            return []
+        source_dir = posixpath.dirname(source_rel_path)
+        base = posixpath.normpath(posixpath.join(source_dir, module))
+        candidates = [base]
+        if not posixpath.splitext(base)[1]:
+            for extension in (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"):
+                candidates.append(f"{base}{extension}")
+            for extension in (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"):
+                candidates.append(posixpath.join(base, f"index{extension}"))
+        return [candidate for candidate in candidates if candidate and not candidate.startswith("../")]
+
+    if language != "python":
+        return []
+
+    module_dots = 0
+    while module.startswith("."):
+        module_dots += 1
+        module = module[1:]
+
+    if module_dots > 0:
+        base_dir = posixpath.dirname(source_rel_path)
+        for _ in range(max(module_dots - 1, 0)):
+            base_dir = posixpath.dirname(base_dir)
+        module_path = module.replace(".", "/")
+        base = posixpath.normpath(posixpath.join(base_dir, module_path)) if module_path else base_dir
+    else:
+        module_path = module.replace(".", "/")
+        if not module_path:
+            return []
+        base = posixpath.normpath(module_path)
+
+    if not base or base.startswith("../"):
+        return []
+    return [f"{base}.py", posixpath.join(base, "__init__.py")]
+
+
+def _resolve_internal_import_target_file_id(
+    cur,
+    repo_name: str,
+    source_rel_path: str,
+    module: str,
+    language: Optional[str],
+) -> Optional[int]:
+    """@brief Resolve a dependency module token to an internal target file id.
+
+    @param cur Open database cursor.
+    @param repo_name Repository identifier.
+    @param source_rel_path Source file path relative to repo root.
+    @param module Imported module token.
+    @param language Source file language.
+    @return Internal target file id when found, otherwise None.
+    """
+    for candidate in _candidate_internal_import_paths(source_rel_path, module, language):
+        cur.execute(
+            """
+            SELECT id
+            FROM files
+            WHERE repo = %s AND path = %s
+            LIMIT 1
+            """,
+            (repo_name, candidate),
+        )
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+    return None
+
+
+def _resolve_imported_symbol_id(
+    cur,
+    target_file_id: Optional[int],
+    imported_name: Optional[str],
+) -> Optional[int]:
+    """@brief Resolve an imported exported symbol inside a target file.
+
+    @param cur Open database cursor.
+    @param target_file_id Internal target file id for the import module.
+    @param imported_name Imported exported symbol name.
+    @return Symbol id when the imported symbol resolves, otherwise None.
+    """
+    if target_file_id is None or not imported_name or imported_name in {"*", "default"}:
+        return None
+    cur.execute(
+        """
+        SELECT id
+        FROM symbols
+        WHERE file_id = %s
+          AND lower(name) = lower(%s)
+          AND is_exported = TRUE
+        ORDER BY
+            CASE WHEN is_primary_declaration THEN 0 ELSE 1 END,
+            CASE WHEN declared_in_extension THEN 1 ELSE 0 END,
+            start_line
+        LIMIT 1
+        """,
+        (target_file_id, imported_name),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else None
+
+
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
     """Walk the repository, respecting excludes and .gitignore."""
     excludes = config.get("ingestion", {}).get("exclude", [])
@@ -1043,10 +1178,32 @@ def process_file(
         # Extract and store dependencies
         deps = chunker.extract_dependencies(content, language, rel_path)
         for dep in deps:
+            module = dep.get("module")
+            imported_name = dep.get("imported_name")
+            local_alias = dep.get("local_alias")
+            target_file_id = _resolve_internal_import_target_file_id(
+                cur,
+                repo_name,
+                rel_path,
+                module or "",
+                language,
+            ) if module else None
+            is_external = target_file_id is None
+            imported_symbol_id = _resolve_imported_symbol_id(cur, target_file_id, imported_name)
             cur.execute(
-                """INSERT INTO dependencies (source_file_id, kind, external_module)
-                   VALUES (%s, %s, %s)""",
-                (file_id, dep["kind"], dep["module"])
+                """INSERT INTO dependencies
+                   (source_file_id, target_file_id, kind, external_module, imported_name, local_alias, imported_symbol_id, is_external)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    file_id,
+                    target_file_id,
+                    dep["kind"],
+                    module if is_external else None,
+                    imported_name,
+                    local_alias,
+                    imported_symbol_id,
+                    is_external,
+                )
             )
 
         if language == "swift":

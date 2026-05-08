@@ -31,8 +31,20 @@ def test_extract_dependencies_returns_swift_imports() -> None:
     )
 
     assert deps == [
-        {"module": "Foundation", "kind": "import", "raw": "import Foundation"},
-        {"module": "MapKit", "kind": "import", "raw": "import MapKit"},
+        {
+            "module": "Foundation",
+            "kind": "import",
+            "raw": "import Foundation",
+            "imported_name": None,
+            "local_alias": None,
+        },
+        {
+            "module": "MapKit",
+            "kind": "import",
+            "raw": "import MapKit",
+            "imported_name": None,
+            "local_alias": None,
+        },
     ]
 
 
@@ -62,10 +74,121 @@ def test_extract_dependencies_returns_csharp_using_directives() -> None:
     )
 
     assert deps == [
-        {"module": "System", "kind": "import", "raw": "using System;"},
-        {"module": "System.Math", "kind": "import", "raw": "using static System.Math;"},
-        {"module": "Demo.Core", "kind": "import", "raw": "global using Demo.Core;"},
-        {"module": "Demo.Services", "kind": "import", "raw": "using Alias = Demo.Services;"},
+        {
+            "module": "System",
+            "kind": "import",
+            "raw": "using System;",
+            "imported_name": None,
+            "local_alias": None,
+        },
+        {
+            "module": "System.Math",
+            "kind": "import",
+            "raw": "using static System.Math;",
+            "imported_name": None,
+            "local_alias": None,
+        },
+        {
+            "module": "Demo.Core",
+            "kind": "import",
+            "raw": "global using Demo.Core;",
+            "imported_name": None,
+            "local_alias": None,
+        },
+        {
+            "module": "Demo.Services",
+            "kind": "import",
+            "raw": "using Alias = Demo.Services;",
+            "imported_name": None,
+            "local_alias": None,
+        },
+    ]
+
+
+def test_extract_dependencies_returns_python_alias_metadata() -> None:
+    """@brief Verify Python import extraction captures imported symbol names and aliases."""
+    chunker = ASTChunker({"ingestion": {"chunk_size": 32, "overlap": 0}})
+
+    deps = chunker.extract_dependencies(
+        "\n".join(
+            [
+                "import pkg.module as mod",
+                "from app.services import PhotoService as Service, Logger",
+            ]
+        ),
+        "python",
+        "demo.py",
+    )
+
+    assert deps == [
+        {
+            "module": "pkg.module",
+            "kind": "import",
+            "raw": "import pkg.module as mod",
+            "imported_name": "module",
+            "local_alias": "mod",
+        },
+        {
+            "module": "app.services",
+            "kind": "import",
+            "raw": "from app.services import PhotoService as Service, Logger",
+            "imported_name": "PhotoService",
+            "local_alias": "Service",
+        },
+        {
+            "module": "app.services",
+            "kind": "import",
+            "raw": "from app.services import PhotoService as Service, Logger",
+            "imported_name": "Logger",
+            "local_alias": "Logger",
+        },
+    ]
+
+
+def test_extract_dependencies_returns_typescript_alias_metadata() -> None:
+    """@brief Verify TypeScript import extraction captures imported symbol names and aliases."""
+    chunker = ASTChunker({"ingestion": {"chunk_size": 32, "overlap": 0}})
+
+    deps = chunker.extract_dependencies(
+        "\n".join(
+            [
+                "import DefaultClient, { fetchPhotos as loadPhotos, Track } from './api';",
+                "import * as helpers from './helpers';",
+            ]
+        ),
+        "typescript",
+        "demo.ts",
+    )
+
+    assert deps == [
+        {
+            "module": "./api",
+            "kind": "import",
+            "raw": "import DefaultClient, { fetchPhotos as loadPhotos, Track } from './api';",
+            "imported_name": "default",
+            "local_alias": "DefaultClient",
+        },
+        {
+            "module": "./api",
+            "kind": "import",
+            "raw": "import DefaultClient, { fetchPhotos as loadPhotos, Track } from './api';",
+            "imported_name": "fetchPhotos",
+            "local_alias": "loadPhotos",
+        },
+        {
+            "module": "./api",
+            "kind": "import",
+            "raw": "import DefaultClient, { fetchPhotos as loadPhotos, Track } from './api';",
+            "imported_name": "Track",
+            "local_alias": "Track",
+        },
+        {
+            "module": "./helpers",
+            "kind": "import",
+            "raw": "import * as helpers from './helpers';",
+            "imported_name": "*",
+            "local_alias": "helpers",
+        },
     ]
 
 

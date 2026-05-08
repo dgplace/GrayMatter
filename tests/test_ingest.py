@@ -415,6 +415,74 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "ADD COLUMN IF NOT EXISTS target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_target_symbol" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS imported_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS imported_name TEXT" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS local_alias TEXT" in patch_blob
+    assert "ADD COLUMN IF NOT EXISTS is_external BOOLEAN" in patch_blob
+
+
+def test_candidate_internal_import_paths_supports_python_and_typescript() -> None:
+    """@brief Verify internal import path expansion for Python and TypeScript modules."""
+    assert ingest._candidate_internal_import_paths(
+        "pkg/controllers/photo_controller.py",
+        "pkg.services.photo_service",
+        "python",
+    ) == [
+        "pkg/services/photo_service.py",
+        "pkg/services/photo_service/__init__.py",
+    ]
+
+    assert ingest._candidate_internal_import_paths(
+        "pkg/controllers/photo_controller.py",
+        ".services.photo_service",
+        "python",
+    ) == [
+        "pkg/controllers/services/photo_service.py",
+        "pkg/controllers/services/photo_service/__init__.py",
+    ]
+
+    assert ingest._candidate_internal_import_paths(
+        "src/features/photo/view.ts",
+        "../api/client",
+        "typescript",
+    ) == [
+        "src/features/api/client",
+        "src/features/api/client.ts",
+        "src/features/api/client.tsx",
+        "src/features/api/client.js",
+        "src/features/api/client.jsx",
+        "src/features/api/client.mts",
+        "src/features/api/client.cts",
+        "src/features/api/client/index.ts",
+        "src/features/api/client/index.tsx",
+        "src/features/api/client/index.js",
+        "src/features/api/client/index.jsx",
+        "src/features/api/client/index.mts",
+        "src/features/api/client/index.cts",
+    ]
+
+
+def test_resolve_imported_symbol_id_uses_exported_symbols_only() -> None:
+    """@brief Verify imported symbol resolution targets exported declarations in the module file."""
+
+    class _SymbolLookupCursor:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple]] = []
+
+        def execute(self, query: str, params=None) -> None:
+            self.queries.append((" ".join(query.split()), params))
+
+        def fetchone(self):
+            return (321,)
+
+    cursor = _SymbolLookupCursor()
+    resolved = ingest._resolve_imported_symbol_id(cursor, 77, "PhotoService")
+    assert resolved == 321
+    assert cursor.queries
+    _, params = cursor.queries[0]
+    assert params == (77, "PhotoService")
+    assert ingest._resolve_imported_symbol_id(cursor, 77, "*") is None
+    assert ingest._resolve_imported_symbol_id(cursor, None, "PhotoService") is None
 
 
 def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> None:
