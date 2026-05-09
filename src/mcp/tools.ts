@@ -5,6 +5,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { builtinModules } from "node:module";
 import { z } from "zod";
 
 import { query } from "../db.js";
@@ -51,7 +52,70 @@ const INTENT_VALUES = [
   "type-definition",
   "middleware",
   "migration",
+  "documentation",
 ] as const;
+const DOCUMENTATION_INTENT = "documentation";
+const NODE_SOURCE_LANGUAGES = new Set(["typescript", "tsx", "javascript", "jsx"]);
+const PYTHON_STDLIB_MODULES = new Set([
+  "argparse",
+  "asyncio",
+  "base64",
+  "collections",
+  "concurrent",
+  "contextlib",
+  "copy",
+  "csv",
+  "dataclasses",
+  "datetime",
+  "decimal",
+  "enum",
+  "functools",
+  "glob",
+  "hashlib",
+  "heapq",
+  "html",
+  "http",
+  "importlib",
+  "inspect",
+  "io",
+  "itertools",
+  "json",
+  "logging",
+  "math",
+  "numbers",
+  "operator",
+  "os",
+  "pathlib",
+  "posixpath",
+  "queue",
+  "random",
+  "re",
+  "shlex",
+  "shutil",
+  "socket",
+  "sqlite3",
+  "statistics",
+  "string",
+  "subprocess",
+  "sys",
+  "tempfile",
+  "threading",
+  "time",
+  "tomllib",
+  "traceback",
+  "types",
+  "typing",
+  "urllib",
+  "uuid",
+  "warnings",
+  "xml",
+]);
+const NODE_STDLIB_AUGMENTATIONS = ["test", "test/reporters", "sea", "sqlite"];
+const NODE_STDLIB_MODULES = new Set(
+  [...builtinModules, ...NODE_STDLIB_AUGMENTATIONS]
+    .map((moduleName) => moduleName.replace(/^node:/, ""))
+    .map((moduleName) => moduleName.split("/", 1)[0]),
+);
 
 /**
  * @brief Creates a consistent not-found payload when a repo is missing.
@@ -133,6 +197,81 @@ function impactCategory(edgeKind: string): "calls" | "instantiations" | "structu
 }
 
 /**
+ * @brief Checks whether a normalized package name should be treated as language stdlib.
+ * @param language Source file language associated with the dependency record.
+ * @param moduleName Normalized package/module name.
+ * @returns True when the dependency is likely from Python/Node standard libraries.
+ */
+function isStdlibModule(language: string | null, moduleName: string): boolean {
+  const normalized = moduleName.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (language === "python") {
+    return PYTHON_STDLIB_MODULES.has(normalized);
+  }
+  if (language && NODE_SOURCE_LANGUAGES.has(language)) {
+    return NODE_STDLIB_MODULES.has(normalized);
+  }
+  return false;
+}
+
+/**
+ * @brief Computes first-party module candidate names from indexed file paths for a repo.
+ * @param repo Repository name.
+ * @returns Lowercased set of names that should not be reported as external packages.
+ *
+ * @note Names come from two sources: the top-level path segment of each indexed file
+ * (covers package directories like `codebrain/` or `desktop/`) and the extension-less
+ * basename of each indexed file (covers single-file modules like `ingest.py` or
+ * `helpers.py`). When a heuristic resolver fails to mark a dependency internal during
+ * ingestion, this filter keeps `find_external_dependencies` output focused on actual
+ * third-party packages.
+ */
+async function getFirstPartyModuleNames(repo: string): Promise<Set<string>> {
+  const result = await query(
+    `
+    SELECT DISTINCT lower(split_part(f.path, '/', 1)) AS name
+    FROM files f
+    WHERE f.repo = $1
+      AND split_part(f.path, '/', 1) <> ''
+      AND split_part(f.path, '/', 1) NOT LIKE '.%'
+    UNION
+    SELECT DISTINCT lower(regexp_replace(regexp_replace(f.path, '.*/', ''), '\\.[^.]+$', '')) AS name
+    FROM files f
+    WHERE f.repo = $1
+    `,
+    [repo],
+  );
+  const names = new Set<string>();
+  for (const row of result.rows as Array<Record<string, unknown>>) {
+    const name = row.name ? String(row.name).trim() : "";
+    if (name) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * @brief Returns true when a module name should be treated as repo-local first-party code.
+ * @param firstParty Lowercased first-party name set produced by `getFirstPartyModuleNames`.
+ * @param moduleName Normalized module name from the dependency row.
+ * @returns True when the module matches a first-party candidate.
+ */
+function isFirstPartyModule(firstParty: Set<string>, moduleName: string): boolean {
+  const normalized = moduleName.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (firstParty.has(normalized)) {
+    return true;
+  }
+  const dehyphenated = normalized.replace(/-/g, "_");
+  return dehyphenated !== normalized && firstParty.has(dehyphenated);
+}
+
+/**
  * @brief Registers all CodeBrain MCP tools.
  * @param server MCP server instance.
  * @note Large-function justification: keeping tool schema and handler wiring in one function preserves a single, explicit MCP registry.
@@ -185,8 +324,12 @@ export function registerTools(server: McpServer): void {
         .number()
         .optional()
         .describe("Semantic similarity threshold 0-1. Lower this when codebase terminology is sparse."),
+      include_documentation: z
+        .boolean()
+        .optional()
+        .describe("When false (default), documentation-intent chunks are filtered out to prioritize code matches."),
     },
-    async ({ repo, query: searchQuery, limit = 10, intent, language, path_prefix, threshold = 0.3 }) => {
+    async ({ repo, query: searchQuery, limit = 10, intent, language, path_prefix, threshold = 0.3, include_documentation = false }) => {
       logToolInvocation("semantic_search", {
         repo,
         query: searchQuery,
@@ -195,6 +338,7 @@ export function registerTools(server: McpServer): void {
         language,
         path_prefix,
         threshold,
+        include_documentation,
       });
 
       const repoCheck = await requireRepository(repo);
@@ -225,6 +369,7 @@ export function registerTools(server: McpServer): void {
       }
 
       const rows = Array.from(merged.values())
+        .filter((row) => include_documentation || row.intent !== DOCUMENTATION_INTENT)
         .sort((a, b) => {
           const aSemantic = a.similarity ?? -1;
           const bSemantic = b.similarity ?? -1;
@@ -898,7 +1043,7 @@ export function registerTools(server: McpServer): void {
 
       const result = await query(
         `
-        WITH start_symbols AS (
+        WITH RECURSIVE start_symbols AS (
           SELECT
             s.id,
             s.name,
@@ -1151,7 +1296,7 @@ export function registerTools(server: McpServer): void {
 
       const result = await query(
         `
-        WITH start_symbols AS (
+        WITH RECURSIVE start_symbols AS (
           SELECT
             s.id,
             s.name,
@@ -1395,7 +1540,6 @@ export function registerTools(server: McpServer): void {
           JOIN files sf ON sf.id = e.source_file_id
           LEFT JOIN files tf ON tf.id = e.target_file_id
           WHERE dt.depth < $4
-        )
         ),
         dedup_rows AS (
           SELECT DISTINCT
@@ -1986,9 +2130,13 @@ export function registerTools(server: McpServer): void {
       package_name: z.string().optional().describe("Optional external package to inspect consumer locations for."),
       limit: z.number().int().min(1).max(500).optional()
         .describe("Maximum consumer rows returned when package_name is provided (default 100)."),
+      include_stdlib: z
+        .boolean()
+        .optional()
+        .describe("When true, include stdlib modules (python/node core) in summary and consumer output."),
     },
-    async ({ repo, path_prefix = "", package_name, limit = 100 }) => {
-      logToolInvocation("find_external_dependencies", { repo, path_prefix, package_name, limit });
+    async ({ repo, path_prefix = "", package_name, limit = 100, include_stdlib = false }) => {
+      logToolInvocation("find_external_dependencies", { repo, path_prefix, package_name, limit, include_stdlib });
 
       const repoCheck = await requireRepository(repo);
       if (repoCheck) {
@@ -2007,6 +2155,8 @@ export function registerTools(server: McpServer): void {
               WHEN d.external_module IS NULL OR btrim(d.external_module) = '' THEN NULL
               WHEN d.external_module ~ '^(\\./|\\.\\./|/|\\.|\\.\\.)$' THEN NULL
               WHEN d.external_module LIKE './%' OR d.external_module LIKE '../%' THEN NULL
+              WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE 'node:%'
+                THEN split_part(replace(d.external_module, 'node:', ''), '/', 1)
               WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE '@%/%'
                 THEN split_part(d.external_module, '/', 1) || '/' || split_part(d.external_module, '/', 2)
               WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
@@ -2024,6 +2174,7 @@ export function registerTools(server: McpServer): void {
         )
         SELECT
           ned.normalized_module AS external_module,
+          MIN(ned.source_language) AS source_language,
           COALESCE(NULLIF(ned.external_version, ''), '(unknown)') AS external_version,
           COUNT(*)::integer AS usage_count,
           COUNT(DISTINCT ned.source_path)::integer AS consumer_file_count
@@ -2035,9 +2186,29 @@ export function registerTools(server: McpServer): void {
         [repo, path_prefix],
       );
 
-      if (summaryResult.rows.length === 0) {
+      const firstPartyModules = await getFirstPartyModuleNames(repo);
+      const summaryRows = (summaryResult.rows as Array<Record<string, unknown>>).filter((row) => {
+        const moduleName = String(row.external_module || "");
+        if (isFirstPartyModule(firstPartyModules, moduleName)) {
+          return false;
+        }
+        if (include_stdlib) {
+          return true;
+        }
+        return !isStdlibModule(
+          row.source_language ? String(row.source_language) : null,
+          moduleName,
+        );
+      });
+
+      if (summaryRows.length === 0) {
         const scope = path_prefix ? ` under \`${path_prefix}\`` : "";
-        return { content: [{ type: "text", text: `No external dependencies found for repo \`${repo}\`${scope}.` }] };
+        return {
+          content: [{
+            type: "text",
+            text: `No external dependencies found for repo \`${repo}\`${scope}${include_stdlib ? "." : " (after stdlib and first-party filtering)."}`,
+          }],
+        };
       }
 
       const lines = [
@@ -2047,7 +2218,7 @@ export function registerTools(server: McpServer): void {
         "|---|---|---:|---:|",
       ];
 
-      for (const row of summaryResult.rows as Array<Record<string, unknown>>) {
+      for (const row of summaryRows) {
         lines.push(
           `| ${String(row.external_module)} | ${String(row.external_version)} | ${Number(row.usage_count)} | ${Number(row.consumer_file_count)} |`,
         );
@@ -2059,6 +2230,7 @@ export function registerTools(server: McpServer): void {
           WITH normalized_external_deps AS (
             SELECT
               sf.path AS source_path,
+              sf.language AS source_language,
               d.source_symbol_id,
               d.external_version,
               d.kind,
@@ -2066,6 +2238,8 @@ export function registerTools(server: McpServer): void {
                 WHEN d.external_module IS NULL OR btrim(d.external_module) = '' THEN NULL
                 WHEN d.external_module ~ '^(\\./|\\.\\./|/|\\.|\\.\\.)$' THEN NULL
                 WHEN d.external_module LIKE './%' OR d.external_module LIKE '../%' THEN NULL
+                WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE 'node:%'
+                  THEN split_part(replace(d.external_module, 'node:', ''), '/', 1)
                 WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE '@%/%'
                   THEN split_part(d.external_module, '/', 1) || '/' || split_part(d.external_module, '/', 2)
                 WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
@@ -2083,6 +2257,7 @@ export function registerTools(server: McpServer): void {
           )
           SELECT
             ned.source_path AS consumer_path,
+            ned.source_language,
             COALESCE(ss.name, '(file-level import)') AS consumer_symbol,
             ned.kind,
             COALESCE(NULLIF(ned.external_version, ''), '(unknown)') AS external_version,
@@ -2098,13 +2273,27 @@ export function registerTools(server: McpServer): void {
           [repo, path_prefix, package_name, limit],
         );
 
+        const consumerRows = (consumerResult.rows as Array<Record<string, unknown>>).filter((row) => {
+          const requestedPackage = package_name.trim().toLowerCase();
+          if (isFirstPartyModule(firstPartyModules, requestedPackage)) {
+            return false;
+          }
+          if (include_stdlib) {
+            return true;
+          }
+          return !isStdlibModule(
+            row.source_language ? String(row.source_language) : null,
+            requestedPackage,
+          );
+        });
+
         lines.push("", `Consumers for package \`${package_name}\`:`, "");
-        if (consumerResult.rows.length === 0) {
+        if (consumerRows.length === 0) {
           lines.push("No consumers found in the selected scope.");
         } else {
           lines.push("| Consumer File | Consumer Symbol | Kind | Version | Usage Count |");
           lines.push("|---|---|---|---|---:|");
-          for (const row of consumerResult.rows as Array<Record<string, unknown>>) {
+          for (const row of consumerRows) {
             lines.push(
               `| ${String(row.consumer_path)} | ${String(row.consumer_symbol)} | ${String(row.kind)} | ${String(row.external_version)} | ${Number(row.usage_count)} |`,
             );
@@ -2239,8 +2428,33 @@ export function registerTools(server: McpServer): void {
         if (bandRows.length === 0) {
           return [`${title}: none`, ""];
         }
-        const grouped = new Map<string, ImpactRow[]>();
+        type ImpactAggregate = ImpactRow & { occurrence_count: number };
+        const dedupedRows = new Map<string, ImpactAggregate>();
         for (const row of bandRows) {
+          const key = [
+            row.affected_symbol_id,
+            row.depth,
+            row.edge_kind,
+            row.path_min_confidence.toFixed(6),
+          ].join("|");
+          const existing = dedupedRows.get(key);
+          if (existing) {
+            existing.occurrence_count += 1;
+          } else {
+            dedupedRows.set(key, { ...row, occurrence_count: 1 });
+          }
+        }
+
+        const distinctRows = Array.from(dedupedRows.values()).sort((a, b) =>
+          b.occurrence_count - a.occurrence_count
+          || b.path_min_confidence - a.path_min_confidence
+          || a.affected_file_path.localeCompare(b.affected_file_path)
+          || a.affected_symbol_name.localeCompare(b.affected_symbol_name)
+          || a.depth - b.depth,
+        );
+
+        const grouped = new Map<string, ImpactAggregate[]>();
+        for (const row of distinctRows) {
           const category = impactCategory(row.edge_kind);
           if (!grouped.has(category)) {
             grouped.set(category, []);
@@ -2248,7 +2462,7 @@ export function registerTools(server: McpServer): void {
           grouped.get(category)!.push(row);
         }
 
-        const lines: string[] = [`${title}: ${bandRows.length}`];
+        const lines: string[] = [`${title}: ${distinctRows.length} distinct targets (${bandRows.length} edge occurrences)`];
         for (const category of ["calls", "instantiations", "structural", "imports", "other"]) {
           const categoryRows = grouped.get(category);
           if (!categoryRows || categoryRows.length === 0) {
@@ -2256,8 +2470,9 @@ export function registerTools(server: McpServer): void {
           }
           lines.push(`- ${category}:`);
           for (const row of categoryRows.slice(0, 60)) {
+            const occurrenceCount = row.occurrence_count > 1 ? `, occurrences ${row.occurrence_count}` : "";
             lines.push(
-              `  - [symbol ${row.affected_symbol_id}] ${row.affected_symbol_name} (${row.affected_file_path}, depth ${row.depth}, edge ${row.edge_kind}, confidence ${row.path_min_confidence.toFixed(2)})`,
+              `  - [symbol ${row.affected_symbol_id}] ${row.affected_symbol_name} (${row.affected_file_path}, depth ${row.depth}, edge ${row.edge_kind}, confidence ${row.path_min_confidence.toFixed(2)}${occurrenceCount})`,
             );
           }
           if (categoryRows.length > 60) {

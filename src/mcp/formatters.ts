@@ -27,6 +27,32 @@ function toCount(value: unknown): number {
  * @param rows Search result rows to format.
  * @returns Markdown text payload consumed by MCP clients.
  */
+const SEARCH_RESULT_MAX_LINES = 60;
+const SEARCH_RESULT_MAX_CHARS = 4000;
+
+/**
+ * @brief Truncate a code chunk for inclusion in search-result output.
+ * @param content Raw chunk content from the index.
+ * @returns Content trimmed to a line/char budget with a marker when truncated.
+ */
+function truncateSearchContent(content: string): string {
+  if (!content) {
+    return content;
+  }
+  let truncated = false;
+  let trimmed = content;
+  const lines = trimmed.split("\n");
+  if (lines.length > SEARCH_RESULT_MAX_LINES) {
+    trimmed = lines.slice(0, SEARCH_RESULT_MAX_LINES).join("\n");
+    truncated = true;
+  }
+  if (trimmed.length > SEARCH_RESULT_MAX_CHARS) {
+    trimmed = trimmed.slice(0, SEARCH_RESULT_MAX_CHARS);
+    truncated = true;
+  }
+  return truncated ? `${trimmed}\n... [truncated]` : trimmed;
+}
+
 export function formatSearchResults(rows: SearchRow[]): string {
   return rows
     .map((row, index) => {
@@ -46,7 +72,7 @@ export function formatSearchResults(rows: SearchRow[]): string {
         row.intent ? `**Intent:** ${row.intent}` : "",
         row.intent_detail ? `**Description:** ${row.intent_detail}` : "",
         "```",
-        row.content,
+        truncateSearchContent(row.content),
         "```",
       ]
         .filter(Boolean)

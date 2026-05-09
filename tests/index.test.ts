@@ -8,8 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { extractKeywordTerms, summarizeArgs, vecLiteral } from "../index.ts";
-import { formatCouplingAnalysis, formatModularizationSeams, formatReferenceResults } from "../src/mcp/formatters.ts";
-import type { CouplingEdgeRow, ModuleInterfaceRow, ReferenceRow, SeamRow } from "../src/mcp/types.ts";
+import { formatCouplingAnalysis, formatModularizationSeams, formatReferenceResults, formatSearchResults } from "../src/mcp/formatters.ts";
+import type { CouplingEdgeRow, ModuleInterfaceRow, ReferenceRow, SearchRow, SeamRow } from "../src/mcp/types.ts";
 
 test("extractKeywordTerms removes stopwords, deduplicates, and caps results", () => {
   const terms = extractKeywordTerms(
@@ -169,6 +169,7 @@ test("find_implementations tool filters for implements edges and returns impleme
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
   assert.match(toolsSource, /"find_implementations"/);
+  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*implementation_tree AS/);
   assert.match(toolsSource, /sr\.relationship_kind = 'implements'/);
   assert.match(toolsSource, /No implementations found for/);
   assert.match(toolsSource, /impl_file\.path AS implementer_path/);
@@ -211,6 +212,7 @@ test("trace_dependencies deduplicates rows before ordering to avoid DISTINCT+ORD
   assert.match(toolsSource, /dedup_rows AS \(/);
   assert.match(toolsSource, /SELECT DISTINCT[\s\S]*FROM dep_tree/);
   assert.match(toolsSource, /FROM dedup_rows[\s\S]*ORDER BY[\s\S]*CASE dep_kind/);
+  assert.doesNotMatch(toolsSource, /WHERE dt\.depth < \$4\s*\)\s*\),\s*dedup_rows AS \(/);
 });
 
 test("db schema patches include resolved reference migration columns and indexes", () => {
@@ -263,6 +265,9 @@ test("find_impact tool wraps SQL impact_of function with confidence-band output"
   assert.match(toolsSource, /FROM impact_of\(\$1, \$2, \$3\)/);
   assert.match(toolsSource, /Likely impact \(confidence >= 0\.75\)/);
   assert.match(toolsSource, /Possible impact \(0\.55 <= confidence < 0\.75\)/);
+  assert.match(toolsSource, /distinct targets \(\$\{bandRows\.length\} edge occurrences\)/);
+  assert.match(toolsSource, /occurrence_count/);
+  assert.match(toolsSource, /occurrences \$\{row\.occurrence_count\}/);
   assert.match(toolsSource, /impactCategory/);
 });
 
@@ -274,7 +279,82 @@ test("find_external_dependencies tool groups by external_module and external_ver
   assert.match(toolsSource, /normalized_external_deps AS/);
   assert.match(toolsSource, /normalized_module/);
   assert.match(toolsSource, /d\.external_module LIKE '\.\/%'/);
+  assert.match(toolsSource, /d\.external_module LIKE 'node:%'/);
   assert.match(toolsSource, /GROUP BY ned\.normalized_module, COALESCE\(NULLIF\(ned\.external_version, ''\), '\(unknown\)'\)/);
   assert.match(toolsSource, /Consumers for package/);
   assert.match(toolsSource, /lower\(ned\.normalized_module\) = lower\(\$3\)/);
+  assert.match(toolsSource, /include_stdlib:\s*z\s*\.\s*boolean\(\)\s*\.\s*optional\(\)/);
+  assert.match(toolsSource, /isStdlibModule\(/);
+});
+
+test("PYTHON_STDLIB_MODULES includes posixpath, shutil, and tomllib so they stay out of external dependency reports", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const stdlibBlock = toolsSource.match(/const PYTHON_STDLIB_MODULES = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(stdlibBlock, "PYTHON_STDLIB_MODULES set declaration not found");
+  const stdlibText = stdlibBlock[1];
+  for (const expected of ["posixpath", "shutil", "tomllib"]) {
+    assert.match(stdlibText, new RegExp(`"${expected}"`));
+  }
+});
+
+test("NODE_STDLIB_AUGMENTATIONS keeps node:test and node:sqlite from leaking into external dependency reports", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const augBlock = toolsSource.match(/const NODE_STDLIB_AUGMENTATIONS = \[([\s\S]*?)\];/);
+  assert.ok(augBlock, "NODE_STDLIB_AUGMENTATIONS declaration not found");
+  for (const expected of ["test", "sqlite"]) {
+    assert.match(augBlock[1], new RegExp(`"${expected}"`));
+  }
+});
+
+test("find_external_dependencies filters first-party modules computed from indexed file paths", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /async function getFirstPartyModuleNames\(repo: string\): Promise<Set<string>>/);
+  assert.match(toolsSource, /split_part\(f\.path, '\/', 1\)/);
+  assert.match(toolsSource, /regexp_replace\(regexp_replace\(f\.path, '\.\*\/', ''\), '\\\\\.\[\^\.\]\+\$', ''\)/);
+  assert.match(toolsSource, /function isFirstPartyModule\(/);
+  assert.match(toolsSource, /isFirstPartyModule\(firstPartyModules,/);
+  assert.match(toolsSource, /first-party filtering/);
+});
+
+test("semantic_search exposes include_documentation and filters documentation-intent rows by default", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"semantic_search"/);
+  assert.match(toolsSource, /include_documentation:\s*z\s*\.\s*boolean\(\)\s*\.\s*optional\(\)/);
+  assert.match(toolsSource, /include_documentation = false/);
+  assert.match(toolsSource, /row\.intent !== DOCUMENTATION_INTENT/);
+});
+
+test("formatSearchResults truncates oversized chunk content to keep MCP responses under the token cap", () => {
+  const longLine = "x".repeat(200);
+  const oversizedContent = Array.from({ length: 200 }, () => longLine).join("\n");
+
+  const row: SearchRow = {
+    chunk_id: 1,
+    file_path: "src/big.ts",
+    language: "typescript",
+    content: oversizedContent,
+    symbol_name: "huge",
+    symbol_type: "function",
+    intent: "utility",
+    intent_detail: null,
+    start_line: 1,
+    end_line: 200,
+    similarity: 0.9,
+    keyword_score: 0,
+  };
+
+  const formatted = formatSearchResults([row]);
+  assert.match(formatted, /\[truncated\]/);
+  assert.ok(
+    formatted.length < oversizedContent.length,
+    `expected truncated output (${formatted.length}) to be smaller than input (${oversizedContent.length})`,
+  );
+
+  const small: SearchRow = { ...row, content: "short body\nline two" };
+  const smallFormatted = formatSearchResults([small]);
+  assert.doesNotMatch(smallFormatted, /\[truncated\]/);
+  assert.match(smallFormatted, /short body/);
+  assert.match(smallFormatted, /line two/);
 });
