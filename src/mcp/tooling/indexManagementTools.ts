@@ -1,6 +1,6 @@
 /**
  * @file src/mcp/tooling/indexManagementTools.ts
- * @brief MCP tools for index management, modules/clusters, and node description.
+ * @brief MCP tools for index management, modules/clusters/flows, and node description.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,7 +17,7 @@ import { logToolInvocation } from "../logging.js";
 import { getNodeDocLinks, repoNotFoundText, requireRepository } from "./shared.js";
 
 /**
- * @brief Registers index and cluster management tools.
+ * @brief Registers index, cluster, and flow management tools.
  * @param server MCP server instance.
  * @returns Void.
  */
@@ -279,6 +279,200 @@ export function registerIndexManagementTools(server: McpServer): void {
       }
       if (membersResult.rows.length === 0) {
         lines.push("| - | (none) | - | - | - |");
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.tool(
+    "find_flows",
+    "Finds execution-flow memberships by symbol or lists member symbols for a selected flow. Exactly one selector must be set: `symbol` or `flow`. Repository scope is required.",
+    {
+      repo: z.string().min(1).describe("Repository name to search in. Required."),
+      symbol: z.string().min(1).optional().describe("Symbol selector: exact symbol name or qualified suffix."),
+      flow: z.string().min(1).optional().describe("Flow selector: id, flow_key, or flow name."),
+      limit: z.number().int().min(1).max(500).optional().describe("Maximum rows to return (default 200)."),
+    },
+    async ({ repo, symbol, flow, limit = 200 }) => {
+      logToolInvocation("find_flows", { repo, symbol, flow, limit });
+
+      const repoCheck = await requireRepository(repo);
+      if (repoCheck) {
+        return repoCheck;
+      }
+
+      const symbolSelector = symbol?.trim() || "";
+      const flowSelector = flow?.trim() || "";
+      const selectorCount = Number(symbolSelector.length > 0) + Number(flowSelector.length > 0);
+      if (selectorCount !== 1) {
+        return {
+          content: [{
+            type: "text",
+            text: "Specify exactly one selector: `symbol` (to list flow memberships) or `flow` (to list flow members).",
+          }],
+        };
+      }
+
+      if (symbolSelector) {
+        const symbolResult = await query(
+          `
+          SELECT
+            s.id,
+            s.name,
+            COALESCE(s.qualified_name, s.name) AS qualified_name,
+            f.path AS file_path,
+            s.start_line,
+            s.end_line
+          FROM symbols s
+          JOIN files f ON f.id = s.file_id
+          WHERE f.repo = $1
+            AND (
+              lower(s.name) = lower($2)
+              OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
+            )
+          ORDER BY
+            CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            s.start_line
+          LIMIT 1
+          `,
+          [repo, symbolSelector],
+        );
+        if (symbolResult.rows.length === 0) {
+          return { content: [{ type: "text", text: `Symbol \`${symbolSelector}\` was not found in repo \`${repo}\`.` }] };
+        }
+        const symbolRow = symbolResult.rows[0] as Record<string, unknown>;
+        const symbolId = Number(symbolRow.id);
+        const symbolLabel = `${String(symbolRow.name)} (${String(symbolRow.file_path)}:${Number(symbolRow.start_line)}-${Number(symbolRow.end_line)})`;
+
+        const membershipResult = await query(
+          `
+          SELECT
+            fl.id,
+            fl.flow_key,
+            fl.name,
+            fl.summary,
+            fl.dominant_intent,
+            fm.role,
+            fm.reason,
+            (
+              SELECT COUNT(*)::integer
+              FROM flow_members fm_count
+              WHERE fm_count.flow_id = fl.id
+            ) AS member_count
+          FROM flow_members fm
+          JOIN flows fl ON fl.id = fm.flow_id
+          WHERE fm.symbol_id = $1
+            AND fl.repo = $2
+          ORDER BY fl.name, fl.flow_key
+          LIMIT $3
+          `,
+          [symbolId, repo, limit],
+        );
+        if (membershipResult.rows.length === 0) {
+          return { content: [{ type: "text", text: `No execution flows include ${symbolLabel}. Re-run ingestion if flows were added recently.` }] };
+        }
+
+        const lines = [
+          `Execution flows for ${symbolLabel} in repo \`${repo}\`:`,
+          "",
+          "| Flow | Dominant Intent | Role | Why | Members |",
+          "|---|---|---|---|---:|",
+        ];
+        for (const row of membershipResult.rows as Array<Record<string, unknown>>) {
+          const summary = row.summary ? String(row.summary).replace(/\n+/g, " ").trim() : "";
+          const reason = row.reason ? String(row.reason).replace(/\n+/g, " ").trim() : "";
+          const whyText = reason || summary || "(none)";
+          lines.push(
+            `| ${Number(row.id)} (\`${String(row.flow_key)}\`) ${String(row.name)} | ${String(row.dominant_intent || "unknown")} | ${String(row.role || "member")} | ${whyText} | ${Number(row.member_count || 0)} |`,
+          );
+        }
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
+      const flowResult = await query(
+        `
+        SELECT id, flow_key, name, summary, dominant_intent
+        FROM flows
+        WHERE repo = $1
+          AND (
+            ($2 ~ '^[0-9]+$' AND id = $2::int)
+            OR flow_key = $2
+            OR name ILIKE $2
+            OR name ILIKE '%' || $2 || '%'
+          )
+        ORDER BY
+          CASE
+            WHEN flow_key = $2 THEN 0
+            WHEN name ILIKE $2 THEN 1
+            WHEN ($2 ~ '^[0-9]+$' AND id = $2::int) THEN 2
+            ELSE 3
+          END,
+          id
+        LIMIT 1
+        `,
+        [repo, flowSelector],
+      );
+      if (flowResult.rows.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: `Execution flow \`${flowSelector}\` was not found in repo \`${repo}\`.`,
+          }],
+        };
+      }
+
+      const flowRow = flowResult.rows[0] as Record<string, unknown>;
+      const flowId = Number(flowRow.id);
+      const membersResult = await query(
+        `
+        SELECT
+          s.id AS symbol_id,
+          s.name,
+          COALESCE(s.qualified_name, s.name) AS qualified_name,
+          s.kind,
+          s.start_line,
+          s.end_line,
+          f.path AS file_path,
+          fm.role,
+          fm.reason
+        FROM flow_members fm
+        JOIN symbols s ON s.id = fm.symbol_id
+        JOIN files f ON f.id = s.file_id
+        WHERE fm.flow_id = $1
+        ORDER BY
+          CASE fm.role
+            WHEN 'entrypoint' THEN 0
+            WHEN 'orchestrator' THEN 1
+            WHEN 'terminal' THEN 2
+            ELSE 3
+          END,
+          f.path,
+          s.start_line,
+          s.name
+        LIMIT $2
+        `,
+        [flowId, limit],
+      );
+
+      const lines = [
+        `Execution flow for \`${repo}\`: ${String(flowRow.name)} (\`${String(flowRow.flow_key)}\`, id=${flowId})`,
+        `Intent: ${String(flowRow.dominant_intent || "unknown")}`,
+        `Summary: ${String(flowRow.summary || "(none)")}`,
+        "",
+        "| Symbol ID | Name | Kind | Location | Role | Why |",
+        "|---:|---|---|---|---|---|",
+      ];
+      for (const row of membersResult.rows as Array<Record<string, unknown>>) {
+        const qualifiedName = row.qualified_name ? ` (${String(row.qualified_name)})` : "";
+        const reason = row.reason ? String(row.reason).replace(/\n+/g, " ").trim() : "(none)";
+        lines.push(
+          `| ${Number(row.symbol_id)} | ${String(row.name)}${qualifiedName} | ${String(row.kind)} | ${String(row.file_path)}:${Number(row.start_line)}-${Number(row.end_line)} | ${String(row.role || "member")} | ${reason} |`,
+        );
+      }
+      if (membersResult.rows.length === 0) {
+        lines.push("| - | (none) | - | - | - | - |");
       }
 
       return { content: [{ type: "text", text: lines.join("\n") }] };

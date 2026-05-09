@@ -509,6 +509,21 @@ def materialize_clusters_for_repo(
         cluster_conn.close()
 
 
+def materialize_flows_for_repo(
+    cfg: dict,
+    repo_name: str,
+    get_db_fn: Callable[[dict], object],
+    materialize_flows_fn: Callable[[object, str], int],
+) -> int:
+    """@brief Rebuild persisted execution flows for a repository after ingestion."""
+    console.print("\n  [dim]Materializing execution flows...[/]")
+    flow_conn = get_db_fn(cfg)
+    try:
+        return materialize_flows_fn(flow_conn, repo_name)
+    finally:
+        flow_conn.close()
+
+
 def complete_ingestion_run(cfg: dict, run_id: int, stats: dict[str, int], get_db_fn: Callable[[dict], object]) -> None:
     """@brief Mark an ingestion run completed with final counters."""
     finish_conn = get_db_fn(cfg)
@@ -532,8 +547,9 @@ def print_ingestion_summary(
     cycle_count: int,
     cluster_count: int,
     cluster_granularity: str,
+    flow_count: int,
 ) -> None:
-    """@brief Print final ingestion counters and cycle materialization count."""
+    """@brief Print final ingestion counters plus cycle/cluster/flow materialization counts."""
     console.print(f"\n[bold green]✓ Done[/]")
     console.print(f"  Files indexed: {stats['indexed']}")
     console.print(f"  Files skipped (unchanged): {stats['skipped']}")
@@ -543,6 +559,7 @@ def print_ingestion_summary(
     console.print(f"  Symbols extracted: {stats['symbols']}")
     console.print(f"  Dependency cycles materialized: {cycle_count}")
     console.print(f"  Clusters materialized ({cluster_granularity}): {cluster_count}")
+    console.print(f"  Execution flows materialized: {flow_count}")
 
 
 def run_watch_mode(

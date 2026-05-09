@@ -88,3 +88,4 @@
 2026-05-09 Fixed Python decorated symbol extraction regression in AST chunker so decorated declarations index by declaration name (e.g., main, not click), with regression coverage in tests/test_chunker.py.
 2026-05-09 Refactored oversized codebrain/ingest.py into focused codebrain/ingestion modules (schema, relationships, dependencies, clusters, runtime), kept compatibility wrappers, and reduced ingest.py below the 1000-line limit with full test pass.
 2026-05-09 Refactored oversized src/mcp/tools.ts into grouped src/mcp/tooling modules plus shared helpers, preserved MCP behavior, and updated source-level tests to scan split tool registry files.
+2026-05-09 CODEBRAIN-56 added deterministic execution-flow materialization (flows/flow_members) from call-graph + intent signals, wired ingest/runtime summary updates, and shipped MCP find_flows symbol/flow lookup support with regression tests.

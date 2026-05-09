@@ -244,6 +244,44 @@ SCHEMA_PATCHES = [
     WHERE file_id IS NOT NULL
     """,
     """
+    CREATE TABLE IF NOT EXISTS flows (
+        id SERIAL PRIMARY KEY,
+        repo TEXT NOT NULL,
+        flow_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        summary TEXT,
+        dominant_intent TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(repo, flow_key)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_flows_repo
+    ON flows(repo)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_flows_dominant_intent
+    ON flows(repo, dominant_intent)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS flow_members (
+        id SERIAL PRIMARY KEY,
+        flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+        symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        role TEXT,
+        reason TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_members_symbol_unique
+    ON flow_members(flow_id, symbol_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_flow_members_symbol
+    ON flow_members(symbol_id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS doc_links (
         id SERIAL PRIMARY KEY,
         repo TEXT NOT NULL,
@@ -464,5 +502,4 @@ def insert_symbol(cur, file_id: int, chunk_id: Optional[int], symbol: dict, embe
         ),
     )
     return cur.fetchone()[0]
-
 

@@ -669,6 +669,14 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "file_id INTEGER REFERENCES files(id) ON DELETE CASCADE" in patch_blob
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_symbol_unique" in patch_blob
     assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_file_unique" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS flows" in patch_blob
+    assert "flow_key TEXT NOT NULL" in patch_blob
+    assert "dominant_intent TEXT" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_flows_repo" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS flow_members" in patch_blob
+    assert "flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE" in patch_blob
+    assert "symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE" in patch_blob
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_members_symbol_unique" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS doc_links" in patch_blob
     assert "embedding vector(768) NOT NULL" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_doc_links_target" in patch_blob

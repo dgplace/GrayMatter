@@ -19,6 +19,7 @@ Core files:
 - `codebrain/ingestion/relationships.py`
 - `codebrain/ingestion/dependencies.py`
 - `codebrain/ingestion/clusters.py`
+- `codebrain/ingestion/flows.py`
 - `codebrain/chunker.py`
 - `resolver.py`
 - `codebrain/embedder.py`
@@ -55,6 +56,7 @@ Responsibilities:
 - preserve language-aware reference traversal in dependency tracing so same-named symbols across languages do not create phantom edges
 - support implementation traversal for both `implements` and `extends`, including unresolved external base names
 - provide domain-level cluster navigation via `clusters` and `cluster_members`
+- provide execution-flow membership lookup via `find_flows` (by symbol or by flow)
 - provide node-level prose context via `describe_node(kind,id)` over linked `doc_links`
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
 - provide refactoring analysis: coupling metrics, module interface extraction, cycle detection, and modularization seam planning
@@ -78,6 +80,8 @@ Primary tables:
 - `dependencies`
 - `clusters`
 - `cluster_members`
+- `flows`
+- `flow_members`
 - `doc_links`
 - `ingestion_runs`
 
@@ -108,6 +112,7 @@ Design pattern:
 10. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
 11. `codebrain/ingest.py` + `codebrain/ingestion/*` store normalized records in PostgreSQL.
 12. After each ingest run, dependency cycles are materialized and clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
+13. A flow materialization pass computes call-style weakly connected symbol groups from resolved call/service edges, assigns deterministic `flow_key` ids, and persists `flows` + `flow_members` for symbol-to-flow and flow-to-symbol queries.
 13. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow

@@ -48,6 +48,7 @@ from codebrain.ingestion.dependencies import (
     _tarjan_strongly_connected_components,
     materialize_dependency_cycles,
 )
+from codebrain.ingestion.flows import materialize_flows
 from codebrain.ingestion.relationships import _clean_swift_type, extract_swift_service_edges, extract_symbol_relationships
 from codebrain.ingestion.runtime import (
     ReindexHandler as _RuntimeReindexHandler,
@@ -58,6 +59,7 @@ from codebrain.ingestion.runtime import (
     discover_ingestion_files,
     materialize_clusters_for_repo as _runtime_materialize_clusters_for_repo,
     materialize_cycles_for_repo as _runtime_materialize_cycles_for_repo,
+    materialize_flows_for_repo as _runtime_materialize_flows_for_repo,
     normalize_result_status,
     print_detail_samples,
     print_ingestion_header,
@@ -977,11 +979,17 @@ def main(
             get_db_fn=get_db,
             materialize_clusters_fn=materialize_clusters,
         )
+        flow_count = _runtime_materialize_flows_for_repo(
+            cfg=cfg,
+            repo_name=resolved_repo_name,
+            get_db_fn=get_db,
+            materialize_flows_fn=materialize_flows,
+        )
         complete_ingestion_run(cfg=cfg, run_id=run_id, stats=stats, get_db_fn=get_db)
     finally:
         db_pool.closeall()
 
-    print_ingestion_summary(stats, cycle_count, cluster_count, cluster_granularity)
+    print_ingestion_summary(stats, cycle_count, cluster_count, cluster_granularity, flow_count)
     run_watch_mode(
         watch=watch,
         cfg=cfg,
