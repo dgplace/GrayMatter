@@ -47,6 +47,7 @@ Responsibilities:
 - enforce mandatory repository scope for query tools
 - run hybrid search (semantic + keyword) within a selected repository
 - provide symbol lookup, references, dependency tracing, file map, and intent summaries
+- provide domain-level cluster navigation via `clusters` and `cluster_members`
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
 - provide refactoring analysis: coupling metrics, module interface extraction, cycle detection, and modularization seam planning
 - host `/ui` for semantic graph browsing and per-repo stats

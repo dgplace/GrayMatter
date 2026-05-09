@@ -375,3 +375,25 @@ test("formatSearchResults truncates oversized chunk content to keep MCP response
   assert.match(smallFormatted, /short body/);
   assert.match(smallFormatted, /line two/);
 });
+
+test("clusters tool returns required cluster fields including modularity and granularity", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"clusters"/);
+  assert.match(toolsSource, /COUNT\(cm\.id\)::integer AS size/);
+  assert.match(toolsSource, /c\.modularity/);
+  assert.match(toolsSource, /c\.granularity/);
+  assert.match(toolsSource, /No clusters found for repo/);
+});
+
+test("cluster_members tool resolves cluster selector and emits symbol-or-file member shapes with weights", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"cluster_members"/);
+  assert.match(toolsSource, /Cluster selector: id, cluster_key, or cluster name/);
+  assert.match(toolsSource, /\(\$2 ~ '\^\[0-9\]\+\$' AND id = \$2::int\)/);
+  assert.match(toolsSource, /cm\.membership_weight/);
+  assert.match(toolsSource, /JOIN symbols s ON s\.id = cm\.symbol_id/);
+  assert.match(toolsSource, /JOIN files f ON f\.id = cm\.file_id/);
+  assert.match(toolsSource, /was not found in repo/);
+});
