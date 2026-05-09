@@ -397,3 +397,16 @@ test("cluster_members tool resolves cluster selector and emits symbol-or-file me
   assert.match(toolsSource, /JOIN files f ON f\.id = cm\.file_id/);
   assert.match(toolsSource, /was not found in repo/);
 });
+
+test("describe_node supports file/symbol/cluster kinds and includes linked doc_links rows", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /"describe_node"/);
+  assert.match(toolsSource, /kind:\s*z\.enum\(\["file", "symbol", "cluster"\]\)/);
+  assert.match(toolsSource, /SELECT[\s\S]*source,[\s\S]*source_path,[\s\S]*content,[\s\S]*created_at[\s\S]*FROM doc_links/);
+  assert.match(toolsSource, /WHERE repo = \$1[\s\S]*AND target_kind = \$2[\s\S]*AND target_id = \$3/);
+  assert.match(toolsSource, /Unknown file node/);
+  assert.match(toolsSource, /Unknown symbol node/);
+  assert.match(toolsSource, /Unknown cluster node/);
+  assert.match(toolsSource, /Linked Doc Links/);
+});
