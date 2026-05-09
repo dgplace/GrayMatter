@@ -24,7 +24,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import click
 import psycopg2
@@ -2090,44 +2090,34 @@ def clear_repo_per_file_data(config: dict, repo_name: str) -> None:
         conn.close()
 
 
-@click.command()
-@click.argument("repo_path", type=click.Path(exists=True))
-@click.option("--config", default="codebrain.toml", help="Config file path")
-@click.option("--force", is_flag=True, help="Re-index all files regardless of hash")
-@click.option("--watch", is_flag=True, help="Watch for changes and re-index")
-@click.option("--workers", default=None, type=int, help="Override worker count")
-@click.option("--no-classify", is_flag=True, help="Skip LLM classification (embed only, much faster)")
-@click.option("--debug", is_flag=True, help="Print per-file error details during ingestion")
-@click.option("--repo-name", default=None, help="Optional repository identifier override for indexed rows")
-def main(
-    repo_path: str,
-    config: str,
-    force: bool,
-    watch: bool,
-    workers: Optional[int],
-    no_classify: bool,
-    debug: bool,
-    repo_name: Optional[str],
-):
-    """@brief Ingest a repository into CodeBrain.
+def _resolve_worker_count(cfg: dict, workers: Optional[int]) -> int:
+    """@brief Resolve effective worker count and persist explicit overrides in config.
 
-    @param repo_path Repository path to index.
-    @param config Configuration file path.
-    @param force Re-index files even when hashes match.
-    @param watch Keep watching and re-index changed files.
-    @param workers Optional worker override.
-    @param no_classify Skip classifier calls.
-    @param debug Print per-file errors and worker failures.
-    @param repo_name Optional explicit repository identifier override.
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param workers Optional CLI worker override.
+    @return Effective worker count for ingestion.
     """
-    cfg = load_config(config)
-    repo_root = Path(repo_path).resolve()
-    repo_name = resolve_repo_name(repo_root, repo_name)
-
-    n_workers = workers or cfg.get("ingestion", {}).get("workers", 4)
+    resolved = workers or cfg.get("ingestion", {}).get("workers", 4)
     if workers:
         cfg.setdefault("ingestion", {})["workers"] = workers
+    return resolved
 
+
+def _print_ingestion_header(
+    repo_name: str,
+    cfg: dict,
+    n_workers: int,
+    no_classify: bool,
+    debug: bool,
+) -> None:
+    """@brief Emit runtime configuration summary for an ingestion run.
+
+    @param repo_name Repository identifier being ingested.
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param n_workers Effective parallel worker count.
+    @param no_classify Whether classifier calls are disabled.
+    @param debug Whether debug diagnostics are enabled.
+    """
     console.print(f"\n[bold cyan]CodeBrain[/] — Ingesting [bold]{repo_name}[/]")
     console.print(f"  Database: {cfg['database']['url'].split('@')[1]}")
     console.print(f"  Embedding model: {cfg['embeddings']['model']}")
@@ -2143,37 +2133,48 @@ def main(
         console.print(f"  Embedding base URL: {embed_base_url}")
         console.print(f"  Classifier base URL: {cfg.get('classifier', {}).get('base_url', '')}")
 
-    # Shared HTTP clients (thread-safe); one chunker per thread created below
-    embedder = EmbeddingClient(cfg)
-    classifier = IntentClassifier(cfg)
 
-    # Connection pool — one connection slot per worker plus a couple spare
-    db_pool = psycopg2.pool.ThreadedConnectionPool(
-        1, n_workers + 2, cfg["database"]["url"]
-    )
+def _create_ingestion_run(cfg: dict, repo_name: str) -> int:
+    """@brief Create an ingestion run row after ensuring schema readiness.
 
-    # Create ingestion run
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param repo_name Repository identifier for the run row.
+    @return Newly created ingestion run id.
+    """
     setup_conn = get_db(cfg)
-    ensure_schema(setup_conn)
-    cur = setup_conn.cursor()
-    cur.execute(
-        "INSERT INTO ingestion_runs (repo) VALUES (%s) RETURNING id",
-        (repo_name,)
-    )
-    run_id = cur.fetchone()[0]
-    setup_conn.commit()
-    setup_conn.close()
+    try:
+        ensure_schema(setup_conn)
+        cur = setup_conn.cursor()
+        cur.execute(
+            "INSERT INTO ingestion_runs (repo) VALUES (%s) RETURNING id",
+            (repo_name,),
+        )
+        run_id = cur.fetchone()[0]
+        setup_conn.commit()
+        return run_id
+    finally:
+        setup_conn.close()
 
-    # Walk repository
+
+def _discover_ingestion_files(cfg: dict, repo_name: str, repo_root: Path, force: bool) -> list[Path]:
+    """@brief Collect ingestable files, prune stale rows, and apply force pre-clear when needed.
+
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param repo_name Repository identifier for database pruning/clearing.
+    @param repo_root Absolute repository root path.
+    @param force Whether force re-index mode is enabled.
+    @return Ordered list of repository files to process.
+    """
     files = walk_repo(repo_root, cfg)
     console.print(f"  Found [bold]{len(files)}[/] source files\n")
 
-    # Prune stale files from database
     prune_conn = get_db(cfg)
-    stale_paths = prune_stale_files(prune_conn, repo_name, repo_root, files)
-    if stale_paths:
-        console.print(f"  Pruning [bold]{len(stale_paths)}[/] stale files from database")
-    prune_conn.close()
+    try:
+        stale_paths = prune_stale_files(prune_conn, repo_name, repo_root, files)
+        if stale_paths:
+            console.print(f"  Pruning [bold]{len(stale_paths)}[/] stale files from database")
+    finally:
+        prune_conn.close()
 
     # Under --force, serially pre-clear all per-file rows for this repo before
     # parallel workers run. Concurrent per-file DELETEs on `symbol_references`
@@ -2184,6 +2185,70 @@ def main(
     if force:
         clear_repo_per_file_data(cfg, repo_name)
 
+    return files
+
+
+def _build_file_processor(
+    repo_root: Path,
+    repo_name: str,
+    cfg: dict,
+    embedder: EmbeddingClient,
+    classifier: IntentClassifier,
+    db_pool: psycopg2.pool.ThreadedConnectionPool,
+    force: bool,
+    no_classify: bool,
+) -> Callable[[Path], dict]:
+    """@brief Build the per-file worker callable with thread-local chunkers.
+
+    @param repo_root Absolute repository root path.
+    @param repo_name Repository identifier.
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param embedder Shared embedding client instance.
+    @param classifier Shared classifier client instance.
+    @param db_pool Shared database connection pool.
+    @param force Whether force re-index mode is enabled.
+    @param no_classify Whether classifier calls should be skipped.
+    @return Callable that processes one file path and returns result metadata.
+    """
+    import threading
+
+    thread_local = threading.local()
+
+    def process(fpath: Path) -> dict:
+        chunker = getattr(thread_local, "chunker", None)
+        if chunker is None:
+            chunker = ASTChunker(cfg)
+            thread_local.chunker = chunker
+        return process_file(
+            fpath,
+            repo_root,
+            repo_name,
+            cfg,
+            embedder,
+            classifier,
+            chunker,
+            db_pool,
+            force=force,
+            no_classify=no_classify,
+        )
+
+    return process
+
+
+def _run_parallel_ingestion(
+    files: list[Path],
+    n_workers: int,
+    process: Callable[[Path], dict],
+    debug: bool,
+) -> tuple[dict[str, int], list[tuple[str, str]], list[tuple[str, str]]]:
+    """@brief Execute parallel file processing and aggregate run statistics.
+
+    @param files Ordered list of files to ingest.
+    @param n_workers Parallel worker count.
+    @param process Per-file worker callable.
+    @param debug Whether to print per-file error/warning diagnostics.
+    @return Tuple of stats dict, error detail pairs, and warning detail pairs.
+    """
     stats = {
         "indexed": 0,
         "skipped": 0,
@@ -2194,31 +2259,6 @@ def main(
     }
     error_details: list[tuple[str, str]] = []
     classifier_warning_details: list[tuple[str, str]] = []
-
-    # Each thread gets its own ASTChunker (tree-sitter parsers are not thread-safe)
-    thread_chunkers: dict[int, ASTChunker] = {}
-
-    def get_chunker() -> ASTChunker:
-        tid = id(os.getpid())  # unique per thread via threading.get_ident below
-        import threading
-        tid = threading.get_ident()
-        if tid not in thread_chunkers:
-            thread_chunkers[tid] = ASTChunker(cfg)
-        return thread_chunkers[tid]
-
-    def process(fpath: Path) -> dict:
-        return process_file(
-            fpath,
-            repo_root,
-            repo_name,
-            cfg,
-            embedder,
-            classifier,
-            get_chunker(),
-            db_pool,
-            force=force,
-            no_classify=no_classify,
-        )
 
     with Progress(
         SpinnerColumn(),
@@ -2260,63 +2300,102 @@ def main(
                     stats["symbols"] += result["symbols"]
                 warnings = result.get("warnings", [])
                 if warnings:
-                    error_path = result.get("path", "<unknown>")
+                    warn_path = result.get("path", "<unknown>")
                     for warning in warnings:
-                        classifier_warning_details.append((error_path, warning))
+                        classifier_warning_details.append((warn_path, warning))
                         if debug:
-                            console.print(f"  [yellow]![/] [dim]{error_path}[/]: {warning}")
+                            console.print(f"  [yellow]![/] [dim]{warn_path}[/]: {warning}")
                     stats["classifier_fallbacks"] += len(warnings)
                 progress.update(
-                    task, advance=1,
-                    description=f"[dim]{result.get('path', '')[:60]}[/]"
+                    task,
+                    advance=1,
+                    description=f"[dim]{result.get('path', '')[:60]}[/]",
                 )
 
-    if error_details:
-        console.print("\n  [bold red]Error samples:[/]")
-        for error_path, error_msg in error_details[:5]:
-            console.print(f"  [red]✗[/] [dim]{error_path}[/]: {error_msg}")
-        if len(error_details) > 5:
-            console.print(f"  [dim]... and {len(error_details) - 5} more[/]")
+    return stats, error_details, classifier_warning_details
 
-    if classifier_warning_details:
-        console.print("\n  [bold yellow]Classifier fallback samples:[/]")
-        for warn_path, warn_msg in classifier_warning_details[:5]:
-            console.print(f"  [yellow]![/] [dim]{warn_path}[/]: {warn_msg}")
-        if len(classifier_warning_details) > 5:
-            console.print(f"  [dim]... and {len(classifier_warning_details) - 5} more[/]")
 
-    if stats["indexed"]:
-        console.print("\n  [dim]Refreshing cross-file symbol references...[/]")
-        resolve_conn = get_db(cfg)
-        try:
-            cur = resolve_conn.cursor()
-            resolver.refresh_repo_references(cur, repo_name, repo_root=repo_root)
-            resolve_conn.commit()
-        finally:
-            resolve_conn.close()
+def _print_detail_samples(title: str, icon: str, color: str, details: list[tuple[str, str]]) -> None:
+    """@brief Print up to five detail rows and summarize remaining count.
 
+    @param title Section header title.
+    @param icon Glyph shown before each detail line.
+    @param color Rich color used for glyph and header.
+    @param details Path/message tuples to print.
+    """
+    if not details:
+        return
+    console.print(f"\n  [bold {color}]{title}:[/]")
+    for detail_path, detail_msg in details[:5]:
+        console.print(f"  [{color}]{icon}[/] [dim]{detail_path}[/]: {detail_msg}")
+    if len(details) > 5:
+        console.print(f"  [dim]... and {len(details) - 5} more[/]")
+
+
+def _refresh_cross_file_references(cfg: dict, repo_name: str, repo_root: Path, indexed_count: int) -> None:
+    """@brief Refresh unresolved cross-file references after parallel ingest completes.
+
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param repo_name Repository identifier.
+    @param repo_root Absolute repository root path.
+    @param indexed_count Number of files indexed in this run.
+    """
+    if indexed_count <= 0:
+        return
+    console.print("\n  [dim]Refreshing cross-file symbol references...[/]")
+    resolve_conn = get_db(cfg)
+    try:
+        cur = resolve_conn.cursor()
+        resolver.refresh_repo_references(cur, repo_name, repo_root=repo_root)
+        resolve_conn.commit()
+    finally:
+        resolve_conn.close()
+
+
+def _materialize_cycles_for_repo(cfg: dict, repo_name: str) -> int:
+    """@brief Rebuild persisted dependency cycle materialization for a repository.
+
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param repo_name Repository identifier.
+    @return Number of dependency cycles written.
+    """
     console.print("\n  [dim]Materializing dependency cycles...[/]")
     cycle_conn = get_db(cfg)
     try:
-        cycle_count = materialize_dependency_cycles(cycle_conn, repo_name)
+        return materialize_dependency_cycles(cycle_conn, repo_name)
     finally:
         cycle_conn.close()
 
-    # Update ingestion run
-    finish_conn = get_db(cfg)
-    cur = finish_conn.cursor()
-    files_processed = stats["indexed"] + stats["skipped"] + stats["errors"]
-    cur.execute(
-        """UPDATE ingestion_runs
-           SET completed_at=NOW(), files_processed=%s, chunks_created=%s,
-               symbols_found=%s, status='completed'
-           WHERE id=%s""",
-        (files_processed, stats["chunks"], stats["symbols"], run_id)
-    )
-    finish_conn.commit()
-    finish_conn.close()
-    db_pool.closeall()
 
+def _complete_ingestion_run(cfg: dict, run_id: int, stats: dict[str, int]) -> None:
+    """@brief Mark an ingestion run completed with final counters.
+
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param run_id Ingestion run identifier to update.
+    @param stats Aggregated ingestion counters.
+    """
+    finish_conn = get_db(cfg)
+    try:
+        cur = finish_conn.cursor()
+        files_processed = stats["indexed"] + stats["skipped"] + stats["errors"]
+        cur.execute(
+            """UPDATE ingestion_runs
+               SET completed_at=NOW(), files_processed=%s, chunks_created=%s,
+                   symbols_found=%s, status='completed'
+               WHERE id=%s""",
+            (files_processed, stats["chunks"], stats["symbols"], run_id),
+        )
+        finish_conn.commit()
+    finally:
+        finish_conn.close()
+
+
+def _print_ingestion_summary(stats: dict[str, int], cycle_count: int) -> None:
+    """@brief Print final ingestion counters and cycle materialization count.
+
+    @param stats Aggregated ingestion counters.
+    @param cycle_count Number of dependency cycles materialized.
+    """
     console.print(f"\n[bold green]✓ Done[/]")
     console.print(f"  Files indexed: {stats['indexed']}")
     console.print(f"  Files skipped (unchanged): {stats['skipped']}")
@@ -2326,34 +2405,132 @@ def main(
     console.print(f"  Symbols extracted: {stats['symbols']}")
     console.print(f"  Dependency cycles materialized: {cycle_count}")
 
-    if watch:
-        console.print(f"\n[bold cyan]Watching for changes...[/] (Ctrl+C to stop)")
 
-        watch_conn = get_db(cfg)
-        watch_chunker = ASTChunker(cfg)
-        watch_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, cfg["database"]["url"])
+def _run_watch_mode(
+    watch: bool,
+    cfg: dict,
+    repo_root: Path,
+    repo_name: str,
+    embedder: EmbeddingClient,
+    classifier: IntentClassifier,
+    no_classify: bool,
+) -> None:
+    """@brief Start long-running watch mode when requested.
 
-        handler = ReindexHandler(
-            repo_root=repo_root,
-            repo_name=repo_name,
-            config=cfg,
-            embedder=embedder,
-            classifier=classifier,
-            chunker=watch_chunker,
-            db_pool=watch_pool,
-            no_classify=no_classify,
+    @param watch Whether watch mode was requested.
+    @param cfg Parsed CodeBrain configuration dictionary.
+    @param repo_root Absolute repository root path.
+    @param repo_name Repository identifier.
+    @param embedder Shared embedding client.
+    @param classifier Shared classifier client.
+    @param no_classify Whether classifier calls should be skipped.
+    """
+    if not watch:
+        return
+
+    console.print(f"\n[bold cyan]Watching for changes...[/] (Ctrl+C to stop)")
+    watch_chunker = ASTChunker(cfg)
+    watch_pool = psycopg2.pool.ThreadedConnectionPool(1, 2, cfg["database"]["url"])
+    handler = ReindexHandler(
+        repo_root=repo_root,
+        repo_name=repo_name,
+        config=cfg,
+        embedder=embedder,
+        classifier=classifier,
+        chunker=watch_chunker,
+        db_pool=watch_pool,
+        no_classify=no_classify,
+    )
+
+    observer = Observer()
+    observer.schedule(handler, str(repo_root), recursive=True)
+    observer.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+    watch_pool.closeall()
+
+
+@click.command()
+@click.argument("repo_path", type=click.Path(exists=True))
+@click.option("--config", default="codebrain.toml", help="Config file path")
+@click.option("--force", is_flag=True, help="Re-index all files regardless of hash")
+@click.option("--watch", is_flag=True, help="Watch for changes and re-index")
+@click.option("--workers", default=None, type=int, help="Override worker count")
+@click.option("--no-classify", is_flag=True, help="Skip LLM classification (embed only, much faster)")
+@click.option("--debug", is_flag=True, help="Print per-file error details during ingestion")
+@click.option("--repo-name", default=None, help="Optional repository identifier override for indexed rows")
+def main(
+    repo_path: str,
+    config: str,
+    force: bool,
+    watch: bool,
+    workers: Optional[int],
+    no_classify: bool,
+    debug: bool,
+    repo_name: Optional[str],
+):
+    """@brief Ingest a repository into CodeBrain.
+
+    @param repo_path Repository path to index.
+    @param config Configuration file path.
+    @param force Re-index files even when hashes match.
+    @param watch Keep watching and re-index changed files.
+    @param workers Optional worker override.
+    @param no_classify Skip classifier calls.
+    @param debug Print per-file errors and worker failures.
+    @param repo_name Optional explicit repository identifier override.
+    """
+    cfg = load_config(config)
+    repo_root = Path(repo_path).resolve()
+    resolved_repo_name = resolve_repo_name(repo_root, repo_name)
+    n_workers = _resolve_worker_count(cfg, workers)
+    _print_ingestion_header(resolved_repo_name, cfg, n_workers, no_classify, debug)
+
+    embedder = EmbeddingClient(cfg)
+    classifier = IntentClassifier(cfg)
+    db_pool = psycopg2.pool.ThreadedConnectionPool(1, n_workers + 2, cfg["database"]["url"])
+    run_id = _create_ingestion_run(cfg, resolved_repo_name)
+    files = _discover_ingestion_files(cfg, resolved_repo_name, repo_root, force)
+    process = _build_file_processor(
+        repo_root=repo_root,
+        repo_name=resolved_repo_name,
+        cfg=cfg,
+        embedder=embedder,
+        classifier=classifier,
+        db_pool=db_pool,
+        force=force,
+        no_classify=no_classify,
+    )
+
+    try:
+        stats, error_details, classifier_warning_details = _run_parallel_ingestion(
+            files=files,
+            n_workers=n_workers,
+            process=process,
+            debug=debug,
         )
+        _print_detail_samples("Error samples", "✗", "red", error_details)
+        _print_detail_samples("Classifier fallback samples", "!", "yellow", classifier_warning_details)
+        _refresh_cross_file_references(cfg, resolved_repo_name, repo_root, stats["indexed"])
+        cycle_count = _materialize_cycles_for_repo(cfg, resolved_repo_name)
+        _complete_ingestion_run(cfg, run_id, stats)
+    finally:
+        db_pool.closeall()
 
-        observer = Observer()
-        observer.schedule(handler, str(repo_root), recursive=True)
-        observer.start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            observer.stop()
-        observer.join()
-        watch_pool.closeall()
+    _print_ingestion_summary(stats, cycle_count)
+    _run_watch_mode(
+        watch=watch,
+        cfg=cfg,
+        repo_root=repo_root,
+        repo_name=resolved_repo_name,
+        embedder=embedder,
+        classifier=classifier,
+        no_classify=no_classify,
+    )
 
 
 if __name__ == "__main__":

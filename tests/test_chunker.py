@@ -219,3 +219,22 @@ def test_chunk_file_extracts_csharp_namespace_symbols() -> None:
     assert class_chunk["visibility"] == "public"
     assert class_chunk["is_exported"] is True
     assert "SayHello" in member_names
+
+
+def test_chunk_file_extracts_decorated_python_function_name() -> None:
+    """@brief Verify decorated Python declarations use the function name, not decorator identifiers."""
+    pytest.importorskip("tree_sitter_python")
+
+    chunker = ASTChunker({"ingestion": {"chunk_size": 128, "overlap": 0}})
+    content = "\n".join(
+        [
+            "@click.command()",
+            "def main() -> None:",
+            "    return None",
+        ]
+    )
+
+    chunks = chunker.chunk_file(content, "python", "cli.py")
+    function_chunk = next(chunk for chunk in chunks if chunk.get("symbol_type") == "function")
+
+    assert function_chunk["symbol_name"] == "main"

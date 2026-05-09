@@ -496,7 +496,23 @@ class ASTChunker:
         return member_symbols
 
     def _extract_name(self, node, language: str) -> Optional[str]:
-        """Extract the name identifier from a syntax node."""
+        """@brief Extract the declaration name from a syntax node.
+
+        @param node Tree-sitter node representing a declaration or wrapper.
+        @param language Active language key used for language-specific handling.
+        @return Extracted symbol name, or `None` when no stable name is available.
+        """
+        if node.type == "decorated_definition":
+            definition = node.child_by_field_name("definition")
+            if definition is not None:
+                extracted = self._extract_name(definition, language)
+                if extracted:
+                    return extracted
+            for child in node.children:
+                if child.type.endswith("_definition") or child.type.endswith("_declaration"):
+                    extracted = self._extract_name(child, language)
+                    if extracted:
+                        return extracted
         if node.type == "initializer_declaration":
             return "init"
         if node.type == "deinitializer_declaration":

@@ -416,95 +416,89 @@ def _build_community_context(community_nodes, meta: dict,
     return "\n".join(context_lines[:30]), member_names, total_chunks
 
 
-def synthesize_logical_modules(conn, repo: str, min_files: int,
-                               classifier: IntentClassifier,
-                               resolution: float = 1.5,
-                               max_community_size: int = 20,
-                               hub_percentile: float = 90.0,
-                               machine: bool = False):
-    """@brief Detect cross-directory logical modules via weighted community detection.
+def _load_logical_graph(cur, repo: str, machine: bool) -> tuple[nx.Graph, dict, bool]:
+    """@brief Load the class-level graph with fallback to file-level graph when needed.
 
-    Builds a weighted coupling graph at class level (falling back to file level),
-    dampens hub nodes, runs Louvain community detection, recursively splits
-    oversized communities, and synthesizes narrative-driven intents via LLM.
-
-    @param conn Database connection.
+    @param cur Database cursor.
     @param repo Repository name.
-    @param min_files Minimum members for a community to become a module.
-    @param classifier IntentClassifier for LLM-based naming and summarization.
-    @param resolution Louvain resolution parameter (higher = smaller communities).
-    @param max_community_size Max members per module before recursive splitting.
-    @param hub_percentile Degree percentile above which nodes get dampened edges.
-    @param machine Emit machine-readable progress lines instead of rich progress.
+    @param machine Emit machine-readable output when true.
+    @return Tuple of graph, metadata map, and class-level mode flag.
     """
-    cur = conn.cursor()
-
-    cur.execute(
-        "DELETE FROM module_intents WHERE repo = %s AND kind = 'logical'",
-        (repo,),
-    )
-
-    # Try class-level graph first, fall back to file-level
-    G, meta = _build_class_graph(cur, repo)
-    is_class_level = len(G.nodes) > 0
-
+    graph, meta = _build_class_graph(cur, repo)
+    is_class_level = len(graph.nodes) > 0
     if not is_class_level:
         if not machine:
             console.print("[dim]Few class-level symbols; falling back to file-level graph[/]")
-        G, meta = _build_file_graph(cur, repo)
+        graph, meta = _build_file_graph(cur, repo)
+    return graph, meta, is_class_level
 
-    if len(G.nodes) == 0:
-        conn.commit()
-        return
 
-    if not machine:
-        console.print(
-            f"[dim]Graph: {len(G.nodes)} nodes, {len(G.edges)} edges "
-            f"({'class-level' if is_class_level else 'file-level'})[/]"
-        )
+def _report_logical_graph_shape(graph: nx.Graph, is_class_level: bool, machine: bool) -> None:
+    """@brief Print graph size diagnostics for logical-module synthesis.
 
-    _dampen_hub_edges(G, hub_percentile)
-
-    raw_communities = nx.community.louvain_communities(
-        G, weight='weight', resolution=resolution, seed=42
-    )
-    communities = _split_oversized(
-        G, list(raw_communities), max_community_size, resolution
-    )
-
-    total_communities = len(communities)
+    @param graph Weighted graph used for community detection.
+    @param is_class_level Whether graph nodes represent class-level symbols.
+    @param machine Emit machine-readable output when true.
+    """
     if machine:
-        print(f"SYNTH:logical:0:{total_communities}", flush=True)
+        return
+    console.print(
+        f"[dim]Graph: {len(graph.nodes)} nodes, {len(graph.edges)} edges "
+        f"({'class-level' if is_class_level else 'file-level'})[/]"
+    )
 
-    items = enumerate(communities)
-    if not machine:
-        items = enumerate(track(communities,
-                                description="Synthesizing logical modules..."))
 
-    for i, comm in items:
-        if machine:
-            print(f"SYNTH:logical:{i + 1}:{total_communities}", flush=True)
-        if len(comm) < min_files:
-            continue
+def _detect_logical_communities(
+    graph: nx.Graph,
+    resolution: float,
+    max_community_size: int,
+) -> list[set]:
+    """@brief Compute and recursively split Louvain communities for logical modules.
 
-        # For class-level: require classes from multiple directories
-        if is_class_level:
-            dirs = {meta[n]['path'].rsplit('/', 1)[0] if '/' in meta[n]['path'] else '.'
-                    for n in comm if n in meta}
-        else:
-            dirs = {n.rsplit('/', 1)[0] if '/' in n else '.' for n in comm}
-        if len(dirs) <= 1:
-            continue
+    @param graph Weighted graph used for community detection.
+    @param resolution Louvain resolution parameter.
+    @param max_community_size Maximum community size before recursive splitting.
+    @return Community list constrained to max_community_size.
+    """
+    raw_communities = nx.community.louvain_communities(
+        graph, weight='weight', resolution=resolution, seed=42
+    )
+    return _split_oversized(
+        graph,
+        list(raw_communities),
+        max_community_size,
+        resolution,
+    )
 
-        context_str, member_names, total_chunks = _build_community_context(
-            comm, meta, is_class_level
-        )
 
-        if not context_str:
-            continue
+def _community_spans_multiple_dirs(comm: set, meta: dict, is_class_level: bool) -> bool:
+    """@brief Determine whether a community crosses directory boundaries.
 
-        entity_label = "classes/types" if is_class_level else "files"
-        prompt = f"""You are reading the source code of an application like reading chapters of a book.
+    @param comm Community member set (symbol IDs or file paths).
+    @param meta Metadata map keyed by community node.
+    @param is_class_level True when community members are class symbols.
+    @return True when members span more than one directory.
+    """
+    if is_class_level:
+        dirs = {
+            meta[node]['path'].rsplit('/', 1)[0] if '/' in meta[node]['path'] else '.'
+            for node in comm
+            if node in meta
+        }
+    else:
+        dirs = {node.rsplit('/', 1)[0] if '/' in node else '.' for node in comm}
+    return len(dirs) > 1
+
+
+def _build_logical_module_prompt(context_str: str, is_class_level: bool) -> str:
+    """@brief Build the LLM prompt used to name and describe one logical module.
+
+    @param context_str Formatted context lines for module members.
+    @param is_class_level True when context members are classes/types.
+    @return Prompt string for classifier generation.
+    """
+    entity_label = "classes/types" if is_class_level else "files"
+    return f"""You are reading the source code of an application like reading chapters of a book.
 These {entity_label} work together as one logical module. Your job is to describe the STORY —
 what is this code trying to accomplish? What problem is it solving? What is the narrative arc?
 
@@ -532,47 +526,171 @@ Respond with ONLY this JSON:
   "dominant_intent": "<the story: what is this module trying to accomplish and why?>"
 }}"""
 
-        try:
-            res = classifier._parse_json(classifier._generate(prompt, max_tokens=300))
-            module_name = res.get("module_name", f"logical-{i}")
-            summary = res.get("summary", "")
-            role = res.get("role", "unknown")
-            dominant_intent = res.get("dominant_intent", "")
-        except Exception:
-            module_name = f"logical-{i}"
-            summary = "Logical module"
-            role = "module"
-            dominant_intent = ""
 
+def _parse_logical_module_metadata(
+    classifier: IntentClassifier,
+    prompt: str,
+    idx: int,
+) -> tuple[str, str, str, str]:
+    """@brief Parse classifier JSON output for logical module metadata with fallback defaults.
+
+    @param classifier Intent classifier client.
+    @param prompt Prompt text for the classifier model.
+    @param idx Community index used for deterministic fallback naming.
+    @return Tuple of module_name, summary, role, and dominant_intent.
+    """
+    try:
+        res = classifier._parse_json(classifier._generate(prompt, max_tokens=300))
+        return (
+            res.get("module_name", f"logical-{idx}"),
+            res.get("summary", ""),
+            res.get("role", "unknown"),
+            res.get("dominant_intent", ""),
+        )
+    except Exception:
+        return (f"logical-{idx}", "Logical module", "module", "")
+
+
+def _logical_file_count(comm: set, meta: dict, is_class_level: bool) -> int:
+    """@brief Count unique files represented by a logical community.
+
+    @param comm Community member set (symbol IDs or file paths).
+    @param meta Metadata map keyed by community node.
+    @param is_class_level True when community members are class symbols.
+    @return Number of files covered by the community.
+    """
+    if is_class_level:
+        file_paths = {meta[node]['path'] for node in comm if node in meta}
+        return len(file_paths)
+    return len(comm)
+
+
+def _upsert_logical_module_intent(
+    cur,
+    repo: str,
+    module_path: str,
+    module_name: str,
+    summary: str,
+    role: str,
+    dominant_intent: str,
+    file_count: int,
+    total_chunks: int,
+    member_names: list[str],
+) -> None:
+    """@brief Upsert one logical module_intents record.
+
+    @param cur Database cursor.
+    @param repo Repository name.
+    @param module_path Persisted module path key.
+    @param module_name Display module name.
+    @param summary Module summary text.
+    @param role Architectural role label.
+    @param dominant_intent Narrative intent sentence.
+    @param file_count Number of covered files.
+    @param total_chunks Aggregate chunk count represented by this community.
+    @param member_names Optional ordered member label list.
+    """
+    cur.execute("""
+        INSERT INTO module_intents
+            (repo, module_path, kind, module_name, summary, role,
+             dominant_intent, file_count, chunk_count, member_symbols,
+             updated_at)
+        VALUES (%s, %s, 'logical', %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (repo, module_path) DO UPDATE SET
+            kind = EXCLUDED.kind,
+            module_name = EXCLUDED.module_name,
+            summary = EXCLUDED.summary,
+            role = EXCLUDED.role,
+            dominant_intent = EXCLUDED.dominant_intent,
+            file_count = EXCLUDED.file_count,
+            chunk_count = EXCLUDED.chunk_count,
+            member_symbols = EXCLUDED.member_symbols,
+            updated_at = NOW()
+    """, (
+        repo,
+        module_path,
+        module_name,
+        summary,
+        role,
+        dominant_intent,
+        file_count,
+        total_chunks,
+        member_names or None,
+    ))
+
+
+def synthesize_logical_modules(conn, repo: str, min_files: int,
+                               classifier: IntentClassifier,
+                               resolution: float = 1.5,
+                               max_community_size: int = 20,
+                               hub_percentile: float = 90.0,
+                               machine: bool = False):
+    """@brief Detect cross-directory logical modules via weighted community detection.
+
+    Builds a weighted coupling graph at class level (falling back to file level),
+    dampens hub nodes, runs Louvain community detection, recursively splits
+    oversized communities, and synthesizes narrative-driven intents via LLM.
+
+    @param conn Database connection.
+    @param repo Repository name.
+    @param min_files Minimum members for a community to become a module.
+    @param classifier IntentClassifier for LLM-based naming and summarization.
+    @param resolution Louvain resolution parameter (higher = smaller communities).
+    @param max_community_size Max members per module before recursive splitting.
+    @param hub_percentile Degree percentile above which nodes get dampened edges.
+    @param machine Emit machine-readable progress lines instead of rich progress.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM module_intents WHERE repo = %s AND kind = 'logical'",
+        (repo,),
+    )
+
+    graph, meta, is_class_level = _load_logical_graph(cur, repo, machine)
+    if len(graph.nodes) == 0:
+        conn.commit()
+        return
+
+    _report_logical_graph_shape(graph, is_class_level, machine)
+    _dampen_hub_edges(graph, hub_percentile)
+    communities = _detect_logical_communities(graph, resolution, max_community_size)
+
+    total_communities = len(communities)
+    if machine:
+        print(f"SYNTH:logical:0:{total_communities}", flush=True)
+
+    items = enumerate(communities)
+    if not machine:
+        items = enumerate(track(communities, description="Synthesizing logical modules..."))
+
+    for idx, comm in items:
+        if machine:
+            print(f"SYNTH:logical:{idx + 1}:{total_communities}", flush=True)
+        if len(comm) < min_files:
+            continue
+        if not _community_spans_multiple_dirs(comm, meta, is_class_level):
+            continue
+
+        context_str, member_names, total_chunks = _build_community_context(comm, meta, is_class_level)
+        if not context_str:
+            continue
+
+        prompt = _build_logical_module_prompt(context_str, is_class_level)
+        module_name, summary, role, dominant_intent = _parse_logical_module_metadata(classifier, prompt, idx)
         module_path = f"_logical/{module_name}"
-
-        # Count files covered by this community
-        if is_class_level:
-            file_paths = {meta[n]['path'] for n in comm if n in meta}
-            file_count = len(file_paths)
-        else:
-            file_count = len(comm)
-
-        cur.execute("""
-            INSERT INTO module_intents
-                (repo, module_path, kind, module_name, summary, role,
-                 dominant_intent, file_count, chunk_count, member_symbols,
-                 updated_at)
-            VALUES (%s, %s, 'logical', %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (repo, module_path) DO UPDATE SET
-                kind = EXCLUDED.kind,
-                module_name = EXCLUDED.module_name,
-                summary = EXCLUDED.summary,
-                role = EXCLUDED.role,
-                dominant_intent = EXCLUDED.dominant_intent,
-                file_count = EXCLUDED.file_count,
-                chunk_count = EXCLUDED.chunk_count,
-                member_symbols = EXCLUDED.member_symbols,
-                updated_at = NOW()
-        """, (
-            repo, module_path, module_name, summary, role, dominant_intent,
-            file_count, total_chunks, member_names or None,
-        ))
+        file_count = _logical_file_count(comm, meta, is_class_level)
+        _upsert_logical_module_intent(
+            cur=cur,
+            repo=repo,
+            module_path=module_path,
+            module_name=module_name,
+            summary=summary,
+            role=role,
+            dominant_intent=dominant_intent,
+            file_count=file_count,
+            total_chunks=total_chunks,
+            member_names=member_names,
+        )
 
     conn.commit()
 
