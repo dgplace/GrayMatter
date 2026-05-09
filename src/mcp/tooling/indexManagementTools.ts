@@ -12,6 +12,9 @@ import {
   getModuleIntents,
   getRepositoryIndexSize,
   repositoryExists,
+  getClusters,
+  findCluster,
+  getClusterMembers,
 } from "../../repositories/store.js";
 import { logToolInvocation } from "../logging.js";
 import { getNodeDocLinks, repoNotFoundText, requireRepository } from "./shared.js";
@@ -109,27 +112,9 @@ export function registerIndexManagementTools(server: McpServer): void {
         return repoCheck;
       }
 
-      const result = await query(
-        `
-        SELECT
-          c.id,
-          c.cluster_key,
-          c.name,
-          c.summary,
-          c.modularity,
-          c.granularity,
-          COUNT(cm.id)::integer AS size
-        FROM clusters c
-        LEFT JOIN cluster_members cm ON cm.cluster_id = c.id
-        WHERE c.repo = $1
-          AND ($2::text IS NULL OR c.granularity = $2)
-        GROUP BY c.id, c.cluster_key, c.name, c.summary, c.modularity, c.granularity
-        ORDER BY c.granularity, size DESC, c.name, c.cluster_key
-        `,
-        [repo, granularity || null],
-      );
+      const rows = await getClusters(repo, granularity);
 
-      if (result.rows.length === 0) {
+      if (rows.length === 0) {
         const scope = granularity ? ` (granularity: \`${granularity}\`)` : "";
         return { content: [{ type: "text", text: `No clusters found for repo \`${repo}\`${scope}.` }] };
       }
@@ -140,7 +125,7 @@ export function registerIndexManagementTools(server: McpServer): void {
         "| Cluster | Name | Summary | Size | Modularity | Granularity |",
         "|---:|---|---|---:|---:|---|",
       ];
-      for (const row of result.rows as Array<Record<string, unknown>>) {
+      for (const row of rows) {
         const summary = row.summary ? String(row.summary).replace(/\n+/g, " ").trim() : "";
         const compactSummary = summary.length > 180 ? `${summary.slice(0, 177)}...` : summary;
         lines.push(
@@ -168,31 +153,9 @@ export function registerIndexManagementTools(server: McpServer): void {
         return repoCheck;
       }
 
-      const clusterResult = await query(
-        `
-        SELECT id, cluster_key, name, granularity
-        FROM clusters
-        WHERE repo = $1
-          AND (
-            ($2 ~ '^[0-9]+$' AND id = $2::int)
-            OR cluster_key = $2
-            OR name ILIKE $2
-            OR name ILIKE '%' || $2 || '%'
-          )
-        ORDER BY
-          CASE
-            WHEN cluster_key = $2 THEN 0
-            WHEN name ILIKE $2 THEN 1
-            WHEN ($2 ~ '^[0-9]+$' AND id = $2::int) THEN 2
-            ELSE 3
-          END,
-          id
-        LIMIT 1
-        `,
-        [repo, cluster],
-      );
+      const clusterRecord = await findCluster(repo, cluster);
 
-      if (clusterResult.rows.length === 0) {
+      if (!clusterRecord) {
         return {
           content: [{
             type: "text",
@@ -201,68 +164,31 @@ export function registerIndexManagementTools(server: McpServer): void {
         };
       }
 
-      const clusterRow = clusterResult.rows[0] as Record<string, unknown>;
-      const clusterId = Number(clusterRow.id);
-      const clusterKey = String(clusterRow.cluster_key);
-      const clusterName = String(clusterRow.name);
-      const clusterGranularity = String(clusterRow.granularity);
+      const clusterId = clusterRecord.id;
+      const clusterKey = clusterRecord.cluster_key;
+      const clusterName = clusterRecord.name;
+      const clusterGranularity = clusterRecord.granularity;
+
+      const rows = await getClusterMembers(clusterId, clusterGranularity, limit);
 
       if (clusterGranularity === "symbol") {
-        const membersResult = await query(
-          `
-          SELECT
-            cm.membership_weight,
-            s.id AS symbol_id,
-            s.name,
-            s.kind,
-            s.qualified_name,
-            s.start_line,
-            s.end_line,
-            f.path AS file_path
-          FROM cluster_members cm
-          JOIN symbols s ON s.id = cm.symbol_id
-          JOIN files f ON f.id = s.file_id
-          WHERE cm.cluster_id = $1
-          ORDER BY cm.membership_weight DESC NULLS LAST, f.path, s.start_line, s.name
-          LIMIT $2
-          `,
-          [clusterId, limit],
-        );
-
         const lines = [
           `Cluster members for \`${repo}\` -> ${clusterName} (\`${clusterKey}\`, symbol, id=${clusterId})`,
           "",
           "| Symbol ID | Name | Kind | Location | Weight |",
           "|---:|---|---|---|---:|",
         ];
-        for (const row of membersResult.rows as Array<Record<string, unknown>>) {
+        for (const row of rows) {
           const qualifiedName = row.qualified_name ? ` (${String(row.qualified_name)})` : "";
           lines.push(
-            `| ${Number(row.symbol_id)} | ${String(row.name)}${qualifiedName} | ${String(row.kind)} | ${String(row.file_path)}:${Number(row.start_line)}-${Number(row.end_line)} | ${Number(row.membership_weight || 0).toFixed(4)} |`,
+            `| ${Number(row.symbol_id)} | ${String(row.symbol_name)}${qualifiedName} | ${String(row.kind)} | ${String(row.file_path)}:${Number(row.start_line)}-${Number(row.end_line)} | ${Number(row.membership_weight || 0).toFixed(4)} |`,
           );
         }
-        if (membersResult.rows.length === 0) {
+        if (rows.length === 0) {
           lines.push("| - | (none) | - | - | - |");
         }
         return { content: [{ type: "text", text: lines.join("\n") }] };
       }
-
-      const membersResult = await query(
-        `
-        SELECT
-          cm.membership_weight,
-          f.id AS file_id,
-          f.path AS file_path,
-          f.language,
-          f.summary
-        FROM cluster_members cm
-        JOIN files f ON f.id = cm.file_id
-        WHERE cm.cluster_id = $1
-        ORDER BY cm.membership_weight DESC NULLS LAST, f.path
-        LIMIT $2
-        `,
-        [clusterId, limit],
-      );
 
       const lines = [
         `Cluster members for \`${repo}\` -> ${clusterName} (\`${clusterKey}\`, file, id=${clusterId})`,
@@ -270,17 +196,16 @@ export function registerIndexManagementTools(server: McpServer): void {
         "| File ID | Path | Language | Summary | Weight |",
         "|---:|---|---|---|---:|",
       ];
-      for (const row of membersResult.rows as Array<Record<string, unknown>>) {
+      for (const row of rows) {
         const summary = row.summary ? String(row.summary).replace(/\n+/g, " ").trim() : "";
         const compactSummary = summary.length > 140 ? `${summary.slice(0, 137)}...` : summary;
         lines.push(
           `| ${Number(row.file_id)} | ${String(row.file_path)} | ${String(row.language || "unknown")} | ${compactSummary || "(none)"} | ${Number(row.membership_weight || 0).toFixed(4)} |`,
         );
       }
-      if (membersResult.rows.length === 0) {
+      if (rows.length === 0) {
         lines.push("| - | (none) | - | - | - |");
       }
-
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   );

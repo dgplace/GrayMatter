@@ -15,6 +15,10 @@ import {
   listRepositories,
   repositoryExists,
   getModuleIntents,
+  getClusters,
+  findCluster,
+  getClusterMembers,
+  findCycles,
 } from "../repositories/store.js";
 import { getToolCallSnapshot } from "../mcp/toolCallStats.js";
 import { renderWebUi } from "./ui.js";
@@ -168,6 +172,77 @@ export function registerWebRoutes(app: any): void {
     } catch (error) {
       console.error("Failed to load repository graph:", error);
       res.status(500).json({ error: "Failed to load repository graph." });
+    }
+  });
+
+  /**
+   * @brief API endpoint to fetch clusters for a repository.
+   * @param req Express request object.
+   * @param res Express response object.
+   */
+  app.get("/ui/api/repos/:repo/clusters", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const granularity = req.query.granularity as string;
+      const clusters = await getClusters(repo, granularity);
+      res.status(200).json({ clusters });
+    } catch (error) {
+      console.error("Failed to load clusters:", error);
+      res.status(500).json({ error: "Failed to load clusters." });
+    }
+  });
+
+  /**
+   * @brief API endpoint to fetch members of a specific cluster.
+   * @param req Express request object.
+   * @param res Express response object.
+   */
+  app.get("/ui/api/repos/:repo/clusters/:cluster/members", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      const cluster = decodeURIComponent(String(req.params.cluster || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      
+      const clusterRecord = await findCluster(repo, cluster);
+      if (!clusterRecord) {
+        res.status(404).json({ error: `Cluster \`${cluster}\` not found in repository \`${repo}\`.` });
+        return;
+      }
+
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 200;
+      const members = await getClusterMembers(clusterRecord.id, clusterRecord.granularity, limit);
+      res.status(200).json({ members });
+    } catch (error) {
+      console.error("Failed to load cluster members:", error);
+      res.status(500).json({ error: "Failed to load cluster members." });
+    }
+  });
+
+  /**
+   * @brief API endpoint to fetch dependency cycles for a repository.
+   * @param req Express request object.
+   * @param res Express response object.
+   */
+  app.get("/ui/api/repos/:repo/cycles", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const pathPrefix = req.query.path_prefix as string;
+      const cycles = await findCycles(repo, pathPrefix);
+      res.status(200).json({ cycles });
+    } catch (error) {
+      console.error("Failed to load cycles:", error);
+      res.status(500).json({ error: "Failed to load cycles." });
     }
   });
 }

@@ -145,7 +145,7 @@ main {
   padding: 1rem;
   display: grid;
   gap: 1rem;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 480px 1fr;
   /* Subtract header height (~88px) and main padding so workspace fills the rest. */
   height: calc(100vh - 88px);
   min-height: 0;
@@ -179,11 +179,20 @@ main {
 }
 
 .panel .body {
-  padding: 0.9rem 1rem;
-  display: grid;
+  padding: 0.9rem 1rem 0;
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  max-height: 76vh;
-  overflow: auto;
+  max-height: 35vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Sentinel so the last item is fully scrollable; browsers drop the */
+/* scroll container's padding-bottom from scrollHeight, hiding it.  */
+.panel .body::after {
+  content: "";
+  flex: 0 0 0.9rem;
 }
 
 .metric {

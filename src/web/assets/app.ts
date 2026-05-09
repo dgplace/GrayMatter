@@ -46,6 +46,28 @@ interface ModuleIntent {
   summary?: string;
 }
 
+interface Cluster {
+  id: number;
+  cluster_key: string;
+  name: string;
+  summary: string;
+  modularity: number;
+  granularity: string;
+  size: number;
+}
+
+interface ClusterMember {
+  file_path?: string;
+  symbol_name?: string;
+}
+
+interface Cycle {
+  cycle_hash: string;
+  cycle_size: number;
+  member_file_ids: number[];
+  member_paths: string[];
+}
+
 interface ToolCallSnapshot {
   total_calls: number;
   tool_calls: { name: string; count: number }[];
@@ -88,6 +110,7 @@ const tokens = {
   nodeAccentHover: "#00d3a7",
   nodeMuted: "#b0b6c4",
   background: "#f6f8ff",
+  cycleEdge: "#ff3333",
   folderPalette: [
     "#00b08c", "#2bb8ff", "#b269ff", "#ff6fbf",
     "#ffb547", "#ff5f3a", "#7a8aff", "#3acb6c",
@@ -96,25 +119,15 @@ const tokens = {
   ],
 };
 
+const clusterColors = new Map<number, string>();
+const nodeToCluster = new Map<string, number>();
+const clusterInfo = new Map<number, Cluster>();
+const cycleEdges = new Set<string>();
 const folderColors = new Map<string, string>();
 
-/**
- * @brief Resolve a 3d-force-graph link endpoint to its node id. After the
- *        force simulation has run, source/target are upgraded from string
- *        ids to live node references.
- */
-function endpointId(endpoint: any): string {
-  return typeof endpoint === "object" && endpoint !== null ? String(endpoint.id) : String(endpoint);
-}
-
-/**
- * @brief Visibility predicate for a single link, accounting for both the
- *        kind-toggle filter and the per-node hide-on-click filter.
- */
-function isLinkVisible(l: ForceLink): boolean {
-  if (hiddenKinds.has(l.kind)) return false;
-  if (hiddenNodes.has(endpointId(l.source)) || hiddenNodes.has(endpointId(l.target))) return false;
-  return true;
+/** @brief Normalize file paths for consistent map keys (strips leading ./). */
+function normalizePath(p: string): string {
+  return p.replace(/^\.\//, "");
 }
 
 /**
@@ -129,18 +142,9 @@ function folderKey(id: string): string {
   return id.slice(0, slash).split("/").slice(0, 2).join("/");
 }
 
-/** @brief Short legend label for a folder key: just its last segment. */
-function folderLabel(key: string): string {
-  if (key === "<root>") return key;
-  const segments = key.split("/");
-  return segments[segments.length - 1];
-}
-
 /**
- * @brief Assign a deterministic colour to each folder present in the payload.
- *        Folders are sorted alphabetically and dealt from a fixed neon palette
- *        so colours stay stable across re-renders for a given repo and don't
- *        collide between adjacent folders.
+ * @brief Assign a deterministic colour to each folder present in the payload
+ *        so unclustered nodes still get a stable, distinguishable colour.
  */
 function buildFolderColors(payload: GraphResponse): void {
   folderColors.clear();
@@ -151,12 +155,48 @@ function buildFolderColors(payload: GraphResponse): void {
 }
 
 /**
- * @brief Color accessor: muted grey for hidden nodes, otherwise the colour
- *        assigned to the node's folder.
+ * @brief Resolve a 3d-force-graph link endpoint to its node id. After the
+ *        force simulation has run, source/target are upgraded from string
+ *        ids to live node references.
+ */
+function endpointId(endpoint: any): string {
+  const id = typeof endpoint === "object" && endpoint !== null ? String(endpoint.id) : String(endpoint);
+  return normalizePath(id);
+}
+
+/**
+ * @brief Visibility predicate for a single link, accounting for both the
+ *        kind-toggle filter and the per-node hide-on-click filter.
+ */
+function isLinkVisible(l: ForceLink): boolean {
+  if (hiddenKinds.has(l.kind)) return false;
+  if (hiddenNodes.has(endpointId(l.source)) || hiddenNodes.has(endpointId(l.target))) return false;
+  return true;
+}
+
+/**
+ * @brief Color accessor: muted grey for hidden nodes, the cluster colour when
+ *        the node belongs to a file-granularity cluster, otherwise a
+ *        deterministic per-folder colour so unclustered nodes still vary.
  */
 function colorForNode(n: ForceNode): string {
   if (hiddenNodes.has(n.id)) return tokens.nodeMuted;
+  const cid = nodeToCluster.get(normalizePath(n.id));
+  if (cid !== undefined && clusterColors.has(cid)) {
+    return clusterColors.get(cid)!;
+  }
   return folderColors.get(folderKey(n.id)) || tokens.nodeAccent;
+}
+
+/** @brief Check if an edge is part of a dependency cycle. */
+function isCycleEdge(l: ForceLink): boolean {
+  return cycleEdges.has(endpointId(l.source) + "|" + endpointId(l.target));
+}
+
+/** @brief Edge color accessor: red for cycles, otherwise by kind. */
+function colorForEdge(l: ForceLink): string {
+  if (isCycleEdge(l)) return tokens.cycleEdge;
+  return colorForEdgeKind(l.kind);
 }
 
 /** @brief Format a byte count as a human-readable string. */
@@ -356,30 +396,43 @@ function renderLegend(payload: GraphResponse): void {
         + "</button>";
     }).join("");
 
-  const folderCounts = new Map<string, number>();
+  const clusterCounts = new Map<number, number>();
   for (const n of payload.nodes) {
-    const f = folderKey(n.id);
-    folderCounts.set(f, (folderCounts.get(f) || 0) + 1);
+    const cid = nodeToCluster.get(normalizePath(n.id));
+    if (cid !== undefined) {
+      clusterCounts.set(cid, (clusterCounts.get(cid) || 0) + 1);
+    }
   }
-  const folderSwatches = Array.from(folderCounts.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([folder, n]) => {
-      const color = folderColors.get(folder) || tokens.nodeAccent;
-      return '<span class="legend-item legend-item-static" title="' + esc(folder) + '">'
+  const clusterSwatches = Array.from(clusterCounts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([cid, n]) => {
+      const color = clusterColors.get(cid) || tokens.nodeAccent;
+      const cinfo = clusterInfo.get(cid);
+      const name = cinfo ? cinfo.name : "Cluster " + cid;
+      return '<span class="legend-item legend-item-static" title="' + esc(name) + '">'
         + '<span class="legend-dot" style="background:' + color + ';box-shadow:0 0 6px ' + color + '99;"></span>'
-        + '<span class="legend-label">' + esc(folderLabel(folder)) + "</span>"
+        + '<span class="legend-label">' + esc(name) + "</span>"
         + '<span class="legend-count">' + n + "</span>"
         + "</span>";
     }).join("");
+
+  let cycleSwatch = "";
+  if (cycleEdges.size > 0) {
+    cycleSwatch = '<span class="legend-item legend-item-static" title="Dependency Cycle">'
+      + '<span class="legend-arrow" style="background:' + tokens.cycleEdge + ';color:' + tokens.cycleEdge + ';box-shadow:0 0 8px ' + tokens.cycleEdge + ';"></span>'
+      + '<span class="legend-label">Cycle</span>'
+      + '<span class="legend-count">' + cycleEdges.size + "</span>"
+      + "</span>";
+  }
 
   legend.innerHTML = [
     '<span class="legend-section legend-counts">',
     '<span class="pill">Nodes ' + visibleNodeCount + " / " + payload.nodes.length + "</span>",
     '<span class="pill">Edges ' + visibleEdgeCount + " / " + payload.edges.length + "</span>",
     "</span>",
-    '<span class="legend-section legend-folders">' + folderSwatches + "</span>",
+    '<span class="legend-section legend-folders">' + clusterSwatches + cycleSwatch + "</span>",
     '<span class="legend-section">' + swatches + "</span>",
-    '<span class="legend-section legend-hint">Node colour = folder. Click a kind to toggle its edges; click a node to mute it. Drag to rotate, scroll to zoom.</span>',
+    '<span class="legend-section legend-hint">Node colour = cluster. Click a kind to toggle its edges; click a node to mute it. Drag to rotate, scroll to zoom.</span>',
   ].join("");
 }
 
@@ -444,7 +497,10 @@ function renderGraph(payload: GraphResponse): void {
   buildFolderColors(payload);
   const maxDegree = payload.nodes.reduce((acc, n) => Math.max(acc, n.degree), 1);
   const nodeRadius = (n: ForceNode) => 1.2 + Math.min(8, (n.degree / maxDegree) * 7);
-  const linkWidth = (l: ForceLink) => Math.max(0.4, Math.min(3.2, 0.4 + Math.log2(1 + l.weight)));
+  const linkWidth = (l: ForceLink) => {
+    const base = Math.max(0.4, Math.min(3.2, 0.4 + Math.log2(1 + l.weight)));
+    return isCycleEdge(l) ? base * 2.5 : base;
+  };
 
   const data = { nodes: toNodes(payload), links: toLinks(payload) };
 
@@ -461,8 +517,8 @@ function renderGraph(payload: GraphResponse): void {
       .nodeColor(colorForNode)
       .nodeLabel((n: ForceNode) => `<span style="background:#fff;color:#0d1320;padding:2px 6px;border-radius:6px;border:1px solid #dbe1f1;font:600 11px Inter,sans-serif;">${esc(shortLabel(n.id))}</span>`)
       .nodeVal(nodeRadius)
-      .linkColor((l: ForceLink) => colorForEdgeKind(l.kind))
-      .linkDirectionalArrowColor((l: ForceLink) => colorForEdgeKind(l.kind))
+      .linkColor(colorForEdge)
+      .linkDirectionalArrowColor(colorForEdge)
       .linkWidth(linkWidth)
       .linkVisibility(isLinkVisible)
       .onNodeClick((n: ForceNode) => toggleNode(n.id));
@@ -488,10 +544,50 @@ async function loadRepo(repo: string): Promise<void> {
   updateStatus("Loading stats and graph for " + repo + "...");
   indexMgmtBody.innerHTML = '<p class="warn">Loading...</p>';
   const encodedRepo = encodeURIComponent(repo);
-  const [stats, graph] = await Promise.all([
+  const [stats, graph, clustersResp, cyclesResp] = await Promise.all([
     getJson<RepositoryStats>("/ui/api/repos/" + encodedRepo + "/stats"),
     getJson<GraphResponse>("/ui/api/repos/" + encodedRepo + "/graph?limit=350"),
+    getJson<{ clusters: Cluster[] }>("/ui/api/repos/" + encodedRepo + "/clusters?granularity=file").catch(() => ({ clusters: [] })),
+    getJson<{ cycles: Cycle[] }>("/ui/api/repos/" + encodedRepo + "/cycles").catch(() => ({ cycles: [] })),
   ]);
+
+  const clusters = clustersResp.clusters || [];
+  clusterInfo.clear();
+  clusterColors.clear();
+  nodeToCluster.clear();
+  cycleEdges.clear();
+
+  for (let i = 0; i < clusters.length; i++) {
+    const c = clusters[i];
+    clusterInfo.set(c.id, c);
+    clusterColors.set(c.id, tokens.folderPalette[i % tokens.folderPalette.length]);
+  }
+
+  const memberPromises = clusters.map(c => 
+    getJson<{ members: ClusterMember[] }>("/ui/api/repos/" + encodedRepo + "/clusters/" + c.id + "/members?limit=1000").catch(() => ({ members: [] }))
+  );
+  const membersResults = await Promise.all(memberPromises);
+
+  for (let i = 0; i < clusters.length; i++) {
+    const c = clusters[i];
+    const members = membersResults[i].members || [];
+    for (const m of members) {
+      if (m.file_path) nodeToCluster.set(normalizePath(m.file_path), c.id);
+    }
+  }
+
+  const cycles = cyclesResp.cycles || [];
+  for (const cycle of cycles) {
+    const paths = new Set(cycle.member_paths || []);
+    // Note: This intersection highlights all edges whose endpoints both sit in the cycle's member paths.
+    // This heuristically includes non-cycle edges (like type references) between cycle members.
+    for (const e of graph.edges) {
+      if (paths.has(e.source) && paths.has(e.target)) {
+        cycleEdges.add(e.source + "|" + e.target);
+      }
+    }
+  }
+
   renderStats(stats);
   hiddenKinds.clear();
   hiddenNodes.clear();

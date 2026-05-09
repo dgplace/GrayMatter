@@ -72,6 +72,7 @@ Keep these files focused on distinct purposes.
 - Use CodeBrain tooling first for repository discovery that benefits from intent, symbol, reference, and dependency context.
 - Use `rg` for exact text and filename discovery, validating index-backed findings, or when index coverage is stale or incomplete.
 - Keep ingestion and MCP workflow commands aligned with `README.md`; if operational commands change, update docs in the same change.
+- The canonical CodeBrain MCP usage guide lives in `src/mcp/resources.ts` as the `codebrain://usage` resource (with a short pointer in `CODEBRAIN_SERVER_INSTRUCTIONS`). When tools are added, removed, renamed, or change their parameter contracts, update `CODEBRAIN_USAGE_TEXT` in the same change so all MCP clients see consistent guidance. Do not create parallel usage docs (e.g., a Claude-only `SKILL.md`) that can drift from this source.
 
 ### CodeBrain Self-Discovery Policy
 

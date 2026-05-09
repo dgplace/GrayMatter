@@ -17,6 +17,7 @@ import {
   isStdlibModule,
   requireRepository,
 } from "./shared.js";
+import { findCycles } from "../../repositories/store.js";
 
 /**
  * @brief Registers architecture and refactoring analysis tools.
@@ -258,29 +259,9 @@ export function registerArchitectureTools(server: McpServer): void {
       const repoCheck = await requireRepository(repo);
       if (repoCheck) return repoCheck;
 
-      const result = await query(
-        `
-        SELECT
-          cycle_hash,
-          cycle_size,
-          member_file_ids,
-          member_paths
-        FROM dependency_cycles
-        WHERE repo = $1
-          AND (
-            $2 = ''
-            OR EXISTS (
-              SELECT 1
-              FROM unnest(member_paths) AS member_path
-              WHERE member_path LIKE $2 || '%'
-            )
-          )
-        ORDER BY cycle_size DESC, cycle_hash
-        `,
-        [repo, path_prefix],
-      );
+      const rows = await findCycles(repo, path_prefix);
 
-      if (result.rows.length === 0) {
+      if (rows.length === 0) {
         const scope = path_prefix ? ` under \`${path_prefix}\`` : "";
         return { content: [{ type: "text", text: `No dependency cycles found for repo \`${repo}\`${scope}.` }] };
       }
@@ -288,12 +269,12 @@ export function registerArchitectureTools(server: McpServer): void {
       const lines: string[] = [
         `Dependency cycles for \`${repo}\`${path_prefix ? ` (path prefix: \`${path_prefix}\`)` : ""}`,
         "",
-        `Cycles found: ${result.rows.length}`,
+        `Cycles found: ${rows.length}`,
         "",
       ];
 
-      for (let i = 0; i < result.rows.length; i++) {
-        const row = result.rows[i] as Record<string, unknown>;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] as Record<string, unknown>;
         const memberPaths = Array.isArray(row.member_paths)
           ? row.member_paths.map((value) => String(value))
           : [];

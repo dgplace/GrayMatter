@@ -3,6 +3,7 @@
 @file ingest.py
 @brief CodeBrain ingestion pipeline entrypoint and compatibility facade.
 """
+import fnmatch
 import hashlib
 import os
 import posixpath
@@ -292,12 +293,20 @@ def _persist_doc_links(
 
 
 def should_exclude(path: Path, repo_root: Path, excludes: list[str]) -> bool:
-    rel = str(path.relative_to(repo_root))
+    """@brief Decide whether a path is excluded by ingestion patterns.
+
+    Patterns containing glob metacharacters (`*`, `?`, `[`) are matched against
+    each path segment with `fnmatch`, gitignore-style — so `*.triplibrary`
+    prunes any segment ending in `.triplibrary` regardless of depth. Plain
+    patterns (no glob chars) require an exact segment match, preserving
+    existing behavior for entries like `node_modules`, `.git`, `target`.
+    """
+    segments = str(path.relative_to(repo_root)).split(os.sep)
     for pattern in excludes:
-        if pattern.startswith("*"):
-            if rel.endswith(pattern[1:]):
+        if any(ch in pattern for ch in "*?["):
+            if any(fnmatch.fnmatch(seg, pattern) for seg in segments):
                 return True
-        elif pattern in rel.split(os.sep):
+        elif pattern in segments:
             return True
     return False
 

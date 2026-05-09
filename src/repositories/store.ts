@@ -386,12 +386,26 @@ export async function getRepositoryGraph(repo: string, limit = 300): Promise<Rep
       SELECT source, target, kind, COUNT(*)::int AS weight
       FROM all_edges
       GROUP BY source, target, kind
-      ORDER BY weight DESC, source, target, kind
+    ),
+    prioritized_edges AS (
+      SELECT
+        ge.source, ge.target, ge.kind, ge.weight,
+        (
+          EXISTS (
+            SELECT 1
+            FROM dependency_cycles dc
+            WHERE dc.repo = $1
+              AND ge.source = ANY(dc.member_paths)
+              AND ge.target = ANY(dc.member_paths)
+          )
+        ) AS is_cycle
+      FROM grouped_edges ge
+      ORDER BY is_cycle DESC, weight DESC, source, target, kind
       LIMIT $2
     )
     SELECT source, target, kind, weight
-    FROM grouped_edges
-    ORDER BY weight DESC, source, target, kind
+    FROM prioritized_edges
+    ORDER BY is_cycle DESC, weight DESC, source, target, kind
   `,
     [repo, safeLimit],
   );
@@ -415,3 +429,162 @@ export async function getRepositoryGraph(repo: string, limit = 300): Promise<Rep
 
   return { nodes, edges };
 }
+
+/**
+ * @brief Lists repository clusters.
+ * @param repo Repository name.
+ * @param granularity Optional granularity filter (e.g. "file" or "symbol").
+ * @returns Array of cluster records.
+ */
+export async function getClusters(repo: string, granularity?: string): Promise<Record<string, unknown>[]> {
+  const result = await query(
+    `
+    SELECT
+      c.id,
+      c.cluster_key,
+      c.name,
+      c.summary,
+      c.modularity,
+      c.granularity,
+      COUNT(cm.id)::integer AS size
+    FROM clusters c
+    LEFT JOIN cluster_members cm ON cm.cluster_id = c.id
+    WHERE c.repo = $1
+      AND ($2::text IS NULL OR c.granularity = $2)
+    GROUP BY c.id, c.cluster_key, c.name, c.summary, c.modularity, c.granularity
+    ORDER BY c.granularity, size DESC, c.name, c.cluster_key
+    `,
+    [repo, granularity || null],
+  );
+  return result.rows;
+}
+
+export type ClusterRecord = {
+  id: number;
+  cluster_key: string;
+  name: string;
+  granularity: string;
+};
+
+/**
+ * @brief Finds a cluster by id, key, or partial name.
+ */
+export async function findCluster(repo: string, cluster: string): Promise<ClusterRecord | null> {
+  const clusterResult = await query(
+    `
+    SELECT id, cluster_key, name, granularity
+    FROM clusters
+    WHERE repo = $1
+      AND (
+        ($2 ~ '^[0-9]+$' AND id = $2::int)
+        OR cluster_key = $2
+        OR name ILIKE $2
+        OR name ILIKE '%' || $2 || '%'
+      )
+    ORDER BY
+      CASE
+        WHEN cluster_key = $2 THEN 0
+        WHEN name ILIKE $2 THEN 1
+        WHEN ($2 ~ '^[0-9]+$' AND id = $2::int) THEN 2
+        ELSE 3
+      END,
+      id
+    LIMIT 1
+    `,
+    [repo, cluster],
+  );
+
+  if (clusterResult.rows.length === 0) return null;
+  const row = clusterResult.rows[0] as Record<string, unknown>;
+  return {
+    id: Number(row.id),
+    cluster_key: String(row.cluster_key),
+    name: String(row.name),
+    granularity: String(row.granularity)
+  };
+}
+
+/**
+ * @brief Lists members of a cluster.
+ * @param clusterId Cluster ID.
+ * @param granularity Cluster granularity ("file" or "symbol").
+ * @param limit Max members to return.
+ * @returns Array of cluster member records.
+ */
+export async function getClusterMembers(clusterId: number, granularity: string, limit = 200): Promise<Record<string, unknown>[]> {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+
+  if (granularity === "symbol") {
+    const membersResult = await query(
+      `
+      SELECT
+        cm.membership_weight,
+        s.id AS symbol_id,
+        s.name AS symbol_name,
+        s.kind,
+        s.qualified_name,
+        s.start_line,
+        s.end_line,
+        f.path AS file_path
+      FROM cluster_members cm
+      JOIN symbols s ON s.id = cm.symbol_id
+      JOIN files f ON f.id = s.file_id
+      WHERE cm.cluster_id = $1
+      ORDER BY cm.membership_weight DESC NULLS LAST, f.path, s.start_line, s.name
+      LIMIT $2
+      `,
+      [clusterId, safeLimit],
+    );
+    return membersResult.rows;
+  } else {
+    const membersResult = await query(
+      `
+      SELECT
+        cm.membership_weight,
+        f.id AS file_id,
+        f.path AS file_path,
+        f.language,
+        f.summary
+      FROM cluster_members cm
+      JOIN files f ON f.id = cm.file_id
+      WHERE cm.cluster_id = $1
+      ORDER BY cm.membership_weight DESC NULLS LAST, f.path
+      LIMIT $2
+      `,
+      [clusterId, safeLimit],
+    );
+    return membersResult.rows;
+  }
+}
+
+/**
+ * @brief Finds dependency cycles in the repository.
+ * @param repo Repository name.
+ * @param pathPrefix Optional path prefix filter.
+ * @returns Array of cycle records.
+ */
+export async function findCycles(repo: string, pathPrefix = ""): Promise<Record<string, unknown>[]> {
+  const result = await query(
+    `
+    SELECT
+      cycle_hash,
+      cycle_size,
+      member_file_ids,
+      member_paths
+    FROM dependency_cycles
+    WHERE repo = $1
+      AND (
+        $2 = ''
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(member_paths) AS member_path
+          WHERE member_path LIKE $2 || '%'
+        )
+      )
+    ORDER BY cycle_size DESC, cycle_hash
+    `,
+    [repo, pathPrefix]
+  );
+  return result.rows;
+}
+

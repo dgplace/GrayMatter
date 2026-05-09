@@ -24,6 +24,7 @@ function readMcpToolSource(): string {
     "../src/mcp/tooling/dependencyTraceTools.ts",
     "../src/mcp/tooling/architectureTools.ts",
     "../src/mcp/tooling/indexManagementTools.ts",
+    "../src/repositories/store.ts",
   ];
   return toolSourceFiles.map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
 }
