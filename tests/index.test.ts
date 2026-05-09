@@ -276,6 +276,14 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /file_id INTEGER REFERENCES files\(id\) ON DELETE CASCADE/);
   assert.match(dbSource, /CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_symbol_unique/);
   assert.match(dbSource, /CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_file_unique/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS flows/);
+  assert.match(dbSource, /flow_key TEXT NOT NULL/);
+  assert.match(dbSource, /dominant_intent TEXT/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_flows_repo ON flows/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS flow_members/);
+  assert.match(dbSource, /flow_id INTEGER NOT NULL REFERENCES flows\(id\) ON DELETE CASCADE/);
+  assert.match(dbSource, /symbol_id INTEGER NOT NULL REFERENCES symbols\(id\) ON DELETE CASCADE/);
+  assert.match(dbSource, /CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_members_symbol_unique/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS doc_links/);
   assert.match(dbSource, /embedding vector\(768\) NOT NULL/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links\(target_kind, target_id\)/);
@@ -422,6 +430,19 @@ test("cluster_members tool resolves cluster selector and emits symbol-or-file me
   assert.match(toolsSource, /JOIN symbols s ON s\.id = cm\.symbol_id/);
   assert.match(toolsSource, /JOIN files f ON f\.id = cm\.file_id/);
   assert.match(toolsSource, /was not found in repo/);
+});
+
+test("find_flows tool supports symbol-to-flow and flow-to-members lookup directions", () => {
+  const toolsSource = readMcpToolSource();
+
+  assert.match(toolsSource, /"find_flows"/);
+  assert.match(toolsSource, /Exactly one selector must be set: `symbol` or `flow`/);
+  assert.match(toolsSource, /Specify exactly one selector: `symbol` \(to list flow memberships\) or `flow` \(to list flow members\)/);
+  assert.match(toolsSource, /Execution flows for/);
+  assert.match(toolsSource, /Execution flow for/);
+  assert.match(toolsSource, /FROM flow_members fm/);
+  assert.match(toolsSource, /JOIN flows fl ON fl.id = fm\.flow_id/);
+  assert.match(toolsSource, /JOIN symbols s ON s\.id = fm\.symbol_id/);
 });
 
 test("describe_node supports file/symbol/cluster kinds and includes linked doc_links rows", () => {

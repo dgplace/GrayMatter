@@ -24,6 +24,8 @@ INCREMENTAL_FILE_RATIO_WARNING_THRESHOLD = 0.10
 SCIP_DEFINITION_SYMBOL_ROLE = 1
 SCIP_TYPESCRIPT_LANGUAGES = frozenset({"typescript", "tsx", "javascript", "jsx"})
 SCIP_PYTHON_LANGUAGES = frozenset({"python"})
+SCIP_JAVA_LANGUAGES = frozenset({"java"})
+SCIP_CLANG_LANGUAGES = frozenset({"c", "cpp"})
 PYTHON_PROJECT_MARKERS = frozenset(
     {
         "pyproject.toml",
@@ -34,6 +36,17 @@ PYTHON_PROJECT_MARKERS = frozenset(
         "poetry.lock",
         "uv.lock",
         "tox.ini",
+    }
+)
+JAVA_PROJECT_MARKERS = frozenset(
+    {
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "gradlew",
+        "mvnw",
     }
 )
 SCIP_DISCOVERY_EXCLUDED_DIRS = frozenset(
@@ -293,9 +306,215 @@ class PythonScipResolverStrategy(ReferenceResolverStrategy):
             return _print_scip_index(repo_root, index_path)
 
 
+class JavaScipResolverStrategy(ReferenceResolverStrategy):
+    """@brief Resolve Java references with scip-java occurrences."""
+
+    name = "scip_java"
+    supported_languages = SCIP_JAVA_LANGUAGES
+
+    def build_exact_match_index(self, repo_root: Path, rows: list[dict]) -> dict[tuple[str, int, str], dict]:
+        """@brief Map Java source references to exact declaration locations.
+
+        @param repo_root Repository root being indexed.
+        @param rows Resolver batch rows for Java source files.
+        @return Exact-match mapping keyed by source path, line number, and target
+                symbol name.
+        """
+        if not _has_scip_java_tools() or not _has_java_project_markers(repo_root):
+            return {}
+
+        try:
+            scip_index = self._load_scip_index(repo_root)
+        except RuntimeError:
+            return {}
+
+        definition_index = _build_scip_definition_index(scip_index)
+        candidate_paths = {
+            _normalize_relative_path(row["source_path"])
+            for row in rows
+            if row.get("source_path")
+        }
+        candidate_names = {row["target_name"] for row in rows}
+        exact_matches: dict[tuple[str, int, str], dict] = {}
+
+        for document in scip_index.get("documents", []):
+            relative_path = _normalize_relative_path(document.get("relative_path", ""))
+            if relative_path not in candidate_paths:
+                continue
+
+            for occurrence in document.get("occurrences", []):
+                symbol_roles = occurrence.get("symbol_roles", 0)
+                if symbol_roles & SCIP_DEFINITION_SYMBOL_ROLE:
+                    continue
+
+                symbol = occurrence.get("symbol")
+                target_name = _extract_scip_target_name(symbol)
+                if not symbol or not target_name or target_name not in candidate_names:
+                    continue
+
+                target_location = definition_index.get(symbol)
+                if not target_location:
+                    continue
+
+                key = _reference_key(relative_path, occurrence["range"][0] + 1, target_name)
+                exact_matches[key] = {
+                    "target_path": target_location["path"],
+                    "target_line": target_location["line_no"],
+                    "resolution_method": self.name,
+                }
+
+        return exact_matches
+
+    def _load_scip_index(self, repo_root: Path) -> dict:
+        """@brief Run scip-java and print the resulting SCIP index as JSON.
+
+        @param repo_root Repository root being indexed.
+        @return Parsed JSON object emitted by `scip print --json`.
+        """
+        if not _has_scip_java_tools():
+            raise RuntimeError(
+                "scip-java and scip must be available on PATH; "
+                "run ingestion through the codebrain indexer container."
+            )
+
+        with tempfile.TemporaryDirectory(prefix="codebrain-scip-java-") as tmpdir:
+            index_path = Path(tmpdir) / "index.scip"
+            index_cmd = [
+                "scip-java",
+                "index",
+                "--cwd",
+                str(repo_root),
+                "--output",
+                str(index_path),
+            ]
+            index_result = subprocess.run(
+                index_cmd,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if index_result.returncode != 0:
+                stderr = (index_result.stderr or index_result.stdout).strip()
+                raise RuntimeError(f"scip-java index failed for {repo_root}: {stderr}")
+
+            return _print_scip_index(repo_root, index_path)
+
+
+class ClangScipResolverStrategy(ReferenceResolverStrategy):
+    """@brief Resolve C/C++ references with scip-clang occurrences."""
+
+    name = "scip_clang"
+    supported_languages = SCIP_CLANG_LANGUAGES
+
+    def build_exact_match_index(self, repo_root: Path, rows: list[dict]) -> dict[tuple[str, int, str], dict]:
+        """@brief Map C/C++ source references to exact declaration locations.
+
+        @param repo_root Repository root being indexed.
+        @param rows Resolver batch rows for C/C++ source files.
+        @return Exact-match mapping keyed by source path, line number, and target
+                symbol name.
+        """
+        if not _has_scip_clang_tools():
+            return {}
+        compdb_path = _find_compile_commands(repo_root)
+        if compdb_path is None:
+            return {}
+
+        try:
+            scip_index = self._load_scip_index(repo_root, compdb_path)
+        except RuntimeError:
+            return {}
+
+        definition_index = _build_scip_definition_index(scip_index)
+        candidate_paths = {
+            _normalize_relative_path(row["source_path"])
+            for row in rows
+            if row.get("source_path")
+        }
+        candidate_names = {row["target_name"] for row in rows}
+        exact_matches: dict[tuple[str, int, str], dict] = {}
+
+        for document in scip_index.get("documents", []):
+            relative_path = _normalize_relative_path(document.get("relative_path", ""))
+            if relative_path not in candidate_paths:
+                continue
+
+            for occurrence in document.get("occurrences", []):
+                symbol_roles = occurrence.get("symbol_roles", 0)
+                if symbol_roles & SCIP_DEFINITION_SYMBOL_ROLE:
+                    continue
+
+                symbol = occurrence.get("symbol")
+                target_name = _extract_scip_target_name(symbol)
+                if not symbol or not target_name or target_name not in candidate_names:
+                    continue
+
+                target_location = definition_index.get(symbol)
+                if not target_location:
+                    continue
+
+                key = _reference_key(relative_path, occurrence["range"][0] + 1, target_name)
+                exact_matches[key] = {
+                    "target_path": target_location["path"],
+                    "target_line": target_location["line_no"],
+                    "resolution_method": self.name,
+                }
+
+        return exact_matches
+
+    def _load_scip_index(self, repo_root: Path, compdb_path: Path) -> dict:
+        """@brief Run scip-clang and print the resulting SCIP index as JSON.
+
+        @param repo_root Repository root being indexed.
+        @param compdb_path Path to compile_commands.json for the target repo.
+        @return Parsed JSON object emitted by `scip print --json`.
+        """
+        if not _has_scip_clang_tools():
+            raise RuntimeError(
+                "scip-clang and scip must be available on PATH; "
+                "run ingestion through the codebrain indexer container."
+            )
+
+        index_path = repo_root / "index.scip"
+        backup_path = None
+        if index_path.exists():
+            backup_path = repo_root / "index.codebrain.backup.scip"
+            if backup_path.exists():
+                backup_path.unlink()
+            index_path.rename(backup_path)
+        relative_compdb_path = os.path.relpath(compdb_path, repo_root)
+        index_cmd = [
+            "scip-clang",
+            f"--compdb-path={relative_compdb_path}",
+        ]
+        index_result = subprocess.run(
+            index_cmd,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if index_result.returncode != 0:
+            stderr = (index_result.stderr or index_result.stdout).strip()
+            raise RuntimeError(f"scip-clang index failed for {repo_root}: {stderr}")
+        if not index_path.exists():
+            raise RuntimeError(f"scip-clang did not produce {index_path}")
+
+        try:
+            return _print_scip_index(repo_root, index_path)
+        finally:
+            if index_path.exists():
+                index_path.unlink()
+            if backup_path is not None and backup_path.exists():
+                backup_path.rename(index_path)
+
+
 RESOLVER_STRATEGIES: tuple[ReferenceResolverStrategy, ...] = (
     TypeScriptScipResolverStrategy(),
     PythonScipResolverStrategy(),
+    JavaScipResolverStrategy(),
+    ClangScipResolverStrategy(),
 )
 
 
@@ -328,6 +547,28 @@ def _has_python_project_markers(repo_root: Path) -> bool:
     return False
 
 
+def _has_java_project_markers(repo_root: Path) -> bool:
+    """@brief Return whether a repository looks like a Gradle or Maven Java project."""
+    for current_root, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [dirname for dirname in dirnames if dirname not in SCIP_DISCOVERY_EXCLUDED_DIRS]
+        if JAVA_PROJECT_MARKERS.intersection(filenames):
+            return True
+    return False
+
+
+def _find_compile_commands(repo_root: Path) -> Optional[Path]:
+    """@brief Return the nearest compile_commands.json within a repository tree."""
+    candidates: list[Path] = []
+    for current_root, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [dirname for dirname in dirnames if dirname not in SCIP_DISCOVERY_EXCLUDED_DIRS]
+        if "compile_commands.json" in filenames:
+            candidates.append(Path(current_root) / "compile_commands.json")
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: len(path.parts))
+    return candidates[0]
+
+
 def _has_scip_tools() -> bool:
     """@brief Return whether the SCIP CLI tools are available on PATH."""
     return shutil.which("scip-typescript") is not None and shutil.which("scip") is not None
@@ -336,6 +577,16 @@ def _has_scip_tools() -> bool:
 def _has_scip_python_tools() -> bool:
     """@brief Return whether the Python SCIP CLI tools are available on PATH."""
     return shutil.which("scip-python") is not None and shutil.which("scip") is not None
+
+
+def _has_scip_java_tools() -> bool:
+    """@brief Return whether the Java SCIP CLI tools are available on PATH."""
+    return shutil.which("scip-java") is not None and shutil.which("scip") is not None
+
+
+def _has_scip_clang_tools() -> bool:
+    """@brief Return whether the C/C++ SCIP CLI tools are available on PATH."""
+    return shutil.which("scip-clang") is not None and shutil.which("scip") is not None
 
 
 def _has_supported_python_scip_runtime() -> bool:
