@@ -13,6 +13,16 @@ import type {
 } from "./types.js";
 
 /**
+ * @brief Coerces PostgreSQL count fields to finite numbers for arithmetic/sorting.
+ * @param value Raw count value from query rows.
+ * @returns Numeric count, or 0 when coercion fails.
+ */
+function toCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
  * @brief Formats hybrid search results into markdown text blocks.
  * @param rows Search result rows to format.
  * @returns Markdown text payload consumed by MCP clients.
@@ -121,8 +131,8 @@ export function formatCouplingAnalysis(
   const outbound = rows.filter((r) => r.direction === "outbound" || r.direction === "ref_outbound");
   const inbound = rows.filter((r) => r.direction === "inbound" || r.direction === "ref_inbound");
 
-  const totalOutbound = outbound.reduce((s, r) => s + r.edge_count, 0);
-  const totalInbound = inbound.reduce((s, r) => s + r.edge_count, 0);
+  const totalOutbound = outbound.reduce((s, r) => s + toCount(r.edge_count), 0);
+  const totalInbound = inbound.reduce((s, r) => s + toCount(r.edge_count), 0);
 
   const ceFiles = new Set(outbound.map((r) => r.external_path));
   const caFiles = new Set(inbound.map((r) => r.external_path));
@@ -144,13 +154,13 @@ export function formatCouplingAnalysis(
   ];
 
   // Top coupling pairs
-  const sorted = [...rows].sort((a, b) => b.edge_count - a.edge_count).slice(0, topN);
+  const sorted = [...rows].sort((a, b) => toCount(b.edge_count) - toCount(a.edge_count)).slice(0, topN);
   if (sorted.length > 0) {
     lines.push("## Top Coupling Points", "");
     lines.push("| Direction | Internal File | External File | Kind | Edges |");
     lines.push("|-----------|--------------|---------------|------|-------|");
     for (const row of sorted) {
-      lines.push(`| ${row.direction} | ${row.internal_path} | ${row.external_path} | ${row.kind} | ${row.edge_count} |`);
+      lines.push(`| ${row.direction} | ${row.internal_path} | ${row.external_path} | ${row.kind} | ${toCount(row.edge_count)} |`);
     }
     lines.push("");
   }
@@ -159,8 +169,8 @@ export function formatCouplingAnalysis(
   const byKind = new Map<string, { inbound: number; outbound: number }>();
   for (const row of rows) {
     const entry = byKind.get(row.kind) || { inbound: 0, outbound: 0 };
-    if (row.direction.includes("inbound")) entry.inbound += row.edge_count;
-    else entry.outbound += row.edge_count;
+    if (row.direction.includes("inbound")) entry.inbound += toCount(row.edge_count);
+    else entry.outbound += toCount(row.edge_count);
     byKind.set(row.kind, entry);
   }
   if (byKind.size > 0) {
@@ -245,13 +255,13 @@ export function formatModularizationSeams(
   const depMap = new Map<string, SeamRow>();
   for (const dep of dependencies) {
     const existing = depMap.get(dep.symbol_name);
-    if (!existing || dep.usage_count > existing.usage_count) {
+    if (!existing || toCount(dep.usage_count) > toCount(existing.usage_count)) {
       depMap.set(dep.symbol_name, dep);
     }
   }
-  const uniqueDeps = Array.from(depMap.values()).sort((a, b) => b.usage_count - a.usage_count);
+  const uniqueDeps = Array.from(depMap.values()).sort((a, b) => toCount(b.usage_count) - toCount(a.usage_count));
 
-  const totalSeams = seams.reduce((s, r) => s + r.usage_count, 0);
+  const totalSeams = seams.reduce((s, r) => s + toCount(r.usage_count), 0);
   const difficulty =
     requiredInterface.length > 10 || uniqueDeps.length > 10 || totalSeams > 50
       ? "HIGH"
@@ -303,7 +313,7 @@ export function formatModularizationSeams(
   } else {
     lines.push("| Direction | Internal File | External File | Symbol | Kind | Count |");
     lines.push("|-----------|--------------|---------------|--------|------|-------|");
-    const topSeams = [...seams].sort((a, b) => b.usage_count - a.usage_count).slice(0, 40);
+    const topSeams = [...seams].sort((a, b) => toCount(b.usage_count) - toCount(a.usage_count)).slice(0, 40);
     for (const s of topSeams) {
       lines.push(`| ${s.direction} | ${s.internal_file} | ${s.external_file} | \`${s.symbol_name}\` | ${s.reference_kind} | ${s.usage_count} |`);
     }

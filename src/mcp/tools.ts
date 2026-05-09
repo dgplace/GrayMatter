@@ -494,7 +494,7 @@ export function registerTools(server: McpServer): void {
 
       const result = await query(
         `
-        WITH start_symbols AS (
+        WITH RECURSIVE start_symbols AS (
           SELECT
             s.id,
             s.name,
@@ -619,7 +619,7 @@ export function registerTools(server: McpServer): void {
 
       const graphSql = direction === "forward"
         ? `
-        WITH start_symbols AS (
+        WITH RECURSIVE start_symbols AS (
           SELECT
             s.id,
             s.name,
@@ -639,6 +639,35 @@ export function registerTools(server: McpServer): void {
             s.start_line
           LIMIT 25
         ),
+        resolved_call_edges AS (
+          SELECT
+            source_symbol.id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no
+          FROM symbol_references sr
+          JOIN files source_file ON source_file.id = sr.source_file_id AND source_file.repo = $1
+          LEFT JOIN LATERAL (
+            SELECT s.id, s.start_line
+            FROM symbols s
+            WHERE s.file_id = sr.source_file_id
+              AND (
+                (sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name))
+                OR (sr.source_symbol_name IS NULL AND s.start_line <= sr.line_no AND s.end_line >= sr.line_no)
+              )
+            ORDER BY
+              CASE
+                WHEN sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name) THEN 0
+                ELSE 1
+              END,
+              CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+              ABS(s.start_line - sr.line_no)
+            LIMIT 1
+          ) source_symbol ON TRUE
+          WHERE source_symbol.id IS NOT NULL
+            AND sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+        ),
         call_tree AS (
           SELECT
             ss.id AS root_symbol_id,
@@ -646,16 +675,14 @@ export function registerTools(server: McpServer): void {
             ss.file_path AS root_symbol_path,
             ss.start_line AS root_symbol_start_line,
             ss.end_line AS root_symbol_end_line,
-            sr.source_symbol_id AS from_symbol_id,
-            sr.target_symbol_id AS to_symbol_id,
-            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
-            sr.line_no,
+            rce.from_symbol_id,
+            rce.to_symbol_id,
+            rce.reference_kind,
+            rce.line_no,
             1 AS depth,
-            ARRAY[ss.id, sr.target_symbol_id]::int[] AS walk_path
+            ARRAY[ss.id, rce.to_symbol_id]::int[] AS walk_path
           FROM start_symbols ss
-          JOIN symbol_references sr ON sr.source_symbol_id = ss.id
-          WHERE sr.target_symbol_id IS NOT NULL
-            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+          JOIN resolved_call_edges rce ON rce.from_symbol_id = ss.id
 
           UNION ALL
 
@@ -665,18 +692,16 @@ export function registerTools(server: McpServer): void {
             ct.root_symbol_path,
             ct.root_symbol_start_line,
             ct.root_symbol_end_line,
-            sr.source_symbol_id AS from_symbol_id,
-            sr.target_symbol_id AS to_symbol_id,
-            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
-            sr.line_no,
+            rce.from_symbol_id,
+            rce.to_symbol_id,
+            rce.reference_kind,
+            rce.line_no,
             ct.depth + 1 AS depth,
-            ct.walk_path || sr.target_symbol_id
+            ct.walk_path || rce.to_symbol_id
           FROM call_tree ct
-          JOIN symbol_references sr ON sr.source_symbol_id = ct.to_symbol_id
+          JOIN resolved_call_edges rce ON rce.from_symbol_id = ct.to_symbol_id
           WHERE ct.depth < $3
-            AND sr.target_symbol_id IS NOT NULL
-            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
-            AND NOT sr.target_symbol_id = ANY(ct.walk_path)
+            AND NOT rce.to_symbol_id = ANY(ct.walk_path)
         )
         SELECT DISTINCT
           ct.root_symbol_id,
@@ -703,7 +728,7 @@ export function registerTools(server: McpServer): void {
         ORDER BY ct.root_symbol_name, ct.depth, from_file.path, ct.line_no, to_file.path
         `
         : `
-        WITH start_symbols AS (
+        WITH RECURSIVE start_symbols AS (
           SELECT
             s.id,
             s.name,
@@ -723,6 +748,35 @@ export function registerTools(server: McpServer): void {
             s.start_line
           LIMIT 25
         ),
+        resolved_call_edges AS (
+          SELECT
+            source_symbol.id AS from_symbol_id,
+            sr.target_symbol_id AS to_symbol_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
+            sr.line_no
+          FROM symbol_references sr
+          JOIN files source_file ON source_file.id = sr.source_file_id AND source_file.repo = $1
+          LEFT JOIN LATERAL (
+            SELECT s.id, s.start_line
+            FROM symbols s
+            WHERE s.file_id = sr.source_file_id
+              AND (
+                (sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name))
+                OR (sr.source_symbol_name IS NULL AND s.start_line <= sr.line_no AND s.end_line >= sr.line_no)
+              )
+            ORDER BY
+              CASE
+                WHEN sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name) THEN 0
+                ELSE 1
+              END,
+              CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+              ABS(s.start_line - sr.line_no)
+            LIMIT 1
+          ) source_symbol ON TRUE
+          WHERE source_symbol.id IS NOT NULL
+            AND sr.target_symbol_id IS NOT NULL
+            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+        ),
         call_tree AS (
           SELECT
             ss.id AS root_symbol_id,
@@ -730,16 +784,14 @@ export function registerTools(server: McpServer): void {
             ss.file_path AS root_symbol_path,
             ss.start_line AS root_symbol_start_line,
             ss.end_line AS root_symbol_end_line,
-            sr.source_symbol_id AS from_symbol_id,
-            sr.target_symbol_id AS to_symbol_id,
-            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
-            sr.line_no,
+            rce.from_symbol_id,
+            rce.to_symbol_id,
+            rce.reference_kind,
+            rce.line_no,
             1 AS depth,
-            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
+            ARRAY[ss.id, rce.from_symbol_id]::int[] AS walk_path
           FROM start_symbols ss
-          JOIN symbol_references sr ON sr.target_symbol_id = ss.id
-          WHERE sr.target_symbol_id IS NOT NULL
-            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
+          JOIN resolved_call_edges rce ON rce.to_symbol_id = ss.id
 
           UNION ALL
 
@@ -749,18 +801,16 @@ export function registerTools(server: McpServer): void {
             ct.root_symbol_path,
             ct.root_symbol_start_line,
             ct.root_symbol_end_line,
-            sr.source_symbol_id AS from_symbol_id,
-            sr.target_symbol_id AS to_symbol_id,
-            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS reference_kind,
-            sr.line_no,
+            rce.from_symbol_id,
+            rce.to_symbol_id,
+            rce.reference_kind,
+            rce.line_no,
             ct.depth + 1 AS depth,
-            ct.walk_path || sr.source_symbol_id
+            ct.walk_path || rce.from_symbol_id
           FROM call_tree ct
-          JOIN symbol_references sr ON sr.target_symbol_id = ct.from_symbol_id
+          JOIN resolved_call_edges rce ON rce.to_symbol_id = ct.from_symbol_id
           WHERE ct.depth < $3
-            AND sr.target_symbol_id IS NOT NULL
-            AND COALESCE(sr.reference_kind_v2, sr.reference_kind) IN ('call', 'member_call', 'instantiation')
-            AND NOT sr.source_symbol_id = ANY(ct.walk_path)
+            AND NOT rce.from_symbol_id = ANY(ct.walk_path)
         )
         SELECT DISTINCT
           ct.root_symbol_id,
@@ -1031,7 +1081,23 @@ export function registerTools(server: McpServer): void {
         JOIN symbols tc ON tc.id = sr.target_symbol_id
         JOIN files tcf ON tcf.id = tc.file_id AND tcf.repo = $1
         JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
-        LEFT JOIN symbols ss ON ss.id = sr.source_symbol_id
+        LEFT JOIN LATERAL (
+          SELECT s.name, s.start_line, s.end_line
+          FROM symbols s
+          WHERE s.file_id = sr.source_file_id
+            AND (
+              (sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name))
+              OR (sr.source_symbol_name IS NULL AND s.start_line <= sr.line_no AND s.end_line >= sr.line_no)
+            )
+          ORDER BY
+            CASE
+              WHEN sr.source_symbol_name IS NOT NULL AND lower(s.name) = lower(sr.source_symbol_name) THEN 0
+              ELSE 1
+            END,
+            CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+            ABS(s.start_line - sr.line_no)
+          LIMIT 1
+        ) ss ON TRUE
         WHERE sr.target_symbol_id = ANY($2::int[])
           AND COALESCE(sr.reference_kind_v2, sr.reference_kind) = 'instantiation'
         ORDER BY tc.name, sf.path, sr.line_no
@@ -1330,7 +1396,19 @@ export function registerTools(server: McpServer): void {
           LEFT JOIN files tf ON tf.id = e.target_file_id
           WHERE dt.depth < $4
         )
-        SELECT DISTINCT
+        ),
+        dedup_rows AS (
+          SELECT DISTINCT
+            source_path,
+            target_path_out,
+            dep_kind,
+            source_symbol,
+            target_symbol,
+            external_module,
+            depth
+          FROM dep_tree
+        )
+        SELECT
           source_path,
           target_path_out,
           dep_kind,
@@ -1338,7 +1416,7 @@ export function registerTools(server: McpServer): void {
           target_symbol,
           external_module,
           depth
-        FROM dep_tree
+        FROM dedup_rows
         ORDER BY
           depth,
           CASE dep_kind
@@ -1637,7 +1715,7 @@ export function registerTools(server: McpServer): void {
       const result = await query(
         `
         WITH target_files AS (
-          SELECT id, path FROM files
+          SELECT id, path, language FROM files
           WHERE repo = $1 AND path LIKE $2 || '%'
         ),
         outbound AS (
@@ -1645,7 +1723,7 @@ export function registerTools(server: McpServer): void {
             tf.path AS internal_path,
             COALESCE(ef.path, d.external_module, '(external)') AS external_path,
             d.kind,
-            COUNT(*) AS edge_count
+            COUNT(*)::integer AS edge_count
           FROM dependencies d
           JOIN target_files tf ON tf.id = d.source_file_id
           LEFT JOIN files ef ON ef.id = d.target_file_id AND ef.repo = $1
@@ -1657,7 +1735,7 @@ export function registerTools(server: McpServer): void {
             tf.path AS internal_path,
             sf.path AS external_path,
             d.kind,
-            COUNT(*) AS edge_count
+            COUNT(*)::integer AS edge_count
           FROM dependencies d
           JOIN target_files tf ON tf.id = d.target_file_id
           JOIN files sf ON sf.id = d.source_file_id AND sf.repo = $1
@@ -1669,12 +1747,23 @@ export function registerTools(server: McpServer): void {
             tf.path AS internal_path,
             ef.path AS external_path,
             sr.reference_kind AS kind,
-            COUNT(*) AS edge_count
+            COUNT(*)::integer AS edge_count
           FROM symbol_references sr
           JOIN target_files tf ON tf.id = sr.source_file_id
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN symbols s
+            ON (
+              (sr.target_symbol_id IS NOT NULL AND s.id = sr.target_symbol_id)
+              OR (sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name))
+            )
           JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
           WHERE ef.path NOT LIKE $2 || '%'
+            AND (
+              (COALESCE(tf.language, '') = COALESCE(ef.language, ''))
+              OR (
+                tf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                AND ef.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              )
+            )
           GROUP BY tf.path, ef.path, sr.reference_kind
         ),
         ref_inbound AS (
@@ -1682,12 +1771,23 @@ export function registerTools(server: McpServer): void {
             tf.path AS internal_path,
             sf.path AS external_path,
             sr.reference_kind AS kind,
-            COUNT(*) AS edge_count
+            COUNT(*)::integer AS edge_count
           FROM symbol_references sr
           JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN symbols s
+            ON (
+              (sr.target_symbol_id IS NOT NULL AND s.id = sr.target_symbol_id)
+              OR (sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name))
+            )
           JOIN target_files tf ON tf.id = s.file_id
           WHERE sf.path NOT LIKE $2 || '%'
+            AND (
+              (COALESCE(tf.language, '') = COALESCE(sf.language, ''))
+              OR (
+                tf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                AND sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              )
+            )
           GROUP BY tf.path, sf.path, sr.reference_kind
         )
         SELECT 'outbound' AS direction, internal_path, external_path, kind, edge_count FROM outbound
@@ -1897,19 +1997,40 @@ export function registerTools(server: McpServer): void {
 
       const summaryResult = await query(
         `
+        WITH normalized_external_deps AS (
+          SELECT
+            sf.path AS source_path,
+            sf.language AS source_language,
+            d.external_version,
+            d.kind,
+            CASE
+              WHEN d.external_module IS NULL OR btrim(d.external_module) = '' THEN NULL
+              WHEN d.external_module ~ '^(\\./|\\.\\./|/|\\.|\\.\\.)$' THEN NULL
+              WHEN d.external_module LIKE './%' OR d.external_module LIKE '../%' THEN NULL
+              WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE '@%/%'
+                THEN split_part(d.external_module, '/', 1) || '/' || split_part(d.external_module, '/', 2)
+              WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                THEN split_part(d.external_module, '/', 1)
+              WHEN sf.language = 'python'
+                THEN split_part(replace(d.external_module, '_', '-'), '.', 1)
+              ELSE d.external_module
+            END AS normalized_module
+          FROM dependencies d
+          JOIN files sf ON sf.id = d.source_file_id
+          WHERE sf.repo = $1
+            AND COALESCE(d.is_external, d.external_module IS NOT NULL)
+            AND d.external_module IS NOT NULL
+            AND ($2 = '' OR sf.path LIKE $2 || '%')
+        )
         SELECT
-          d.external_module,
-          COALESCE(NULLIF(d.external_version, ''), '(unknown)') AS external_version,
+          ned.normalized_module AS external_module,
+          COALESCE(NULLIF(ned.external_version, ''), '(unknown)') AS external_version,
           COUNT(*)::integer AS usage_count,
-          COUNT(DISTINCT sf.path)::integer AS consumer_file_count
-        FROM dependencies d
-        JOIN files sf ON sf.id = d.source_file_id
-        WHERE sf.repo = $1
-          AND COALESCE(d.is_external, d.external_module IS NOT NULL)
-          AND d.external_module IS NOT NULL
-          AND ($2 = '' OR sf.path LIKE $2 || '%')
-        GROUP BY d.external_module, COALESCE(NULLIF(d.external_version, ''), '(unknown)')
-        ORDER BY usage_count DESC, d.external_module, external_version
+          COUNT(DISTINCT ned.source_path)::integer AS consumer_file_count
+        FROM normalized_external_deps ned
+        WHERE ned.normalized_module IS NOT NULL
+        GROUP BY ned.normalized_module, COALESCE(NULLIF(ned.external_version, ''), '(unknown)')
+        ORDER BY usage_count DESC, ned.normalized_module, external_version
         `,
         [repo, path_prefix],
       );
@@ -1935,22 +2056,43 @@ export function registerTools(server: McpServer): void {
       if (package_name && package_name.trim()) {
         const consumerResult = await query(
           `
+          WITH normalized_external_deps AS (
+            SELECT
+              sf.path AS source_path,
+              d.source_symbol_id,
+              d.external_version,
+              d.kind,
+              CASE
+                WHEN d.external_module IS NULL OR btrim(d.external_module) = '' THEN NULL
+                WHEN d.external_module ~ '^(\\./|\\.\\./|/|\\.|\\.\\.)$' THEN NULL
+                WHEN d.external_module LIKE './%' OR d.external_module LIKE '../%' THEN NULL
+                WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx') AND d.external_module LIKE '@%/%'
+                  THEN split_part(d.external_module, '/', 1) || '/' || split_part(d.external_module, '/', 2)
+                WHEN sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                  THEN split_part(d.external_module, '/', 1)
+                WHEN sf.language = 'python'
+                  THEN split_part(replace(d.external_module, '_', '-'), '.', 1)
+                ELSE d.external_module
+              END AS normalized_module
+            FROM dependencies d
+            JOIN files sf ON sf.id = d.source_file_id
+            WHERE sf.repo = $1
+              AND COALESCE(d.is_external, d.external_module IS NOT NULL)
+              AND d.external_module IS NOT NULL
+              AND ($2 = '' OR sf.path LIKE $2 || '%')
+          )
           SELECT
-            sf.path AS consumer_path,
+            ned.source_path AS consumer_path,
             COALESCE(ss.name, '(file-level import)') AS consumer_symbol,
-            d.kind,
-            COALESCE(NULLIF(d.external_version, ''), '(unknown)') AS external_version,
+            ned.kind,
+            COALESCE(NULLIF(ned.external_version, ''), '(unknown)') AS external_version,
             COUNT(*)::integer AS usage_count
-          FROM dependencies d
-          JOIN files sf ON sf.id = d.source_file_id
-          LEFT JOIN symbols ss ON ss.id = d.source_symbol_id
-          WHERE sf.repo = $1
-            AND COALESCE(d.is_external, d.external_module IS NOT NULL)
-            AND d.external_module IS NOT NULL
-            AND ($2 = '' OR sf.path LIKE $2 || '%')
-            AND lower(d.external_module) = lower($3)
-          GROUP BY sf.path, COALESCE(ss.name, '(file-level import)'), d.kind, COALESCE(NULLIF(d.external_version, ''), '(unknown)')
-          ORDER BY usage_count DESC, sf.path, consumer_symbol, d.kind
+          FROM normalized_external_deps ned
+          LEFT JOIN symbols ss ON ss.id = ned.source_symbol_id
+          WHERE ned.normalized_module IS NOT NULL
+            AND lower(ned.normalized_module) = lower($3)
+          GROUP BY ned.source_path, COALESCE(ss.name, '(file-level import)'), ned.kind, COALESCE(NULLIF(ned.external_version, ''), '(unknown)')
+          ORDER BY usage_count DESC, ned.source_path, consumer_symbol, ned.kind
           LIMIT $4
           `,
           [repo, path_prefix, package_name, limit],
@@ -2167,27 +2309,38 @@ export function registerTools(server: McpServer): void {
       const interfaceResult = await query(
         `
         WITH module_files AS (
-          SELECT id, path FROM files
+          SELECT id, path, language FROM files
           WHERE repo = $1 AND path LIKE $2 || '%'
         ),
         module_symbols AS (
           SELECT s.id, s.name, s.qualified_name, s.kind, s.signature, s.docstring,
                  s.visibility, s.is_exported, f.path AS file_path,
-                 s.start_line, s.end_line, s.container_symbol
+                 s.start_line, s.end_line, s.container_symbol, f.language AS file_language
           FROM symbols s
           JOIN module_files f ON f.id = s.file_id
         ),
         external_refs AS (
           SELECT
-            sr.target_name,
+            ms_target.name AS target_name,
             sf.path AS consumer_path,
             sr.reference_kind,
-            COUNT(*) AS ref_count
+            COUNT(*)::integer AS ref_count
           FROM symbol_references sr
           JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
+          JOIN module_symbols ms_target
+            ON (
+              (sr.target_symbol_id IS NOT NULL AND sr.target_symbol_id = ms_target.id)
+              OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(ms_target.name))
+            )
           WHERE sf.path NOT LIKE $2 || '%'
-            AND lower(sr.target_name) IN (SELECT lower(name) FROM module_symbols)
-          GROUP BY sr.target_name, sf.path, sr.reference_kind
+            AND (
+              (COALESCE(sf.language, '') = COALESCE(ms_target.file_language, ''))
+              OR (
+                sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                AND ms_target.file_language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              )
+            )
+          GROUP BY ms_target.name, sf.path, sr.reference_kind
         ),
         symbol_consumers AS (
           SELECT
@@ -2214,7 +2367,7 @@ export function registerTools(server: McpServer): void {
       const depsResult = await query(
         `
         WITH module_files AS (
-          SELECT id, path FROM files
+          SELECT id, path, language FROM files
           WHERE repo = $1 AND path LIKE $2 || '%'
         )
         SELECT
@@ -2225,12 +2378,23 @@ export function registerTools(server: McpServer): void {
           s.kind AS symbol_kind,
           s.signature,
           sr.reference_kind,
-          COUNT(*) AS usage_count
+          COUNT(*)::integer AS usage_count
         FROM symbol_references sr
         JOIN module_files mf ON mf.id = sr.source_file_id
-        JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+        JOIN symbols s
+          ON (
+            (sr.target_symbol_id IS NOT NULL AND s.id = sr.target_symbol_id)
+            OR (sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name))
+          )
         JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
         WHERE ef.path NOT LIKE $2 || '%'
+          AND (
+            (COALESCE(mf.language, '') = COALESCE(ef.language, ''))
+            OR (
+              mf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              AND ef.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+            )
+          )
         GROUP BY mf.path, ef.path, sr.target_name, s.kind, s.signature, sr.reference_kind
         ORDER BY usage_count DESC
         `,
@@ -2241,7 +2405,7 @@ export function registerTools(server: McpServer): void {
       const seamsResult = await query(
         `
         WITH module_files AS (
-          SELECT id, path FROM files
+          SELECT id, path, language FROM files
           WHERE repo = $1 AND path LIKE $2 || '%'
         ),
         inbound_seams AS (
@@ -2253,12 +2417,23 @@ export function registerTools(server: McpServer): void {
             s.kind AS symbol_kind,
             s.signature,
             sr.reference_kind,
-            COUNT(*) AS usage_count
+            COUNT(*)::integer AS usage_count
           FROM symbol_references sr
           JOIN files sf ON sf.id = sr.source_file_id AND sf.repo = $1
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN symbols s
+            ON (
+              (sr.target_symbol_id IS NOT NULL AND s.id = sr.target_symbol_id)
+              OR (sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name))
+            )
           JOIN module_files mf ON mf.id = s.file_id
           WHERE sf.path NOT LIKE $2 || '%'
+            AND (
+              (COALESCE(mf.language, '') = COALESCE(sf.language, ''))
+              OR (
+                mf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                AND sf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              )
+            )
           GROUP BY mf.path, sf.path, sr.target_name, s.kind, s.signature, sr.reference_kind
         ),
         outbound_seams AS (
@@ -2270,12 +2445,23 @@ export function registerTools(server: McpServer): void {
             s.kind AS symbol_kind,
             s.signature,
             sr.reference_kind,
-            COUNT(*) AS usage_count
+            COUNT(*)::integer AS usage_count
           FROM symbol_references sr
           JOIN module_files mf ON mf.id = sr.source_file_id
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
+          JOIN symbols s
+            ON (
+              (sr.target_symbol_id IS NOT NULL AND s.id = sr.target_symbol_id)
+              OR (sr.target_symbol_id IS NULL AND lower(s.name) = lower(sr.target_name))
+            )
           JOIN files ef ON ef.id = s.file_id AND ef.repo = $1
           WHERE ef.path NOT LIKE $2 || '%'
+            AND (
+              (COALESCE(mf.language, '') = COALESCE(ef.language, ''))
+              OR (
+                mf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                AND ef.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+              )
+            )
           GROUP BY mf.path, ef.path, sr.target_name, s.kind, s.signature, sr.reference_kind
         )
         SELECT * FROM inbound_seams

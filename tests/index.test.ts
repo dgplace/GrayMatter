@@ -8,8 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { extractKeywordTerms, summarizeArgs, vecLiteral } from "../index.ts";
-import { formatReferenceResults } from "../src/mcp/formatters.ts";
-import type { ReferenceRow } from "../src/mcp/types.ts";
+import { formatCouplingAnalysis, formatModularizationSeams, formatReferenceResults } from "../src/mcp/formatters.ts";
+import type { CouplingEdgeRow, ModuleInterfaceRow, ReferenceRow, SeamRow } from "../src/mcp/types.ts";
 
 test("extractKeywordTerms removes stopwords, deduplicates, and caps results", () => {
   const terms = extractKeywordTerms(
@@ -86,6 +86,59 @@ test("formatReferenceResults omits confidence suffix when no resolution metadata
   assert.doesNotMatch(text, /\(\)/);
 });
 
+test("formatCouplingAnalysis coerces postgres count strings before totals and ratios", () => {
+  const rows: CouplingEdgeRow[] = [
+    { direction: "outbound", internal_path: "src/a.ts", external_path: "src/b.ts", kind: "import", edge_count: "2" as unknown as number },
+    { direction: "inbound", internal_path: "src/a.ts", external_path: "src/c.ts", kind: "call", edge_count: "1" as unknown as number },
+  ];
+
+  const text = formatCouplingAnalysis("src/", "CodeBrain", rows, 2, 10);
+  assert.match(text, /\*\*Outbound edges \(Ce\):\*\* 2 across 1 external files/);
+  assert.match(text, /\*\*Inbound edges \(Ca\):\*\* 1 across 1 external files/);
+  assert.match(text, /\*\*Coupling ratio:\*\* 1\.5 edges per internal file/);
+});
+
+test("formatModularizationSeams coerces usage-count strings before seam totals", () => {
+  const requiredInterface: ModuleInterfaceRow[] = [];
+  const dependencies: SeamRow[] = [
+    {
+      direction: "outbound",
+      internal_file: "src/a.ts",
+      external_file: "src/b.ts",
+      symbol_name: "depA",
+      symbol_kind: "function",
+      signature: null,
+      reference_kind: "call",
+      usage_count: "2" as unknown as number,
+    },
+  ];
+  const seams: SeamRow[] = [
+    {
+      direction: "outbound",
+      internal_file: "src/a.ts",
+      external_file: "src/b.ts",
+      symbol_name: "depA",
+      symbol_kind: "function",
+      signature: null,
+      reference_kind: "call",
+      usage_count: "2" as unknown as number,
+    },
+    {
+      direction: "inbound",
+      internal_file: "src/a.ts",
+      external_file: "src/c.ts",
+      symbol_name: "apiA",
+      symbol_kind: "function",
+      signature: null,
+      reference_kind: "call",
+      usage_count: "3" as unknown as number,
+    },
+  ];
+
+  const text = formatModularizationSeams("src/", requiredInterface, dependencies, seams, 1);
+  assert.match(text, /- \*\*Total seams:\*\* 5 cross-boundary reference edges/);
+});
+
 test("find_references tool exposes confidence threshold knobs and prefers resolved target_symbol_id", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
@@ -105,8 +158,8 @@ test("find_supertypes and find_subtypes tools walk symbol_relationships with dep
 
   assert.match(toolsSource, /"find_supertypes"/);
   assert.match(toolsSource, /"find_subtypes"/);
-  assert.match(toolsSource, /WITH start_symbols AS/);
-  assert.match(toolsSource, /WITH start_symbols AS[\s\S]*subtype_tree AS/);
+  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*supertype_tree AS/);
+  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*subtype_tree AS/);
   assert.match(toolsSource, /relationship_kind IN \('extends', 'implements'\)/);
   assert.match(toolsSource, /st\.depth < \$3/);
   assert.match(toolsSource, /sr\.target_symbol_id IS NULL AND lower\(sr\.target_name\) = lower\(ss\.name\)/);
@@ -130,11 +183,12 @@ test("find_call_graph tool supports forward and reverse traversal with depth bou
   assert.doesNotMatch(toolsSource, /"call_graph"/);
   assert.match(toolsSource, /direction:\s*z\s*\.\s*enum\(\["forward",\s*"reverse"\]\)/);
   assert.match(toolsSource, /depth:\s*z\s*\.\s*number\(\)\.int\(\)\.min\(1\)\.max\(8\)/);
-  assert.match(toolsSource, /JOIN symbol_references sr ON sr\.source_symbol_id = ss\.id/);
-  assert.match(toolsSource, /JOIN symbol_references sr ON sr\.target_symbol_id = ss\.id/);
+  assert.match(toolsSource, /resolved_call_edges AS/);
+  assert.match(toolsSource, /LEFT JOIN LATERAL \(/);
+  assert.match(toolsSource, /lower\(s\.name\) = lower\(sr\.source_symbol_name\)/);
   assert.match(toolsSource, /ct\.depth < \$3/);
-  assert.match(toolsSource, /AND NOT sr\.target_symbol_id = ANY\(ct\.walk_path\)/);
-  assert.match(toolsSource, /AND NOT sr\.source_symbol_id = ANY\(ct\.walk_path\)/);
+  assert.match(toolsSource, /AND NOT rce\.to_symbol_id = ANY\(ct\.walk_path\)/);
+  assert.match(toolsSource, /AND NOT rce\.from_symbol_id = ANY\(ct\.walk_path\)/);
   assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) IN \('call', 'member_call', 'instantiation'\)/);
 });
 
@@ -145,8 +199,18 @@ test("find_instantiations tool filters instantiation references and returns sour
   assert.match(toolsSource, /s\.kind IN \('class', 'struct'\)/);
   assert.match(toolsSource, /COALESCE\(sr\.reference_kind_v2,\s*sr\.reference_kind\) = 'instantiation'/);
   assert.match(toolsSource, /ss\.name AS containing_symbol_name/);
+  assert.match(toolsSource, /LEFT JOIN LATERAL \(/);
+  assert.match(toolsSource, /lower\(s\.name\) = lower\(sr\.source_symbol_name\)/);
   assert.match(toolsSource, /No class symbol matches found for/);
   assert.match(toolsSource, /No instantiations found for/);
+});
+
+test("trace_dependencies deduplicates rows before ordering to avoid DISTINCT+ORDER BY postgres errors", () => {
+  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+
+  assert.match(toolsSource, /dedup_rows AS \(/);
+  assert.match(toolsSource, /SELECT DISTINCT[\s\S]*FROM dep_tree/);
+  assert.match(toolsSource, /FROM dedup_rows[\s\S]*ORDER BY[\s\S]*CASE dep_kind/);
 });
 
 test("db schema patches include resolved reference migration columns and indexes", () => {
@@ -207,8 +271,10 @@ test("find_external_dependencies tool groups by external_module and external_ver
 
   assert.match(toolsSource, /"find_external_dependencies"/);
   assert.match(toolsSource, /package_name:\s*z\s*\.\s*string\(\)\.optional\(\)/);
-  assert.match(toolsSource, /COALESCE\(d\.is_external, d\.external_module IS NOT NULL\)/);
-  assert.match(toolsSource, /GROUP BY d\.external_module, COALESCE\(NULLIF\(d\.external_version, ''\), '\(unknown\)'\)/);
+  assert.match(toolsSource, /normalized_external_deps AS/);
+  assert.match(toolsSource, /normalized_module/);
+  assert.match(toolsSource, /d\.external_module LIKE '\.\/%'/);
+  assert.match(toolsSource, /GROUP BY ned\.normalized_module, COALESCE\(NULLIF\(ned\.external_version, ''\), '\(unknown\)'\)/);
   assert.match(toolsSource, /Consumers for package/);
-  assert.match(toolsSource, /lower\(d\.external_module\) = lower\(\$3\)/);
+  assert.match(toolsSource, /lower\(ned\.normalized_module\) = lower\(\$3\)/);
 });
