@@ -35,6 +35,7 @@ Helper scripts:
 ```bash
 ./scripts/build.sh
 ./scripts/index-repo.sh /absolute/path/to/repo --force
+./scripts/index-repo.sh /absolute/path/to/repo --force --synthesize
 ./scripts/watch-repo.sh /absolute/path/to/repo
 ```
 
@@ -48,6 +49,8 @@ The helper scripts mount the target repository at `/target` inside the
 container so they do not conflict with the CodeBrain source mount at
 `/workspace`. They also pass `--repo-name` using the host folder basename, so
 indexed repository names remain stable instead of becoming `target`.
+`./scripts/index-repo.sh --synthesize` chains module synthesis immediately
+after ingestion for the resolved repo name.
 
 Equivalent raw Docker commands:
 
