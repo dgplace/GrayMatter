@@ -287,6 +287,54 @@ def test_persist_doc_links_embeds_and_inserts_rows() -> None:
     )
 
 
+def test_cluster_modularity_contribution_prefers_connected_communities() -> None:
+    """@brief Verify coherent communities score better than weakly connected singleton groups."""
+    graph = ingest.nx.Graph()
+    graph.add_edge(1, 2, weight=3.0)
+    graph.add_edge(2, 3, weight=1.0)
+    graph.add_edge(1, 3, weight=1.0)
+    graph.add_edge(3, 4, weight=0.2)
+
+    connected_contribution = ingest._cluster_modularity_contribution(graph, {1, 2, 3})
+    singleton_contribution = ingest._cluster_modularity_contribution(graph, {4})
+    assert connected_contribution > singleton_contribution
+
+
+def test_build_cluster_embedding_input_truncates_long_payload() -> None:
+    """@brief Verify cluster embedding text is bounded to the configured payload cap."""
+    text = ingest._build_cluster_embedding_input(
+        name="Ingestion Pipeline",
+        summary="x" * (ingest.CLUSTER_SUMMARY_MAX_CHARS * 2),
+        members=["member-a", "member-b"],
+        granularity="symbol",
+    )
+    assert len(text) == ingest.CLUSTER_SUMMARY_MAX_CHARS
+    assert text.startswith("cluster:Ingestion Pipeline")
+
+
+def test_parse_cluster_profile_returns_fallback_on_parse_failure() -> None:
+    """@brief Verify malformed cluster profile output falls back to deterministic defaults."""
+
+    class _BrokenClassifier:
+        """@brief Minimal classifier stub that always fails JSON parsing."""
+
+        def _generate(self, prompt: str, max_tokens: int = 280) -> str:
+            return "not-json"
+
+        def _parse_json(self, raw: str):
+            raise ValueError("bad json")
+
+    name, summary = ingest._parse_cluster_profile(
+        classifier=_BrokenClassifier(),
+        prompt="irrelevant",
+        fallback_name="Fallback Cluster",
+        fallback_summary="Fallback summary",
+        no_classify=False,
+    )
+    assert name == "Fallback Cluster"
+    assert summary == "Fallback summary"
+
+
 def test_walk_repo_includes_markdown_toml_and_yaml_extensions(tmp_path) -> None:
     """@brief Verify walk_repo honors doc/config extension mappings in language config."""
     repo_root = tmp_path / "repo"
@@ -570,7 +618,11 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS clusters" in patch_blob
     assert "cluster_key TEXT NOT NULL" in patch_blob
+    assert "modularity REAL NOT NULL DEFAULT 0" in patch_blob
+    assert "embedding vector(768)" in patch_blob
+    assert "ALTER TABLE clusters" in patch_blob
     assert "granularity TEXT NOT NULL CHECK (granularity IN ('symbol', 'file'))" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_clusters_embedding" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS cluster_members" in patch_blob
     assert "cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE" in patch_blob
     assert "symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE" in patch_blob

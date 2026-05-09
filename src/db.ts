@@ -178,12 +178,17 @@ const SCHEMA_PATCHES = [
       cluster_key TEXT NOT NULL,
       name TEXT NOT NULL,
       summary TEXT,
+      modularity REAL NOT NULL DEFAULT 0,
+      embedding vector(768),
       granularity TEXT NOT NULL CHECK (granularity IN ('symbol', 'file')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(repo, cluster_key)
     )`,
+  `ALTER TABLE clusters ADD COLUMN IF NOT EXISTS modularity REAL NOT NULL DEFAULT 0`,
+  `ALTER TABLE clusters ADD COLUMN IF NOT EXISTS embedding vector(768)`,
   `CREATE INDEX IF NOT EXISTS idx_clusters_repo ON clusters(repo)`,
   `CREATE INDEX IF NOT EXISTS idx_clusters_granularity ON clusters(repo, granularity)`,
+  `CREATE INDEX IF NOT EXISTS idx_clusters_embedding ON clusters USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`,
   `CREATE TABLE IF NOT EXISTS cluster_members (
       id SERIAL PRIMARY KEY,
       cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,

@@ -238,7 +238,12 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS clusters/);
   assert.match(dbSource, /cluster_key TEXT NOT NULL/);
+  assert.match(dbSource, /modularity REAL NOT NULL DEFAULT 0/);
+  assert.match(dbSource, /embedding vector\(768\)/);
+  assert.match(dbSource, /ALTER TABLE clusters ADD COLUMN IF NOT EXISTS modularity REAL NOT NULL DEFAULT 0/);
+  assert.match(dbSource, /ALTER TABLE clusters ADD COLUMN IF NOT EXISTS embedding vector\(768\)/);
   assert.match(dbSource, /granularity TEXT NOT NULL CHECK \(granularity IN \('symbol', 'file'\)\)/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_clusters_embedding ON clusters USING ivfflat/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS cluster_members/);
   assert.match(dbSource, /cluster_id INTEGER NOT NULL REFERENCES clusters\(id\) ON DELETE CASCADE/);
   assert.match(dbSource, /symbol_id INTEGER REFERENCES symbols\(id\) ON DELETE CASCADE/);

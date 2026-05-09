@@ -190,6 +190,8 @@ CREATE TABLE clusters (
     cluster_key     TEXT NOT NULL,
     name            TEXT NOT NULL,
     summary         TEXT,
+    modularity      REAL NOT NULL DEFAULT 0,
+    embedding       vector(768),
     granularity     TEXT NOT NULL CHECK (granularity IN ('symbol', 'file')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(repo, cluster_key)
@@ -197,6 +199,7 @@ CREATE TABLE clusters (
 
 CREATE INDEX idx_clusters_repo ON clusters(repo);
 CREATE INDEX idx_clusters_granularity ON clusters(repo, granularity);
+CREATE INDEX idx_clusters_embedding ON clusters USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ============================================================
 -- Cluster members: symbol/file membership by cluster granularity

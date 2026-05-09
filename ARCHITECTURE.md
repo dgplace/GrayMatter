@@ -67,6 +67,9 @@ Primary tables:
 - `symbols`
 - `symbol_references`
 - `dependencies`
+- `clusters`
+- `cluster_members`
+- `doc_links`
 - `ingestion_runs`
 
 Responsibilities:
@@ -94,7 +97,8 @@ Design pattern:
 8. Exact resolution is strategy-driven: `scip-typescript` runs for TypeScript-family repos that have both `tsconfig.json` and installed `node_modules`, while `scip-python` runs for repositories with recognizable Python project markers and a compatible runtime. Both strategies join SCIP occurrence ranges back to `symbols` rows by repo-relative file path plus declaration line range, and unresolved or ambiguous sites fall back cleanly to heuristic name resolution with explicit confidence scores.
 9. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
 10. `codebrain/ingest.py` stores normalized records in PostgreSQL.
-11. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
+11. After each ingest run, dependency cycles are materialized and Leiden clustering persists semantic `clusters` + `cluster_members`; each cluster also gets an LLM name/summary and an embedding.
+12. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
 
