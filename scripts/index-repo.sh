@@ -25,6 +25,7 @@ Notes:
   - REPO_PATH defaults to the current working directory.
   - Remaining arguments are passed through to `python -m codebrain.ingest`.
   - The target repo is mounted at /target inside the container.
+  - The host folder basename is passed via `--repo-name` unless you override it.
 EOF
 }
 
@@ -43,10 +44,24 @@ if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
 fi
 
 target_repo="$(cd "$target_repo" && pwd)"
+target_repo_name="$(basename "$target_repo")"
 
 if [[ ! -d "$target_repo" ]]; then
   echo "Repository path does not exist: $target_repo" >&2
   exit 1
+fi
+
+has_repo_name_flag=false
+for arg in "$@"; do
+  if [[ "$arg" == "--repo-name" || "$arg" == --repo-name=* ]]; then
+    has_repo_name_flag=true
+    break
+  fi
+done
+
+repo_name_args=()
+if [[ "$has_repo_name_flag" == false ]]; then
+  repo_name_args=(--repo-name "$target_repo_name")
 fi
 
 # Translate the toml's embedder/classifier base_url so the container can reach
@@ -110,4 +125,4 @@ exec docker compose \
   run --rm \
   -v "$target_repo:/target" \
   indexer \
-  python -m codebrain.ingest /target "$@"
+  python -m codebrain.ingest /target "${repo_name_args[@]}" "$@"

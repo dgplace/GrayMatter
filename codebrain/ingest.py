@@ -54,6 +54,13 @@ import resolver
 
 console = Console()
 
+NON_CODE_INTENT_BY_LANGUAGE = {
+    "markdown": "documentation",
+    "toml": "configuration",
+    "yaml": "configuration",
+}
+DEFAULT_NON_CODE_MAX_BYTES = 262_144
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     result = base.copy()
@@ -101,8 +108,60 @@ def sha256_file(path: Path) -> str:
 
 
 def detect_language(path: Path, config: dict) -> Optional[str]:
+    """@brief Resolve the configured language label for a file extension.
+
+    @param path File path whose suffix should be matched.
+    @param config Parsed CodeBrain configuration dictionary.
+    @return Normalized language label, or `None` when unsupported.
+    """
     ext = path.suffix.lstrip(".")
     return config.get("languages", {}).get("extensions", {}).get(ext)
+
+
+def resolve_repo_name(repo_root: Path, repo_name_override: Optional[str]) -> str:
+    """@brief Resolve the persisted repository identifier for an ingestion run.
+
+    @param repo_root Absolute repository root path being indexed.
+    @param repo_name_override Optional explicit repo name from CLI input.
+    @return Repository identifier used for persistence and query scoping.
+    @raises click.BadParameter When override contains path separators.
+    """
+    if repo_name_override is None:
+        return repo_root.name
+    normalized = repo_name_override.strip()
+    if not normalized:
+        return repo_root.name
+    if "/" in normalized or "\\" in normalized:
+        raise click.BadParameter(
+            "repo name must be a simple identifier, not a path",
+            param_hint="--repo-name",
+        )
+    return normalized
+
+
+def non_code_max_bytes(config: dict) -> int:
+    """@brief Return the per-file size cap used for non-code content.
+
+    @param config Parsed CodeBrain configuration dictionary.
+    @return Maximum non-code file size in bytes.
+    """
+    value = config.get("ingestion", {}).get("non_code_max_bytes", DEFAULT_NON_CODE_MAX_BYTES)
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_NON_CODE_MAX_BYTES
+    return max(cap, 1)
+
+
+def forced_non_code_intent(language: Optional[str]) -> Optional[str]:
+    """@brief Return the deterministic intent used for non-code files.
+
+    @param language Detected language label for the file.
+    @return Intent name when language is a supported non-code type, else `None`.
+    """
+    if not language:
+        return None
+    return NON_CODE_INTENT_BY_LANGUAGE.get(language)
 
 
 def should_exclude(path: Path, repo_root: Path, excludes: list[str]) -> bool:
@@ -1391,7 +1450,12 @@ def materialize_dependency_cycles(conn, repo_name: str) -> int:
 
 
 def walk_repo(repo_root: Path, config: dict) -> list[Path]:
-    """Walk the repository, respecting excludes and .gitignore."""
+    """@brief Walk the repository, respecting excludes and .gitignore.
+
+    @param repo_root Absolute repository root.
+    @param config Parsed CodeBrain configuration dictionary.
+    @return Candidate file paths accepted by extension and exclusion filters.
+    """
     excludes = config.get("ingestion", {}).get("exclude", [])
     supported_exts = set()
     for ext in config.get("languages", {}).get("extensions", {}).keys():
@@ -1458,6 +1522,7 @@ def process_file(
     """
     rel_path = str(fpath.relative_to(repo_root))
     language = detect_language(fpath, config)
+    file_size_bytes = fpath.stat().st_size
     file_hash = sha256_file(fpath)
 
     conn = db_pool.getconn()
@@ -1471,6 +1536,22 @@ def process_file(
             (repo_name, rel_path)
         )
         existing = cur.fetchone()
+        forced_intent = forced_non_code_intent(language)
+        max_non_code_bytes = non_code_max_bytes(config)
+        if forced_intent and file_size_bytes > max_non_code_bytes:
+            if existing:
+                cur.execute("DELETE FROM files WHERE id = %s", (existing[0],))
+            conn.commit()
+            return {
+                "status": "skipped",
+                "path": rel_path,
+                "warnings": [
+                    (
+                        f"Skipped non-code file over cap ({file_size_bytes} bytes > "
+                        f"{max_non_code_bytes} bytes): {rel_path}"
+                    )
+                ],
+            }
         if existing and existing[1] == file_hash and not force:
             return {"status": "skipped", "path": rel_path}
 
@@ -1506,7 +1587,7 @@ def process_file(
                 """UPDATE files SET language=%s, size_bytes=%s, line_count=%s, hash=%s,
                    summary=%s, role=%s, embedding=%s, indexed_at=NOW()
                    WHERE id=%s""",
-                (language, fpath.stat().st_size, line_count, file_hash,
+                (language, file_size_bytes, line_count, file_hash,
                  file_summary, file_role, file_embedding, existing[0])
             )
             file_id = existing[0]
@@ -1522,7 +1603,7 @@ def process_file(
             cur.execute(
                 """INSERT INTO files (repo, path, language, size_bytes, line_count, hash, summary, role, embedding)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (repo_name, rel_path, language, fpath.stat().st_size, line_count,
+                (repo_name, rel_path, language, file_size_bytes, line_count,
                  file_hash, file_summary, file_role, file_embedding)
             )
             file_id = cur.fetchone()[0]
@@ -1561,7 +1642,9 @@ def process_file(
         # ------------------------------------------------------
 
         # --- Batch classify all chunks in one LLM call (or skip) ----------
-        if no_classify:
+        if forced_intent:
+            chunk_classifications = [(forced_intent, "")] * len(chunks)
+        elif no_classify:
             chunk_classifications = [("utility", "")] * len(chunks)
         else:
             chunk_classifications = classifier.classify_chunks_batch(
@@ -2015,6 +2098,7 @@ def clear_repo_per_file_data(config: dict, repo_name: str) -> None:
 @click.option("--workers", default=None, type=int, help="Override worker count")
 @click.option("--no-classify", is_flag=True, help="Skip LLM classification (embed only, much faster)")
 @click.option("--debug", is_flag=True, help="Print per-file error details during ingestion")
+@click.option("--repo-name", default=None, help="Optional repository identifier override for indexed rows")
 def main(
     repo_path: str,
     config: str,
@@ -2023,6 +2107,7 @@ def main(
     workers: Optional[int],
     no_classify: bool,
     debug: bool,
+    repo_name: Optional[str],
 ):
     """@brief Ingest a repository into CodeBrain.
 
@@ -2033,10 +2118,11 @@ def main(
     @param workers Optional worker override.
     @param no_classify Skip classifier calls.
     @param debug Print per-file errors and worker failures.
+    @param repo_name Optional explicit repository identifier override.
     """
     cfg = load_config(config)
     repo_root = Path(repo_path).resolve()
-    repo_name = repo_root.name
+    repo_name = resolve_repo_name(repo_root, repo_name)
 
     n_workers = workers or cfg.get("ingestion", {}).get("workers", 4)
     if workers:

@@ -20,6 +20,10 @@ Runtime defaults live in:
 - `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
+By default, ingestion now includes Markdown (`.md`), TOML (`.toml`), and YAML
+(`.yml`/`.yaml`) files, with a non-code per-file size cap controlled by
+`ingestion.non_code_max_bytes` in `codebrain.toml`.
+
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 
 ## Ingest a Repository
@@ -42,7 +46,8 @@ long-running `postgres` and `mcp` containers.
 
 The helper scripts mount the target repository at `/target` inside the
 container so they do not conflict with the CodeBrain source mount at
-`/workspace`.
+`/workspace`. They also pass `--repo-name` using the host folder basename, so
+indexed repository names remain stable instead of becoming `target`.
 
 Equivalent raw Docker commands:
 

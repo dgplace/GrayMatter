@@ -2,34 +2,127 @@
 #
 # /**
 #  * @file build.sh
-#  * @brief Rebuild the CodeBrain Docker services and restart the running stack.
+#  * @brief Rebuild the CodeBrain Docker images and recreate the affected containers.
+#  *
+#  * Default mode rebuilds every image and recreates only the `mcp` service,
+#  * which is the common case when iterating on MCP server code. Pass --reset
+#  * to also recreate `postgres` (the named `postgres_data` volume is preserved).
+#  * Pass --wipe to drop the named volume before recreating, which forces
+#  * `schema.sql` to be re-applied; this destroys all indexed data.
 #  */
 
 set -euo pipefail
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  cat <<'EOF'
-Usage:
-  scripts/build.sh
+POSTGRES_VOLUME="codebrain_postgres_data"
 
-Rebuilds the Compose services used by CodeBrain, including the
-indexer image consumed by `scripts/index-repo.sh` and
-`scripts/watch-repo.sh`, then recreates the long-running containers.
+mode="mcp"
+assume_yes=false
+
+show_help() {
+  cat <<EOF
+Usage:
+  scripts/build.sh             Rebuild images and recreate \`mcp\` only.
+  scripts/build.sh --reset     Rebuild images and recreate \`postgres\` and \`mcp\`.
+                               Indexed data is preserved.
+  scripts/build.sh --wipe      Drop the \`${POSTGRES_VOLUME}\` named volume,
+                               then rebuild images and recreate \`postgres\`
+                               and \`mcp\`. Schema.sql is re-applied on first
+                               init. DESTROYS ALL INDEXED DATA. Prompts for
+                               confirmation unless -y/--yes is also passed.
+  scripts/build.sh -h|--help   Show this help.
+
+Flags:
+  -y, --yes                    Skip the --wipe confirmation prompt.
+
+All modes build all images (including the indexer image consumed by
+\`scripts/index-repo.sh\` and \`scripts/watch-repo.sh\`).
 EOF
-  exit 0
-fi
+}
+
+# Two-argument parse: mode (positional) + optional -y/--yes anywhere.
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes)
+      assume_yes=true
+      ;;
+    ""|--mcp|--reset|--wipe|-h|--help)
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      show_help
+      exit 2
+      ;;
+  esac
+done
+
+case "${1:-}" in
+  ""|--mcp|-y|--yes)
+    mode="mcp"
+    ;;
+  --reset)
+    mode="reset"
+    ;;
+  --wipe)
+    mode="wipe"
+    ;;
+  -h|--help)
+    show_help
+    exit 0
+    ;;
+esac
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+compose_file="$repo_root/docker/docker-compose.yml"
+
+if [[ "$mode" == "wipe" ]]; then
+  if [[ "$assume_yes" != true ]]; then
+    cat <<EOF
+About to DESTROY all indexed data by dropping the \`${POSTGRES_VOLUME}\`
+named volume. Every repository indexed in this CodeBrain instance will
+be lost and must be re-ingested.
+
+Pass --yes to skip this prompt.
+EOF
+    read -r -p "Type 'wipe' to confirm: " confirmation
+    if [[ "$confirmation" != "wipe" ]]; then
+      echo "Aborted." >&2
+      exit 1
+    fi
+  fi
+
+  echo "Stopping postgres + mcp..."
+  docker compose \
+    -f "$compose_file" \
+    --profile indexer \
+    --profile tools \
+    rm -sf postgres mcp
+
+  echo "Removing volume ${POSTGRES_VOLUME}..."
+  if docker volume inspect "$POSTGRES_VOLUME" >/dev/null 2>&1; then
+    docker volume rm "$POSTGRES_VOLUME"
+  else
+    echo "Volume ${POSTGRES_VOLUME} did not exist; continuing."
+  fi
+fi
 
 docker compose \
-  -f "$repo_root/docker/docker-compose.yml" \
+  -f "$compose_file" \
   --profile indexer \
   --profile tools \
   build
 
+case "$mode" in
+  reset|wipe)
+    recreate_targets=(postgres mcp)
+    ;;
+  *)
+    recreate_targets=(mcp)
+    ;;
+esac
+
 exec docker compose \
-  -f "$repo_root/docker/docker-compose.yml" \
+  -f "$compose_file" \
   --profile indexer \
   --profile tools \
-  up -d --force-recreate postgres mcp
+  up -d --force-recreate "${recreate_targets[@]}"

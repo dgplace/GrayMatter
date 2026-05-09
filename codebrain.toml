@@ -6,9 +6,12 @@
 chunk_size = 512
 overlap = 64
 workers = 4
+# Per-file cap for non-code content (markdown/toml/yaml) to avoid indexing
+# oversized generated or vendored docs/config blobs.
+non_code_max_bytes = 262144
 exclude = [
     "node_modules", ".git", "dist", "build", "__pycache__",
-    ".venv", "venv", ".env", "*.lock", "*.min.js", "*.min.css",
+    ".venv", "venv", ".env", ".claude", "*.lock", "*.min.js", "*.min.css",
     "*.map", "package-lock.json", "yarn.lock", ".next", ".nuxt",
     "coverage", ".pytest_cache", ".mypy_cache", "target"
 ]
@@ -17,7 +20,8 @@ exclude = [
 supported = [
     "python", "typescript", "javascript", "tsx", "jsx",
     "rust", "go", "java", "c", "cpp", "ruby", "php",
-    "swift", "kotlin", "scala", "zig", "elixir", "csharp"
+    "swift", "kotlin", "scala", "zig", "elixir", "csharp",
+    "markdown", "toml", "yaml"
 ]
 
 # File extension → language mapping (tree-sitter grammar names)
@@ -44,3 +48,7 @@ zig = "zig"
 ex = "elixir"
 exs = "elixir"
 cs = "csharp"
+md = "markdown"
+toml = "toml"
+yml = "yaml"
+yaml = "yaml"

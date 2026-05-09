@@ -5,6 +5,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from codebrain import ingest
 
 
@@ -187,6 +189,71 @@ def test_normalize_result_status_maps_error_variants_to_errors() -> None:
     assert ingest.normalize_result_status("errors") == "errors"
     assert ingest.normalize_result_status("unexpected-value") == "errors"
     assert ingest.normalize_result_status(None) == "errors"
+
+
+def test_resolve_repo_name_prefers_override_and_rejects_path_values() -> None:
+    """@brief Verify repo naming uses override when valid and rejects path-like values."""
+    repo_root = Path("/tmp/CodeBrain")
+
+    assert ingest.resolve_repo_name(repo_root, None) == "CodeBrain"
+    assert ingest.resolve_repo_name(repo_root, "custom-repo") == "custom-repo"
+    assert ingest.resolve_repo_name(repo_root, "   ") == "CodeBrain"
+
+    with pytest.raises(ingest.click.BadParameter):
+        ingest.resolve_repo_name(repo_root, "nested/name")
+
+
+def test_forced_non_code_intent_maps_markdown_and_config_languages() -> None:
+    """@brief Verify non-code language labels map to deterministic ingestion intents."""
+    assert ingest.forced_non_code_intent("markdown") == "documentation"
+    assert ingest.forced_non_code_intent("toml") == "configuration"
+    assert ingest.forced_non_code_intent("yaml") == "configuration"
+    assert ingest.forced_non_code_intent("python") is None
+    assert ingest.forced_non_code_intent(None) is None
+
+
+def test_walk_repo_includes_markdown_toml_and_yaml_extensions(tmp_path) -> None:
+    """@brief Verify walk_repo honors doc/config extension mappings in language config."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "README.md").write_text("# docs\n", encoding="utf-8")
+    (repo_root / "codebrain.toml").write_text("x = 1\n", encoding="utf-8")
+    (repo_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (repo_root / "notes.txt").write_text("ignore\n", encoding="utf-8")
+
+    config = {
+        "ingestion": {"exclude": []},
+        "languages": {
+            "extensions": {
+                "md": "markdown",
+                "toml": "toml",
+                "yml": "yaml",
+            }
+        },
+    }
+
+    files = ingest.walk_repo(repo_root, config)
+    rel_paths = sorted(path.relative_to(repo_root).as_posix() for path in files)
+    assert rel_paths == ["README.md", "codebrain.toml", "docker-compose.yml"]
+
+
+def test_walk_repo_excludes_claude_directory_when_configured(tmp_path) -> None:
+    """@brief Verify `.claude` worktree content is excluded by ingestion config patterns."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    claude_dir = repo_root / ".claude" / "worktrees" / "demo"
+    claude_dir.mkdir(parents=True)
+    (claude_dir / "copy.py").write_text("print('shadow')\n", encoding="utf-8")
+
+    config = {
+        "ingestion": {"exclude": [".claude"]},
+        "languages": {"extensions": {"py": "python"}},
+    }
+
+    files = ingest.walk_repo(repo_root, config)
+    rel_paths = sorted(path.relative_to(repo_root).as_posix() for path in files)
+    assert rel_paths == ["main.py"]
 
 
 def test_extract_swift_service_edges_captures_typed_members_and_usage() -> None:
@@ -608,6 +675,35 @@ def test_process_file_includes_classifier_warnings(monkeypatch, tmp_path) -> Non
     assert result["status"] == "indexed"
     assert len(result.get("warnings", [])) == 1
     assert "Classifier file analysis fallback for demo.py" in result["warnings"][0]
+
+
+def test_process_file_skips_non_code_files_over_size_cap(monkeypatch, tmp_path) -> None:
+    """@brief Verify non-code files above cap are skipped before chunking and persistence."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fpath = repo_root / "README.md"
+    fpath.write_text("x" * 2048, encoding="utf-8")
+
+    monkeypatch.setattr(ingest, "register_vector", lambda conn: None)
+
+    result = ingest.process_file(
+        fpath=fpath,
+        repo_root=repo_root,
+        repo_name="repo",
+        config={
+            "ingestion": {"non_code_max_bytes": 128},
+            "languages": {"extensions": {"md": "markdown"}},
+        },
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_FakeChunker(),
+        db_pool=_FakePool(),
+        force=True,
+        no_classify=False,
+    )
+
+    assert result["status"] == "skipped"
+    assert "Skipped non-code file over cap" in result["warnings"][0]
 
 
 def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) -> None:
