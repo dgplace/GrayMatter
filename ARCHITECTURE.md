@@ -46,7 +46,8 @@ Core modules:
 - `src/server.ts` (transport bootstrap)
 - `src/mcp/*` (tool/resource/logging/search formatting/graph algorithms)
 - `src/repositories/store.ts` (repo-scoped read model queries)
-- `src/web/*` (embedded browser UI and JSON endpoints)
+- `src/web/routes.ts` + `src/web/ui.ts` (HTTP route registration and HTML shell for `/ui`)
+- `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and the Sigma + graphology WebGL graph renderer; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild and served from `/ui/assets/*`)
 
 Responsibilities:
 - expose MCP resources and tools
@@ -125,11 +126,11 @@ Design pattern:
 
 ### UI flow
 
-1. Browser opens `/ui`.
+1. Browser opens `/ui` and loads `/ui/assets/styles.css` (design tokens) plus `/ui/assets/app.js` (Sigma + graphology WebGL renderer + panel logic, bundled by esbuild).
 2. UI fetches `/ui/api/repos` to populate the repo selector.
 3. UI polls `/ui/api/tool-calls` for live MCP tool invocation counters.
-4. UI fetches `/ui/api/repos/:repo/stats` and `/ui/api/repos/:repo/graph`.
-5. Client-side rendering displays metrics and a browsable graph projection.
+4. UI fetches `/ui/api/repos/:repo/stats`, `/ui/api/repos/:repo/graph`, `/ui/api/repos/:repo/modules`, and `/ui/api/repos/:repo/size`.
+5. Client builds a graphology `MultiDirectedGraph`, runs ForceAtlas2, and renders it via Sigma with directional arrowheads coloured by `reference_kind`/`dependency_kind`; pan, zoom, and hover are WebGL-driven.
 
 ## Core Design Patterns
 
@@ -144,7 +145,7 @@ MCP query tools require a `repo` parameter, preventing accidental cross-repo mix
 - `src/mcp/tooling/*.ts` owns grouped tool schemas/handlers plus shared repo-validation and normalization helpers.
 - `src/repositories/store.ts` owns repository read-model SQL.
 - `src/mcp/formatters.ts` owns textual response formatting.
-- `src/web/routes.ts` and `src/web/ui.ts` own HTTP UI concerns.
+- `src/web/routes.ts` owns HTTP UI route registration and static asset serving for `/ui/assets/*`; `src/web/ui.ts` owns the HTML shell; `src/web/assets/{styles.css,app.ts}` own all browser-side styling and rendering.
 - ingestion modules remain separate from MCP serving modules.
 
 ### Hybrid retrieval

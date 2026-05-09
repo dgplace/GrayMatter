@@ -5,19 +5,25 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:ui",
+    "build:ui": "node scripts/build-ui.mjs",
     "start": "node dist/index.js",
-    "dev": "tsx index.ts",
+    "dev": "npm run build:ui && tsx index.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",
+    "graphology": "^0.26.0",
+    "graphology-layout": "^0.6.1",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "pg": "^8.13.0",
-    "pgvector": "^0.2.0"
+    "pgvector": "^0.2.0",
+    "sigma": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "esbuild": "^0.27.0",
     "tsx": "^4.7.0",
     "typescript": "^5.6.0"
   }
