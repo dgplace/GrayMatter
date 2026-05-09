@@ -3,12 +3,15 @@ FROM node:22-bookworm-slim
 ARG SCIP_CLI_VERSION=v0.7.1
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 ARG SCIP_PYTHON_VERSION=0.6.6
+ARG SCIP_JAVA_VERSION=v0.12.3
+ARG SCIP_CLANG_VERSION=v0.4.0
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates curl git \
         python3 python3-pip python3-venv \
-        build-essential && \
+        build-essential \
+        default-jre-headless && \
     rm -rf /var/lib/apt/lists/*
 
 RUN ARCH="$(dpkg --print-architecture)" && \
@@ -27,6 +30,21 @@ RUN npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" && 
 
 RUN npm install -g "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}" && \
     scip-python --version
+
+RUN curl -sSL "https://github.com/sourcegraph/scip-java/releases/download/${SCIP_JAVA_VERSION}/scip-java-${SCIP_JAVA_VERSION}" \
+      -o /usr/local/bin/scip-java && \
+    chmod +x /usr/local/bin/scip-java && \
+    scip-java --help > /dev/null
+
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "amd64" ]; then \
+      curl -sSL "https://github.com/sourcegraph/scip-clang/releases/download/${SCIP_CLANG_VERSION}/scip-clang-x86_64-linux" \
+        -o /usr/local/bin/scip-clang && \
+      chmod +x /usr/local/bin/scip-clang && \
+      scip-clang --help > /dev/null; \
+    else \
+      echo "Skipping scip-clang install on unsupported architecture: $ARCH"; \
+    fi
 
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV

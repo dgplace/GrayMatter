@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "scip-java",
+      "version": "0.12.3"
+    },
+    "project_root": "file:///probe",
+    "text_document_encoding": 1
+  },
+  "documents": [
+    {
+      "relative_path": "src/Helpers.java",
+      "occurrences": [
+        {
+          "range": [0, 0, 0],
+          "symbol": "scip-java maven fixture src/Helpers.java",
+          "symbol_roles": 1
+        },
+        {
+          "range": [0, 13, 20],
+          "symbol": "scip-java maven fixture src/Helpers.java/Greeter#",
+          "symbol_roles": 1
+        },
+        {
+          "range": [1, 10, 15],
+          "symbol": "scip-java maven fixture src/Helpers.java/Greeter#greet().",
+          "symbol_roles": 1
+        }
+      ]
+    },
+    {
+      "relative_path": "src/Main.java",
+      "occurrences": [
+        {
+          "range": [2, 9, 16],
+          "symbol": "scip-java maven fixture src/Helpers.java/Greeter#"
+        },
+        {
+          "range": [3, 9, 14],
+          "symbol": "scip-java maven fixture src/Helpers.java/Greeter#greet()."
+        }
+      ]
+    }
+  ]
+}

@@ -57,6 +57,34 @@ class _ResolverCursor:
                 and target_line == 2
             ):
                 self._pending_fetchone = (912, 191)
+            elif (
+                repo_name == "fixture-java"
+                and target_path == "src/Helpers.java"
+                and target_name == "Greeter"
+                and target_line == 1
+            ):
+                self._pending_fetchone = (921, 291)
+            elif (
+                repo_name == "fixture-java"
+                and target_path == "src/Helpers.java"
+                and target_name == "greet"
+                and target_line == 2
+            ):
+                self._pending_fetchone = (922, 291)
+            elif (
+                repo_name == "fixture-cpp"
+                and target_path == "src/engine.hpp"
+                and target_name == "Renderer"
+                and target_line == 1
+            ):
+                self._pending_fetchone = (931, 391)
+            elif (
+                repo_name == "fixture-cpp"
+                and target_path == "src/engine.hpp"
+                and target_name == "draw"
+                and target_line == 2
+            ):
+                self._pending_fetchone = (932, 391)
             else:
                 self._pending_fetchone = None
             self._pending_fetchall = []
@@ -115,6 +143,16 @@ class _ResolverCursor:
                 self._pending_fetchall = [
                     (601, 61, "src/main.py", "python", "run", "Greeter", "type_reference", 4),
                     (602, 61, "src/main.py", "python", "run", "greet", "member_call", 5),
+                ]
+            elif params[0] == "fixture-java":
+                self._pending_fetchall = [
+                    (701, 71, "src/Main.java", "java", "run", "Greeter", "type_reference", 3),
+                    (702, 71, "src/Main.java", "java", "run", "greet", "member_call", 4),
+                ]
+            elif params[0] == "fixture-cpp":
+                self._pending_fetchall = [
+                    (801, 81, "src/main.cpp", "cpp", "run", "Renderer", "type_reference", 3),
+                    (802, 81, "src/main.cpp", "cpp", "run", "draw", "member_call", 4),
                 ]
             else:
                 self._pending_fetchall = [
@@ -298,6 +336,33 @@ def test_extract_symbol_references_emits_instantiation_edges_across_languages() 
         assert case["unexpected"].isdisjoint(instantiations)
 
 
+def test_extract_symbol_references_emits_swift_call_member_and_instantiation_edges() -> None:
+    """@brief Verify Swift extraction emits call/member_call/instantiation references."""
+    references = resolver.extract_symbol_references(
+        [
+            {
+                "content": "\n".join(
+                    [
+                        "let service = PhotoService()",
+                        "service.fetch()",
+                        "helper()",
+                    ]
+                ),
+                "start_line": 10,
+                "end_line": 12,
+                "symbol_name": "bootstrap",
+                "symbol_type": "function",
+            }
+        ],
+        language="swift",
+    )
+
+    observed = {(ref["line_no"], ref["target_name"], ref["reference_kind"]) for ref in references}
+    assert (10, "PhotoService", "instantiation") in observed
+    assert (11, "fetch", "member_call") in observed
+    assert (12, "helper", "call") in observed
+
+
 def test_resolve_references_marks_python_class_calls_as_instantiation() -> None:
     """@brief Verify Python class constructor calls resolve as instantiation references."""
     cur = _ResolverCursor()
@@ -338,6 +403,36 @@ def test_resolve_references_marks_python_class_calls_as_instantiation() -> None:
             "reference_kind_v2": "instantiation",
         }
     ]
+
+
+def test_resolve_references_keeps_swift_edges_heuristic_confidence() -> None:
+    """@brief Verify Swift references remain heuristic with confidence strictly below exact."""
+    cur = _ResolverCursor()
+    resolved = resolver.resolve_references(
+        cur,
+        [
+            {
+                "content": "\n".join(
+                    [
+                        "let service = PhotoService()",
+                        "service.fetch()",
+                        "helper()",
+                    ]
+                ),
+                "start_line": 20,
+                "end_line": 22,
+                "symbol_name": "bootstrap",
+                "symbol_type": "function",
+            }
+        ],
+        language="swift",
+        source_file_id=43,
+    )
+
+    assert any(row["reference_kind"] == "instantiation" for row in resolved)
+    assert any(row["reference_kind"] == "member_call" for row in resolved)
+    assert any(row["reference_kind"] == "call" for row in resolved)
+    assert all(row["resolution_confidence"] < resolver.EXACT_MATCH_CONFIDENCE for row in resolved)
 
 
 def test_resolve_references_returns_uniform_resolver_shape() -> None:
@@ -545,6 +640,7 @@ def test_refresh_repo_references_prefers_scip_typescript_exact_matches(monkeypat
     fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
     strategy = resolver.TypeScriptScipResolverStrategy()
     monkeypatch.setattr(resolver, "_has_scip_tools", lambda: True)
+    monkeypatch.setattr(resolver, "_has_node_modules", lambda _repo_root, _configs: True)
     monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root: fixture_index)
     monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
 
@@ -576,6 +672,46 @@ def test_refresh_repo_references_prefers_scip_python_exact_matches(monkeypatch) 
     assert cur.updated_rows == [
         (911, resolver.EXACT_MATCH_CONFIDENCE, "scip_python", "type_reference", 601),
         (912, resolver.EXACT_MATCH_CONFIDENCE, "scip_python", "member_call", 602),
+    ]
+
+
+def test_refresh_repo_references_prefers_scip_java_exact_matches(monkeypatch) -> None:
+    """@brief Verify Java repo refresh uses SCIP matches before heuristic fallback."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_java"
+    fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
+    strategy = resolver.JavaScipResolverStrategy()
+    monkeypatch.setattr(resolver, "_has_scip_java_tools", lambda: True)
+    monkeypatch.setattr(resolver, "_has_java_project_markers", lambda _repo_root: True)
+    monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root: fixture_index)
+    monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-java", repo_root=fixture_root)
+
+    assert updated == 2
+    assert cur.updated_rows == [
+        (921, resolver.EXACT_MATCH_CONFIDENCE, "scip_java", "type_reference", 701),
+        (922, resolver.EXACT_MATCH_CONFIDENCE, "scip_java", "member_call", 702),
+    ]
+
+
+def test_refresh_repo_references_prefers_scip_clang_exact_matches(monkeypatch) -> None:
+    """@brief Verify C/C++ repo refresh uses SCIP matches before heuristic fallback."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_cpp"
+    fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
+    strategy = resolver.ClangScipResolverStrategy()
+    monkeypatch.setattr(resolver, "_has_scip_clang_tools", lambda: True)
+    monkeypatch.setattr(resolver, "_find_compile_commands", lambda _repo_root: fixture_root / "compile_commands.json")
+    monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root, compdb_path: fixture_index)
+    monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-cpp", repo_root=fixture_root)
+
+    assert updated == 2
+    assert cur.updated_rows == [
+        (931, resolver.EXACT_MATCH_CONFIDENCE, "scip_clang", "type_reference", 801),
+        (932, resolver.EXACT_MATCH_CONFIDENCE, "scip_clang", "member_call", 802),
     ]
 
 

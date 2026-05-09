@@ -44,6 +44,57 @@ RELATIONSHIP_MODIFIER_TOKENS = {
     "mutating",
     "nonmutating",
 }
+TYPE_ANNOTATION_PRIMITIVES = {
+    "any",
+    "array",
+    "auto",
+    "bool",
+    "boolean",
+    "char",
+    "double",
+    "float",
+    "int",
+    "integer",
+    "long",
+    "never",
+    "none",
+    "null",
+    "number",
+    "object",
+    "self",
+    "short",
+    "signed",
+    "str",
+    "string",
+    "this",
+    "uint",
+    "uintptr_t",
+    "unsigned",
+    "usize",
+    "value",
+    "var",
+    "void",
+}
+TS_RETURN_RE = re.compile(r"\)\s*:\s*([^{=]+)")
+PYTHON_RETURN_RE = re.compile(r"->\s*([^:]+):")
+SWIFT_RETURN_RE = re.compile(r"->\s*([^{]+)")
+SCOPED_METHOD_NAME_RE = re.compile(r"([A-Za-z_~][A-Za-z0-9_~]*(?:::[A-Za-z_~][A-Za-z0-9_~]*)*)\s*$")
+SWIFT_FIELD_RE = re.compile(
+    r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:\w+\s+)*(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=/{]+)"
+)
+TS_FIELD_RE = re.compile(
+    r"^\s*(?:public|private|protected|readonly|static|final|abstract|\s)*(?:let|const|var)?\s*([A-Za-z_$][A-Za-z0-9_$]*)[!?]?\s*:\s*([^=;{]+)"
+)
+PYTHON_FIELD_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=#]+)")
+JAVA_FIELD_RE = re.compile(
+    r"^\s*(?:public|private|protected|static|final|volatile|transient|synchronized|\s)+([A-Za-z_][A-Za-z0-9_<>,.?\[\]]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:[=;])"
+)
+CSHARP_FIELD_RE = re.compile(
+    r"^\s*(?:public|private|protected|internal|static|readonly|volatile|required|sealed|new|partial|\s)+([A-Za-z_][A-Za-z0-9_<>,.?\[\]]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:[=;{])"
+)
+CPP_FIELD_RE = re.compile(
+    r"^\s*(?:mutable|const|constexpr|static|unsigned|signed|long|short|struct|class|\s)*([A-Za-z_][A-Za-z0-9_:<>,*&\[\]\s]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:[=;])"
+)
 
 
 def ensure_schema(conn) -> None:
@@ -321,6 +372,189 @@ def _relationship_kind_for_list_index(language: str, symbol_type: Optional[str],
     return "extends" if index == 0 else "implements"
 
 
+def _normalize_type_expression(raw_type: str) -> str:
+    """@brief Normalize a type expression before target extraction.
+
+    @param raw_type Raw language-level type annotation.
+    @return Normalized expression with wrappers and nullability markers removed.
+    """
+    normalized = raw_type.strip()
+    if not normalized:
+        return ""
+    normalized = normalized.rstrip(";,")
+    normalized = normalized.replace("[]", "")
+    normalized = normalized.strip()
+    if normalized.endswith("?") or normalized.endswith("!"):
+        normalized = normalized[:-1].strip()
+    return normalized
+
+
+def _extract_type_targets(raw_type: str) -> list[tuple[str, Optional[str]]]:
+    """@brief Parse normalized type expressions into relationship targets.
+
+    @param raw_type Raw type expression from a return or field annotation.
+    @return List of `(target_name, external_module)` tuples.
+    """
+    normalized = _normalize_type_expression(raw_type)
+    if not normalized:
+        return []
+    normalized = normalized.replace("|", ",").replace("&", ",")
+    candidates = _split_top_level_csv(normalized)
+    expanded_candidates = list(candidates)
+    for candidate in candidates:
+        if "<" not in candidate or ">" not in candidate:
+            continue
+        inner = candidate[candidate.find("<") + 1:candidate.rfind(">")]
+        expanded_candidates.extend(_split_top_level_csv(inner))
+    targets: list[tuple[str, Optional[str]]] = []
+    seen: set[tuple[str, Optional[str]]] = set()
+    for candidate in expanded_candidates:
+        target_name, external_module = _normalize_relationship_target(candidate)
+        if not target_name:
+            continue
+        if target_name.lower() in TYPE_ANNOTATION_PRIMITIVES:
+            continue
+        key = (target_name.lower(), external_module.lower() if external_module else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append((target_name, external_module))
+    return targets
+
+
+def _extract_return_type_signature(signature: str, language: str) -> Optional[str]:
+    """@brief Extract a function/method return type annotation from a signature line.
+
+    @param signature Declaration signature.
+    @param language Normalized language label.
+    @return Return-type expression string when found, otherwise None.
+    """
+    if language == "typescript":
+        match = TS_RETURN_RE.search(signature)
+        return match.group(1).strip() if match else None
+    if language == "python":
+        match = PYTHON_RETURN_RE.search(signature)
+        return match.group(1).strip() if match else None
+    if language == "swift":
+        match = SWIFT_RETURN_RE.search(signature)
+        return match.group(1).strip() if match else None
+    if language not in {"java", "csharp", "cpp"} or "(" not in signature:
+        return None
+
+    prefix = signature.split("(", 1)[0].strip()
+    name_match = SCOPED_METHOD_NAME_RE.search(prefix)
+    if not name_match:
+        return None
+    raw_return = prefix[:name_match.start()].strip()
+    if not raw_return:
+        return None
+    raw_tokens = [token for token in raw_return.split() if token.lower() not in RELATIONSHIP_MODIFIER_TOKENS]
+    if not raw_tokens:
+        return None
+    return " ".join(raw_tokens)
+
+
+def _extract_field_type_from_line(line: str, language: str) -> Optional[str]:
+    """@brief Extract a field/property type annotation from a declaration line.
+
+    @param line Source line text.
+    @param language Normalized language label.
+    @return Field/property type expression when present, otherwise None.
+    """
+    matchers = {
+        "typescript": TS_FIELD_RE,
+        "python": PYTHON_FIELD_RE,
+        "java": JAVA_FIELD_RE,
+        "csharp": CSHARP_FIELD_RE,
+        "cpp": CPP_FIELD_RE,
+        "swift": SWIFT_FIELD_RE,
+    }
+    matcher = matchers.get(language)
+    if matcher is None:
+        return None
+    match = matcher.search(line)
+    if not match:
+        return None
+    captured = match.group(2 if language in {"typescript", "python", "swift"} else 1).strip()
+    if language in {"java", "csharp", "cpp"} and captured.lower() in {"class", "struct", "interface", "enum", "record", "delegate"}:
+        return None
+    return captured
+
+
+def _extract_type_annotation_edges(chunks: list[dict], language: str) -> list[dict]:
+    """@brief Extract returns/field_type edges from symbol signatures and bodies.
+
+    @param chunks Parsed chunk records from the chunker.
+    @param language Normalized language label for the file.
+    @return Relationship rows with `returns` or `field_type` kinds.
+    """
+    edges: list[dict] = []
+    seen: set[tuple[Optional[str], str, str, Optional[str], int]] = set()
+
+    def add_edge(source_symbol_name: Optional[str], relationship_kind: str, target_type: str, line_no: int) -> None:
+        if not source_symbol_name:
+            return
+        for target_name, external_module in _extract_type_targets(target_type):
+            dedupe_key = (
+                source_symbol_name,
+                relationship_kind,
+                target_name.lower(),
+                external_module.lower() if external_module else None,
+                int(line_no),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            edges.append(
+                {
+                    "source_symbol_name": source_symbol_name,
+                    "relationship_kind": relationship_kind,
+                    "target_name": target_name,
+                    "external_module": external_module,
+                    "line_no": int(line_no),
+                }
+            )
+
+    for chunk in chunks:
+        symbol_name = chunk.get("symbol_name")
+        symbol_type = chunk.get("symbol_type")
+        signature = chunk.get("signature")
+        start_line = int(chunk.get("start_line") or 0)
+        if symbol_name and signature:
+            if symbol_type in {"function", "method"}:
+                return_type = _extract_return_type_signature(signature, language)
+                if return_type:
+                    add_edge(symbol_name, "returns", return_type, start_line)
+            if symbol_type in {"property", "variable"}:
+                field_type = _extract_field_type_from_line(signature, language)
+                if field_type:
+                    add_edge(symbol_name, "field_type", field_type, start_line)
+
+        if symbol_type in {"class", "struct", "interface", "protocol", "extension"} and symbol_name:
+            for offset, line in enumerate(chunk.get("content", "").splitlines()):
+                field_type = _extract_field_type_from_line(line, language)
+                if field_type:
+                    add_edge(symbol_name, "field_type", field_type, start_line + offset)
+
+        for member_symbol in chunk.get("member_symbols", []):
+            member_name = member_symbol.get("symbol_name")
+            member_type = member_symbol.get("symbol_type")
+            member_signature = member_symbol.get("signature")
+            member_line = int(member_symbol.get("start_line") or 0)
+            if not member_name or not member_signature:
+                continue
+            if member_type in {"function", "method"}:
+                return_type = _extract_return_type_signature(member_signature, language)
+                if return_type:
+                    add_edge(member_name, "returns", return_type, member_line)
+            if member_type in {"property", "variable"}:
+                field_type = _extract_field_type_from_line(member_signature, language)
+                if field_type:
+                    add_edge(member_name, "field_type", field_type, member_line)
+
+    return edges
+
+
 def extract_symbol_relationships(chunks: list[dict], language: Optional[str]) -> list[dict]:
     """@brief Extract inheritance/implements/mixin edges from declaration signatures.
 
@@ -414,6 +648,19 @@ def extract_symbol_relationships(chunks: list[dict], language: Optional[str]) ->
                 }
             )
 
+    for edge in _extract_type_annotation_edges(chunks, language):
+        if edge.get("source_symbol_name") is None:
+            continue
+        dedupe_key = (
+            edge["source_symbol_name"],
+            edge["relationship_kind"],
+            edge["target_name"].lower(),
+            edge["external_module"].lower() if edge["external_module"] else None,
+            int(edge["line_no"]),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        relationships.append(edge)
+
     return relationships
-
-

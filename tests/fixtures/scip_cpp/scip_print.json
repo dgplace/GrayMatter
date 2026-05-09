@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "scip-clang",
+      "version": "0.4.0"
+    },
+    "project_root": "file:///probe",
+    "text_document_encoding": 1
+  },
+  "documents": [
+    {
+      "relative_path": "src/engine.hpp",
+      "occurrences": [
+        {
+          "range": [0, 0, 0],
+          "symbol": "scip-clang cpp fixture src/engine.hpp",
+          "symbol_roles": 1
+        },
+        {
+          "range": [0, 6, 14],
+          "symbol": "scip-clang cpp fixture src/engine.hpp/Renderer#",
+          "symbol_roles": 1
+        },
+        {
+          "range": [1, 8, 12],
+          "symbol": "scip-clang cpp fixture src/engine.hpp/Renderer#draw().",
+          "symbol_roles": 1
+        }
+      ]
+    },
+    {
+      "relative_path": "src/main.cpp",
+      "occurrences": [
+        {
+          "range": [2, 2, 10],
+          "symbol": "scip-clang cpp fixture src/engine.hpp/Renderer#"
+        },
+        {
+          "range": [3, 2, 6],
+          "symbol": "scip-clang cpp fixture src/engine.hpp/Renderer#draw()."
+        }
+      ]
+    }
+  ]
+}
