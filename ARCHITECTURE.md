@@ -14,6 +14,11 @@ It has two primary runtime concerns:
 
 Core files:
 - `codebrain/ingest.py`
+- `codebrain/ingestion/runtime.py`
+- `codebrain/ingestion/schema.py`
+- `codebrain/ingestion/relationships.py`
+- `codebrain/ingestion/dependencies.py`
+- `codebrain/ingestion/clusters.py`
 - `codebrain/chunker.py`
 - `resolver.py`
 - `codebrain/embedder.py`
@@ -30,7 +35,7 @@ Responsibilities:
 - persist files, chunks, symbols, references, and dependencies into PostgreSQL
 
 Design pattern:
-- pipeline orchestration with explicit stages
+- thin entrypoint facade (`codebrain/ingest.py`) delegating to focused ingestion submodules
 - narrow stages for chunking, embedding, classification, and persistence
 
 ### 2. Query Server (TypeScript MCP + HTTP UI)
@@ -91,7 +96,7 @@ Design pattern:
 
 ### Ingestion flow
 
-1. Repository walk starts in `codebrain/ingest.py`.
+1. Repository walk starts in `codebrain/ingest.py`, delegated to `codebrain/ingestion/runtime.py`.
 2. File paths are filtered by config excludes and Git ignore rules.
 3. `codebrain/chunker.py` parses supported languages with tree-sitter.
 4. AST chunks are generated, with language-specific metadata where available.
@@ -101,7 +106,7 @@ Design pattern:
 8. Exact resolution is strategy-driven: `scip-typescript` runs for TypeScript-family repos that have both `tsconfig.json` and installed `node_modules`, while `scip-python` runs for repositories with recognizable Python project markers and a compatible runtime. Both strategies join SCIP occurrence ranges back to `symbols` rows by repo-relative file path plus declaration line range, and unresolved or ambiguous sites fall back cleanly to heuristic name resolution with explicit confidence scores.
 9. Heuristic fallback resolution is language-family scoped to prevent cross-language collisions (for example, TypeScript references do not co-resolve to same-named Python symbols). Node-family files (`typescript|tsx|javascript|jsx`) share one compatibility bucket; other languages resolve by exact language match.
 10. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
-11. `codebrain/ingest.py` stores normalized records in PostgreSQL.
+11. `codebrain/ingest.py` + `codebrain/ingestion/*` store normalized records in PostgreSQL.
 12. After each ingest run, dependency cycles are materialized and clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
 13. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
@@ -130,7 +135,8 @@ MCP query tools require a `repo` parameter, preventing accidental cross-repo mix
 ### Separation of concerns
 
 - `src/server.ts` handles lifecycle and transport wiring.
-- `src/mcp/tools.ts` owns tool schemas, validation flow, and orchestration.
+- `src/mcp/tools.ts` is the composition entrypoint for MCP tool registration.
+- `src/mcp/tooling/*.ts` owns grouped tool schemas/handlers plus shared repo-validation and normalization helpers.
 - `src/repositories/store.ts` owns repository read-model SQL.
 - `src/mcp/formatters.ts` owns textual response formatting.
 - `src/web/routes.ts` and `src/web/ui.ts` own HTTP UI concerns.

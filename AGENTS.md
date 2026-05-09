@@ -96,8 +96,8 @@ Keep these files focused on distinct purposes.
 - **Fail Clearly**: For operational failures, surface clear errors with enough context to diagnose the problem. Do not silently swallow errors unless there is a deliberate fallback path.
 
 ### Cross-cutting maintenance rules
-- **Large File Limit**: Source files over 1000 lines require a justification comment near the top explaining why the file should remain large; otherwise split the file along responsibility boundaries.
-- **Large Function Limit**: Functions or methods over 150 lines require a justification comment at the function definition explaining why the length is necessary; otherwise split the logic into smaller units.
+- **Large File Limit**: Source files must not exceed 1000 lines. Split by responsibility before merge; do not add or rely on justification comments.
+- **Large Function Limit**: Functions or methods must not exceed 150 lines. Split logic before merge; do not add or rely on justification comments.
 - **Handler/Parser/Asset Separation**: Tool handlers, language-specific parsing logic, and HTML/CSS assets must each live in their own files. Do not co-locate those concerns in a single module.
 
 ### Software engineering principles

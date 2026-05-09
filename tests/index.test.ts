@@ -11,6 +11,23 @@ import { extractKeywordTerms, summarizeArgs, vecLiteral } from "../index.ts";
 import { formatCouplingAnalysis, formatModularizationSeams, formatReferenceResults, formatSearchResults } from "../src/mcp/formatters.ts";
 import type { CouplingEdgeRow, ModuleInterfaceRow, ReferenceRow, SearchRow, SeamRow } from "../src/mcp/types.ts";
 
+/**
+ * @brief Loads MCP tool sources across split registry modules for source-level assertions.
+ * @returns Concatenated source text of MCP tool registration files.
+ */
+function readMcpToolSource(): string {
+  const toolSourceFiles = [
+    "../src/mcp/tools.ts",
+    "../src/mcp/tooling/shared.ts",
+    "../src/mcp/tooling/repoSearchTools.ts",
+    "../src/mcp/tooling/hierarchyTools.ts",
+    "../src/mcp/tooling/dependencyTraceTools.ts",
+    "../src/mcp/tooling/architectureTools.ts",
+    "../src/mcp/tooling/indexManagementTools.ts",
+  ];
+  return toolSourceFiles.map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
+}
+
 test("extractKeywordTerms removes stopwords, deduplicates, and caps results", () => {
   const terms = extractKeywordTerms(
     "How to configure toolbar toolbar styling for swift navigation bar TrackService PhotoService MapKit Logger",
@@ -140,7 +157,7 @@ test("formatModularizationSeams coerces usage-count strings before seam totals",
 });
 
 test("find_references tool exposes confidence threshold knobs and prefers resolved target_symbol_id", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /reference_kind:\s*z\s*\.\s*enum\(\["call",\s*"member_call",\s*"type_reference",\s*"instantiation"\]\)/);
   assert.match(toolsSource, /min_confidence:\s*z\s*\.\s*number/);
@@ -154,7 +171,7 @@ test("find_references tool exposes confidence threshold knobs and prefers resolv
 });
 
 test("find_supertypes and find_subtypes tools walk symbol_relationships with depth and unresolved support", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_supertypes"/);
   assert.match(toolsSource, /"find_subtypes"/);
@@ -169,7 +186,7 @@ test("find_supertypes and find_subtypes tools walk symbol_relationships with dep
 });
 
 test("find_implementations tool supports unresolved roots and walks implements/extends edges", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_implementations"/);
   assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*root_targets AS[\s\S]*implementation_tree AS/);
@@ -183,7 +200,7 @@ test("find_implementations tool supports unresolved roots and walks implements/e
 });
 
 test("find_call_graph tool supports forward and reverse traversal with depth bounds and cycle guards", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_call_graph"/);
   assert.doesNotMatch(toolsSource, /"call_graph"/);
@@ -199,7 +216,7 @@ test("find_call_graph tool supports forward and reverse traversal with depth bou
 });
 
 test("find_instantiations tool filters instantiation references and returns source + containing symbol context", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_instantiations"/);
   assert.match(toolsSource, /s\.kind IN \('class', 'struct'\)/);
@@ -212,7 +229,7 @@ test("find_instantiations tool filters instantiation references and returns sour
 });
 
 test("trace_dependencies deduplicates rows before ordering to avoid DISTINCT+ORDER BY postgres errors", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /dedup_rows AS \(/);
   assert.match(toolsSource, /SELECT DISTINCT[\s\S]*FROM dep_tree/);
@@ -267,7 +284,7 @@ test("db schema patches include resolved reference migration columns and indexes
 });
 
 test("find_cycles tool reads persisted dependency_cycles rows for a repository and supports path_prefix filtering", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_cycles"/);
   assert.doesNotMatch(toolsSource, /"find_dependency_cycles"/);
@@ -281,7 +298,7 @@ test("find_cycles tool reads persisted dependency_cycles rows for a repository a
 });
 
 test("find_impact tool wraps SQL impact_of function with confidence-band output", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_impact"/);
   assert.doesNotMatch(toolsSource, /"impact_of"/);
@@ -298,7 +315,7 @@ test("find_impact tool wraps SQL impact_of function with confidence-band output"
 });
 
 test("find_external_dependencies tool groups by external_module and external_version and supports package consumer lookup", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"find_external_dependencies"/);
   assert.match(toolsSource, /package_name:\s*z\s*\.\s*string\(\)\.optional\(\)/);
@@ -314,7 +331,7 @@ test("find_external_dependencies tool groups by external_module and external_ver
 });
 
 test("PYTHON_STDLIB_MODULES includes posixpath, shutil, and tomllib so they stay out of external dependency reports", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
   const stdlibBlock = toolsSource.match(/const PYTHON_STDLIB_MODULES = new Set\(\[([\s\S]*?)\]\);/);
   assert.ok(stdlibBlock, "PYTHON_STDLIB_MODULES set declaration not found");
   const stdlibText = stdlibBlock[1];
@@ -324,7 +341,7 @@ test("PYTHON_STDLIB_MODULES includes posixpath, shutil, and tomllib so they stay
 });
 
 test("NODE_STDLIB_AUGMENTATIONS keeps node:test and node:sqlite from leaking into external dependency reports", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
   const augBlock = toolsSource.match(/const NODE_STDLIB_AUGMENTATIONS = \[([\s\S]*?)\];/);
   assert.ok(augBlock, "NODE_STDLIB_AUGMENTATIONS declaration not found");
   for (const expected of ["test", "sqlite"]) {
@@ -333,7 +350,7 @@ test("NODE_STDLIB_AUGMENTATIONS keeps node:test and node:sqlite from leaking int
 });
 
 test("find_external_dependencies filters first-party modules computed from indexed file paths", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /async function getFirstPartyModuleNames\(repo: string\): Promise<Set<string>>/);
   assert.match(toolsSource, /split_part\(f\.path, '\/', 1\)/);
@@ -344,7 +361,7 @@ test("find_external_dependencies filters first-party modules computed from index
 });
 
 test("semantic_search exposes include_documentation and filters documentation-intent rows by default", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"semantic_search"/);
   assert.match(toolsSource, /include_documentation:\s*z\s*\.\s*boolean\(\)\s*\.\s*optional\(\)/);
@@ -386,7 +403,7 @@ test("formatSearchResults truncates oversized chunk content to keep MCP response
 });
 
 test("clusters tool returns required cluster fields including modularity and granularity", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"clusters"/);
   assert.match(toolsSource, /COUNT\(cm\.id\)::integer AS size/);
@@ -396,7 +413,7 @@ test("clusters tool returns required cluster fields including modularity and gra
 });
 
 test("cluster_members tool resolves cluster selector and emits symbol-or-file member shapes with weights", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"cluster_members"/);
   assert.match(toolsSource, /Cluster selector: id, cluster_key, or cluster name/);
@@ -408,7 +425,7 @@ test("cluster_members tool resolves cluster selector and emits symbol-or-file me
 });
 
 test("describe_node supports file/symbol/cluster kinds and includes linked doc_links rows", () => {
-  const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
+  const toolsSource = readMcpToolSource();
 
   assert.match(toolsSource, /"describe_node"/);
   assert.match(toolsSource, /kind:\s*z\.enum\(\["file", "symbol", "cluster"\]\)/);
