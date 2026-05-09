@@ -172,6 +172,50 @@ const SCHEMA_PATCHES = [
       UNIQUE(repo, cycle_hash)
     )`,
   `CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles(repo)`,
+  `CREATE TABLE IF NOT EXISTS clusters (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      cluster_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      summary TEXT,
+      granularity TEXT NOT NULL CHECK (granularity IN ('symbol', 'file')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(repo, cluster_key)
+    )`,
+  `CREATE INDEX IF NOT EXISTS idx_clusters_repo ON clusters(repo)`,
+  `CREATE INDEX IF NOT EXISTS idx_clusters_granularity ON clusters(repo, granularity)`,
+  `CREATE TABLE IF NOT EXISTS cluster_members (
+      id SERIAL PRIMARY KEY,
+      cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+      symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+      file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+      membership_weight REAL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (
+        (symbol_id IS NOT NULL AND file_id IS NULL)
+        OR (symbol_id IS NULL AND file_id IS NOT NULL)
+      )
+    )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_symbol_unique ON cluster_members(cluster_id, symbol_id) WHERE symbol_id IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_file_unique ON cluster_members(cluster_id, file_id) WHERE file_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_cluster_members_symbol ON cluster_members(symbol_id) WHERE symbol_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_cluster_members_file ON cluster_members(file_id) WHERE file_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS doc_links (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      source_file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_path TEXT,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('file', 'symbol', 'cluster')),
+      target_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      embedding vector(768) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`,
+  `CREATE INDEX IF NOT EXISTS idx_doc_links_repo_source ON doc_links(repo, source)`,
+  `CREATE INDEX IF NOT EXISTS idx_doc_links_source_file ON doc_links(source_file_id) WHERE source_file_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links(target_kind, target_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_doc_links_embedding ON doc_links USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`,
   `CREATE INDEX IF NOT EXISTS idx_deps_imported_symbol ON dependencies(imported_symbol_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_file ON symbol_relationships(source_file_id)`,
   `CREATE INDEX IF NOT EXISTS idx_symbol_rels_source_symbol ON symbol_relationships(source_symbol_id)`,

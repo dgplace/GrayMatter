@@ -236,6 +236,18 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_deps_reverse_lookup/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS dependency_cycles/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo ON dependency_cycles/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS clusters/);
+  assert.match(dbSource, /cluster_key TEXT NOT NULL/);
+  assert.match(dbSource, /granularity TEXT NOT NULL CHECK \(granularity IN \('symbol', 'file'\)\)/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS cluster_members/);
+  assert.match(dbSource, /cluster_id INTEGER NOT NULL REFERENCES clusters\(id\) ON DELETE CASCADE/);
+  assert.match(dbSource, /symbol_id INTEGER REFERENCES symbols\(id\) ON DELETE CASCADE/);
+  assert.match(dbSource, /file_id INTEGER REFERENCES files\(id\) ON DELETE CASCADE/);
+  assert.match(dbSource, /CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_symbol_unique/);
+  assert.match(dbSource, /CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_file_unique/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS doc_links/);
+  assert.match(dbSource, /embedding vector\(768\) NOT NULL/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links\(target_kind, target_id\)/);
   assert.match(dbSource, /CREATE OR REPLACE FUNCTION impact_of/);
   assert.match(dbSource, /min_confidence\s+REAL DEFAULT 0\.55/);
 });

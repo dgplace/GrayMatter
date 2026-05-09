@@ -493,6 +493,18 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_rels_reverse_lookup" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS dependency_cycles" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_dependency_cycles_repo" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS clusters" in patch_blob
+    assert "cluster_key TEXT NOT NULL" in patch_blob
+    assert "granularity TEXT NOT NULL CHECK (granularity IN ('symbol', 'file'))" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS cluster_members" in patch_blob
+    assert "cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE" in patch_blob
+    assert "symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE" in patch_blob
+    assert "file_id INTEGER REFERENCES files(id) ON DELETE CASCADE" in patch_blob
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_symbol_unique" in patch_blob
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_members_file_unique" in patch_blob
+    assert "CREATE TABLE IF NOT EXISTS doc_links" in patch_blob
+    assert "embedding vector(768) NOT NULL" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_doc_links_target" in patch_blob
     assert "CREATE OR REPLACE FUNCTION impact_of" in patch_blob
     assert "min_confidence   REAL DEFAULT 0.55" in patch_blob
 
