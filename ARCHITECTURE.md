@@ -47,7 +47,7 @@ Core modules:
 - `src/mcp/*` (tool/resource/logging/search formatting/graph algorithms)
 - `src/repositories/store.ts` (repo-scoped read model queries)
 - `src/web/routes.ts` + `src/web/ui.ts` (HTTP route registration and HTML shell for `/ui`)
-- `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and the Sigma + graphology WebGL graph renderer; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild and served from `/ui/assets/*`)
+- `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and the 3D WebGL graph renderer based on `3d-force-graph` + Three.js with directional arrows and rotate/zoom/pan; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild (minified) and served from `/ui/assets/*`)
 
 Responsibilities:
 - expose MCP resources and tools
@@ -126,11 +126,11 @@ Design pattern:
 
 ### UI flow
 
-1. Browser opens `/ui` and loads `/ui/assets/styles.css` (design tokens) plus `/ui/assets/app.js` (Sigma + graphology WebGL renderer + panel logic, bundled by esbuild).
+1. Browser opens `/ui` and loads `/ui/assets/styles.css` (design tokens) plus `/ui/assets/app.js` (3D WebGL renderer + panel logic, bundled by esbuild).
 2. UI fetches `/ui/api/repos` to populate the repo selector.
 3. UI polls `/ui/api/tool-calls` for live MCP tool invocation counters.
 4. UI fetches `/ui/api/repos/:repo/stats`, `/ui/api/repos/:repo/graph`, `/ui/api/repos/:repo/modules`, and `/ui/api/repos/:repo/size`.
-5. Client builds a graphology `MultiDirectedGraph`, runs ForceAtlas2, and renders it via Sigma with directional arrowheads coloured by `reference_kind`/`dependency_kind`; pan, zoom, and hover are WebGL-driven.
+5. Client feeds the graph payload to `3d-force-graph` (Three.js) and renders nodes + directional arrow links coloured by `reference_kind`/`dependency_kind`; rotate, zoom, pan, and a floating colour-swatch legend are wired client-side.
 
 ## Core Design Patterns
 

@@ -28,7 +28,9 @@ test("renderWebUi shell exposes panel mount points and references bundled assets
   assert.match(html, /id="toolCallBody"/);
   assert.match(html, /id="modulesBody"/);
   assert.match(html, /id="indexMgmtBody"/);
-  assert.match(html, /id="edgeTable"/);
+  assert.match(html, /id="legend"/);
+  assert.doesNotMatch(html, /id="edgeTable"/);
+  assert.doesNotMatch(html, /id="refreshBtn"/);
   assert.doesNotMatch(html, /<script>[^<]/);
 });
 
@@ -41,10 +43,10 @@ test("client app source wires the expected /ui/api endpoints", () => {
   assert.match(appSrc, /\/size/);
 });
 
-test("client app source uses the WebGL Sigma renderer and exposes edge-kind colors", () => {
-  assert.match(appSrc, /from "sigma"/);
-  assert.match(appSrc, /from "graphology"/);
-  assert.match(appSrc, /forceAtlas2/);
-  assert.match(appSrc, /defaultEdgeType:\s*"arrow"/);
+test("client app source uses the 3D force-graph renderer with directional arrows and exposes edge-kind colors", () => {
+  assert.match(appSrc, /from "3d-force-graph"/);
+  assert.match(appSrc, /ForceGraph3D\(\)/);
+  assert.match(appSrc, /linkDirectionalArrowLength/);
+  assert.match(appSrc, /linkDirectionalArrowColor/);
   assert.match(appSrc, /edgeKindMap/);
 });

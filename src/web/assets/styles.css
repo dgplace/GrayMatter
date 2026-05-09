@@ -1,0 +1,476 @@
+/**
+ * @file src/web/assets/styles.css
+ * @brief Neon-on-light design tokens and layout for the CodeBrain web UI.
+ *        Tokens here are the single source of truth for palette, edge styles,
+ *        and glow effects consumed by both the WebGL graph renderer and the
+ *        surrounding HTML panels.
+ */
+
+:root {
+  /* Surface palette — light substrate */
+  --bg: #f6f8ff;
+  --bg-grid: #ecf0fc;
+  --panel: #ffffff;
+  --panel-soft: #f1f4ff;
+  --line: #dbe1f1;
+  --line-strong: #b9c2dd;
+
+  /* Ink / typography */
+  --ink: #0d1320;
+  --ink-soft: #2a3450;
+  --muted: #5d6884;
+
+  /* Neon accent (single neutral accent — cluster colors in slice b) */
+  --accent: #00d3a7;
+  --accent-soft: #d6fff4;
+  --accent-strong: #00b08c;
+  --accent-ink: #024a3c;
+
+  /* Neon edge palette — keyed to reference_kind / dependency_kind values.
+     Renderer maps edge.kind to one of these. */
+  --edge-default: #5d6884;
+  --edge-call: #00d3a7;
+  --edge-member-call: #2bb8ff;
+  --edge-instantiation: #b269ff;
+  --edge-type-reference: #ff6fbf;
+  --edge-depends-on: #ffb547;
+  --edge-imports: #ffb547;
+  --edge-extends: #ff5f3a;
+  --edge-implements: #ff5f3a;
+
+  /* Status / signal */
+  --warn: #ff5f3a;
+  --warn-soft: #ffe6df;
+  --ok: #00d3a7;
+
+  /* Glow effects */
+  --glow-soft: 0 0 8px rgba(0, 211, 167, 0.35);
+  --glow-strong: 0 0 18px rgba(0, 211, 167, 0.55);
+  --glow-warn: 0 0 14px rgba(255, 95, 58, 0.6);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Inter", "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 8% 4%, #ffffff 0, transparent 38%),
+    radial-gradient(circle at 92% 0%, #e7fff8 0, transparent 42%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+header {
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr auto auto;
+  align-items: end;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+h1 .accent {
+  color: var(--accent-strong);
+  text-shadow: var(--glow-soft);
+}
+
+.sub {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.control {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 210px;
+}
+
+label {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+select, button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
+select:focus, button:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 1px solid var(--accent-strong);
+  cursor: pointer;
+  font-weight: 700;
+  box-shadow: var(--glow-soft);
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+button:hover {
+  box-shadow: var(--glow-strong);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+main {
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 320px 1fr;
+  /* Subtract header height (~88px) and main padding so workspace fills the rest. */
+  height: calc(100vh - 88px);
+  min-height: 0;
+}
+
+.sidebar {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 8px 22px rgba(13, 19, 32, 0.05);
+  overflow: hidden;
+}
+
+.panel h2 {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+}
+
+.panel .body {
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.75rem;
+  max-height: 76vh;
+  overflow: auto;
+}
+
+.metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 0.3rem;
+  font-size: 0.93rem;
+}
+
+.metric strong {
+  color: var(--accent-strong);
+  font-size: 1.02rem;
+}
+
+.mini-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.88rem;
+}
+
+.mini-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px dotted var(--line);
+  padding-bottom: 0.2rem;
+}
+
+.workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+#graphWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(180deg, #ffffff, #f4f7ff),
+    var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0, 211, 167, 0.05);
+}
+
+#graph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#graphHint {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.8rem;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
+
+.legend {
+  position: absolute;
+  left: 0.8rem;
+  bottom: 0.7rem;
+  right: 0.8rem;
+  display: flex;
+  gap: 0.7rem 1rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  align-items: center;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.45rem 0.65rem;
+  pointer-events: auto;
+  max-height: 32%;
+  overflow-y: auto;
+  z-index: 4;
+}
+
+.legend-section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+}
+
+.legend-counts .pill { background: var(--panel-soft); color: var(--ink-soft); }
+
+.legend-hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem 0.15rem 0.4rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.legend-item:hover {
+  border-color: var(--line-strong);
+  background: var(--accent-soft);
+}
+
+.legend-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.legend-item-hidden {
+  opacity: 0.4;
+  background: var(--panel);
+}
+
+.legend-item-hidden .legend-label {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.legend-item-hidden .legend-arrow {
+  filter: grayscale(0.7);
+  box-shadow: none !important;
+}
+
+.legend-arrow {
+  display: inline-block;
+  width: 1.1rem;
+  height: 0.18rem;
+  border-radius: 2px;
+  position: relative;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-item-static {
+  cursor: default;
+}
+
+.legend-item-static:hover {
+  background: var(--panel-soft);
+  border-color: var(--line);
+}
+
+.legend-folders {
+  max-width: 100%;
+  row-gap: 0.35rem;
+}
+
+.legend-folders .legend-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.legend-arrow::after {
+  content: "";
+  position: absolute;
+  right: -0.45rem;
+  top: 50%;
+  transform: translateY(-50%);
+  border-left: 0.45rem solid currentColor;
+  border-top: 0.28rem solid transparent;
+  border-bottom: 0.28rem solid transparent;
+  color: inherit;
+}
+
+.legend-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+.legend-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.legend-selected .legend-label {
+  font-weight: 700;
+}
+
+/* Generic neon pill, neutral by default; accent variants per edge kind. */
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-soft);
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.pill.kind-call           { border-color: var(--edge-call);           color: var(--accent-strong);     background: var(--accent-soft); }
+.pill.kind-member-call    { border-color: var(--edge-member-call);    color: #0c6aa6; background: #e1f3ff; }
+.pill.kind-instantiation  { border-color: var(--edge-instantiation);  color: #6e2db8; background: #f0e3ff; }
+.pill.kind-type-reference { border-color: var(--edge-type-reference); color: #a3327d; background: #ffe4f1; }
+.pill.kind-depends-on,
+.pill.kind-imports        { border-color: var(--edge-depends-on);     color: #946100; background: #fff1d2; }
+.pill.kind-extends,
+.pill.kind-implements     { border-color: var(--edge-extends);        color: #a82a16; background: var(--warn-soft); }
+
+.pill.dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  padding: 0;
+  border-radius: 999px;
+  vertical-align: middle;
+  margin-right: 0.35rem;
+}
+
+.warn {
+  color: var(--warn);
+  font-weight: 700;
+  font-size: 0.87rem;
+  margin: 0;
+}
+
+.btn-danger {
+  background: var(--warn);
+  color: #fff;
+  border: 1px solid #d34a26;
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  margin-top: 0.5rem;
+  box-shadow: var(--glow-warn);
+}
+
+.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.size-note {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 0.3rem 0 0;
+}
+
+@media (max-width: 1100px) {
+  header { grid-template-columns: 1fr; align-items: stretch; }
+  .control { min-width: 0; }
+  main {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+    min-height: calc(100vh - 88px);
+  }
+  .sidebar { overflow-y: visible; max-height: none; }
+  .panel .body { max-height: none; }
+  .workspace { min-height: 60vh; }
+}

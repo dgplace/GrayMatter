@@ -29,10 +29,6 @@ export function renderWebUi(): string {
       <label for="repoSelect">Repository</label>
       <select id="repoSelect"></select>
     </div>
-    <div class="control">
-      <label>&nbsp;</label>
-      <button id="refreshBtn" type="button">Refresh</button>
-    </div>
   </header>
 
   <main>
@@ -70,20 +66,7 @@ export function renderWebUi(): string {
       <div id="graphWrap">
         <div id="graph"></div>
         <div id="graphHint">WebGL &middot; drag &middot; scroll</div>
-      </div>
-      <div class="legend" id="legend"></div>
-      <div style="overflow:auto;">
-        <table class="edge-table" id="edgeTable">
-          <thead>
-            <tr>
-              <th>From</th>
-              <th>To</th>
-              <th>Kind</th>
-              <th>Weight</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+        <div class="legend" id="legend"></div>
       </div>
     </section>
   </main>

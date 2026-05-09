@@ -12,13 +12,11 @@
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "3d-force-graph": "^1.74.0",
     "@modelcontextprotocol/sdk": "^1.24.0",
-    "graphology": "^0.26.0",
-    "graphology-layout": "^0.6.1",
-    "graphology-layout-forceatlas2": "^0.10.1",
     "pg": "^8.13.0",
     "pgvector": "^0.2.0",
-    "sigma": "^3.0.0"
+    "three": "^0.169.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
