@@ -159,22 +159,27 @@ test("find_supertypes and find_subtypes tools walk symbol_relationships with dep
   assert.match(toolsSource, /"find_supertypes"/);
   assert.match(toolsSource, /"find_subtypes"/);
   assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*supertype_tree AS/);
-  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*subtype_tree AS/);
+  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*root_targets AS[\s\S]*subtype_tree AS/);
   assert.match(toolsSource, /relationship_kind IN \('extends', 'implements'\)/);
   assert.match(toolsSource, /st\.depth < \$3/);
-  assert.match(toolsSource, /sr\.target_symbol_id IS NULL AND lower\(sr\.target_name\) = lower\(ss\.name\)/);
+  assert.match(
+    toolsSource,
+    /sr\.target_symbol_id IS NULL\s*\n\s*AND lower\(sr\.target_name\) = lower\(rt\.root_symbol_name\)/,
+  );
 });
 
-test("find_implementations tool filters for implements edges and returns implementer locations", () => {
+test("find_implementations tool supports unresolved roots and walks implements/extends edges", () => {
   const toolsSource = readFileSync(new URL("../src/mcp/tools.ts", import.meta.url), "utf8");
 
   assert.match(toolsSource, /"find_implementations"/);
-  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*implementation_tree AS/);
-  assert.match(toolsSource, /sr\.relationship_kind = 'implements'/);
+  assert.match(toolsSource, /WITH RECURSIVE start_symbols AS[\s\S]*root_targets AS[\s\S]*implementation_tree AS/);
+  assert.match(toolsSource, /NOT EXISTS \(SELECT 1 FROM start_symbols\)/);
+  assert.match(toolsSource, /sr\.relationship_kind IN \('implements', 'extends'\)/);
   assert.match(toolsSource, /No implementations found for/);
   assert.match(toolsSource, /impl_file\.path AS implementer_path/);
   assert.match(toolsSource, /impl\.start_line AS implementer_start_line/);
   assert.match(toolsSource, /impl\.end_line AS implementer_end_line/);
+  assert.match(toolsSource, /\[\$\{relationshipKind\}\]/);
 });
 
 test("find_call_graph tool supports forward and reverse traversal with depth bounds and cycle guards", () => {
@@ -213,6 +218,10 @@ test("trace_dependencies deduplicates rows before ordering to avoid DISTINCT+ORD
   assert.match(toolsSource, /SELECT DISTINCT[\s\S]*FROM dep_tree/);
   assert.match(toolsSource, /FROM dedup_rows[\s\S]*ORDER BY[\s\S]*CASE dep_kind/);
   assert.doesNotMatch(toolsSource, /WHERE dt\.depth < \$4\s*\)\s*\),\s*dedup_rows AS \(/);
+  assert.match(toolsSource, /LEFT JOIN symbols resolved_symbol ON resolved_symbol\.id = sr\.target_symbol_id/);
+  assert.match(toolsSource, /COALESCE\([\s\S]*resolved_file\.id[\s\S]*fallback_file\.id[\s\S]*\) AS target_file_id/);
+  assert.match(toolsSource, /\(COALESCE\(source_file\.language, ''\) = COALESCE\(tf\.language, ''\)\)/);
+  assert.doesNotMatch(toolsSource, /target_symbol_names AS \(/);
 });
 
 test("db schema patches include resolved reference migration columns and indexes", () => {

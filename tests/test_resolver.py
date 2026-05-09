@@ -63,16 +63,24 @@ class _ResolverCursor:
             return
 
         if normalized.startswith(
-            "select s.id, s.file_id from symbols s where lower(s.name) = lower(%s) order by case when s.file_id = %s then 0 else 1 end, case when s.is_primary_declaration then 0 else 1 end, case when s.declared_in_extension then 1 else 0 end, s.is_exported desc, s.start_line limit 64"
+            "select s.id, s.file_id from symbols s join files f on f.id = s.file_id where lower(s.name) = lower(%s)"
         ):
             target_name = params[0].lower()
-            source_file_id = params[1]
+            source_language = params[1]
+            source_file_id = params[4]
             if target_name == "photoservice":
                 self._pending_fetchall = [(101, 11)]
             elif target_name == "helper":
                 self._pending_fetchall = [(203, 43), (202, 22)] if source_file_id == 43 else [(202, 22)]
             elif target_name == "ambiguoushelper":
                 self._pending_fetchall = [(301, 31), (302, 32)]
+            elif target_name == "embed":
+                if source_language == "typescript":
+                    self._pending_fetchall = [(810, 81)]
+                elif source_language == "python":
+                    self._pending_fetchall = [(910, 91)]
+                else:
+                    self._pending_fetchall = [(910, 91), (810, 81)]
             else:
                 self._pending_fetchall = []
             self._pending_fetchone = None
@@ -274,8 +282,8 @@ def test_extract_symbol_references_emits_instantiation_edges_across_languages() 
                     "symbol_type": "function",
                 },
             ],
-            "expected": {(70, "PhotoService")},
-            "unexpected": {(71, "ServiceFactory"), (72, "helper")},
+            "expected": {(70, "PhotoService"), (71, "ServiceFactory")},
+            "unexpected": {(72, "helper")},
         },
     ]
 
@@ -425,6 +433,37 @@ def test_build_reference_records_defers_cross_file_resolution() -> None:
             "resolution_method": "unresolved",
             "reference_kind_v2": "call",
         },
+    ]
+
+
+def test_build_reference_records_emits_python_instantiation_when_language_supplied() -> None:
+    """@brief Verify the bulk-ingest path tags Python class calls as instantiation when language is passed."""
+    records = resolver.build_reference_records(
+        [
+            {
+                "content": "PhotoService()",
+                "start_line": 1,
+                "end_line": 1,
+                "symbol_name": "bootstrap",
+            }
+        ],
+        language="python",
+    )
+
+    instantiations = [row for row in records if row["reference_kind"] == "instantiation"]
+    assert instantiations == [
+        {
+            "chunk_index": 0,
+            "source_symbol_name": "bootstrap",
+            "target_name": "PhotoService",
+            "reference_kind": "instantiation",
+            "line_no": 1,
+            "target_symbol_id": None,
+            "target_file_id": None,
+            "resolution_confidence": 0.0,
+            "resolution_method": "unresolved",
+            "reference_kind_v2": "instantiation",
+        }
     ]
 
 
@@ -581,6 +620,45 @@ def test_resolve_reference_rows_marks_ambiguous_heuristic_matches_below_threshol
     ] == [
         (203, 43, resolver.HEURISTIC_NAME_CONFIDENCE, "heuristic_name"),
         (301, 31, resolver.AMBIGUOUS_HEURISTIC_CONFIDENCE, "heuristic_name_ambiguous"),
+    ]
+
+
+def test_resolve_reference_rows_scopes_heuristics_by_source_language_family() -> None:
+    """@brief Verify heuristic fallback avoids cross-language symbol co-resolution."""
+    cur = _ResolverCursor()
+
+    resolved = resolver._resolve_reference_rows(
+        cur,
+        [
+            {
+                "id": 901,
+                "source_file_id": 71,
+                "source_path": "src/mcp/tools.ts",
+                "language": "typescript",
+                "source_symbol_name": "registerTools",
+                "target_name": "embed",
+                "reference_kind": "call",
+                "line_no": 50,
+            },
+            {
+                "id": 902,
+                "source_file_id": 72,
+                "source_path": "codebrain/ingest.py",
+                "language": "python",
+                "source_symbol_name": "process_file",
+                "target_name": "embed",
+                "reference_kind": "call",
+                "line_no": 80,
+            },
+        ],
+    )
+
+    assert [
+        (row["id"], row["target_symbol_id"], row["target_file_id"], row["resolution_method"])
+        for row in resolved
+    ] == [
+        (901, 810, 81, "heuristic_name"),
+        (902, 910, 91, "heuristic_name"),
     ]
 
 

@@ -47,6 +47,8 @@ Responsibilities:
 - enforce mandatory repository scope for query tools
 - run hybrid search (semantic + keyword) within a selected repository
 - provide symbol lookup, references, dependency tracing, file map, and intent summaries
+- preserve language-aware reference traversal in dependency tracing so same-named symbols across languages do not create phantom edges
+- support implementation traversal for both `implements` and `extends`, including unresolved external base names
 - provide domain-level cluster navigation via `clusters` and `cluster_members`
 - provide node-level prose context via `describe_node(kind,id)` over linked `doc_links`
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
@@ -97,10 +99,11 @@ Design pattern:
 6. `codebrain/embedder.py` generates file and chunk embeddings.
 7. `resolver.py` turns chunk-level lexical references into resolver records with `target_symbol_id`, `resolution_confidence`, `resolution_method`, and `reference_kind_v2` when possible.
 8. Exact resolution is strategy-driven: `scip-typescript` runs for TypeScript-family repos that have both `tsconfig.json` and installed `node_modules`, while `scip-python` runs for repositories with recognizable Python project markers and a compatible runtime. Both strategies join SCIP occurrence ranges back to `symbols` rows by repo-relative file path plus declaration line range, and unresolved or ambiguous sites fall back cleanly to heuristic name resolution with explicit confidence scores.
-9. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
-10. `codebrain/ingest.py` stores normalized records in PostgreSQL.
-11. After each ingest run, dependency cycles are materialized and Leiden clustering persists semantic `clusters` + `cluster_members`; each cluster also gets an LLM name/summary and an embedding.
-12. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
+9. Heuristic fallback resolution is language-family scoped to prevent cross-language collisions (for example, TypeScript references do not co-resolve to same-named Python symbols). Node-family files (`typescript|tsx|javascript|jsx`) share one compatibility bucket; other languages resolve by exact language match.
+10. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
+11. `codebrain/ingest.py` stores normalized records in PostgreSQL.
+12. After each ingest run, dependency cycles are materialized and clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
+13. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
 

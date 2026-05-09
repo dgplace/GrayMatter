@@ -55,7 +55,7 @@ REFERENCE_PATTERNS = [
     (re.compile(r"(?<![.\w])([a-z_][A-Za-z0-9_]*)\s*\("), "call"),
     (re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\("), "member_call"),
 ]
-LANGUAGE_CLASS_SYMBOL_TYPES = frozenset({"class", "struct"})
+NODE_SOURCE_LANGUAGES = frozenset({"typescript", "tsx", "javascript", "jsx"})
 NEW_OPERATOR_INSTANTIATION_PATTERN = re.compile(
     r"\bnew\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)?)\s*(?:<[^>]+>)?\s*\("
 )
@@ -417,17 +417,21 @@ def _lookup_symbol_candidates(
     cur,
     target_name: str,
     source_file_id: Optional[int] = None,
-    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
+    source_language: Optional[str] = None,
+    cache: Optional[dict[tuple[str, Optional[int], Optional[str]], list[tuple[int, int]]]] = None,
 ) -> list[tuple[int, int]]:
     """@brief Return ranked symbol candidates for heuristic fallback matching.
 
     @param cur Open database cursor.
     @param target_name Symbol name to resolve.
     @param source_file_id Optional source file id used to prefer same-file matches.
+    @param source_language Optional source-file language used for language-family
+           compatibility filtering.
     @param cache Optional reusable candidate cache.
     @return Ranked `(symbol_id, file_id)` candidate tuples.
     """
-    cache_key = (target_name.lower(), source_file_id)
+    normalized_source_language = (source_language or "").lower() or None
+    cache_key = (target_name.lower(), source_file_id, normalized_source_language)
     if cache is not None and cache_key in cache:
         return cache[cache_key]
 
@@ -436,7 +440,16 @@ def _lookup_symbol_candidates(
         """
         SELECT s.id, s.file_id
         FROM symbols s
+        JOIN files f ON f.id = s.file_id
         WHERE lower(s.name) = lower(%s)
+          AND (
+            %s IS NULL
+            OR lower(COALESCE(f.language, '')) = %s
+            OR (
+              %s IN ('typescript', 'tsx', 'javascript', 'jsx')
+              AND lower(COALESCE(f.language, '')) IN ('typescript', 'tsx', 'javascript', 'jsx')
+            )
+          )
         ORDER BY
             CASE WHEN s.file_id = %s THEN 0 ELSE 1 END,
             CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
@@ -445,7 +458,13 @@ def _lookup_symbol_candidates(
             s.start_line
         LIMIT 64
         """,
-        (target_name, ranked_source_file_id),
+        (
+            target_name,
+            normalized_source_language,
+            normalized_source_language,
+            normalized_source_language,
+            ranked_source_file_id,
+        ),
     )
     candidates = [(row[0], row[1]) for row in cur.fetchall()]
     if cache is not None:
@@ -457,13 +476,16 @@ def _resolve_target_symbol_heuristic(
     cur,
     target_name: str,
     source_file_id: Optional[int] = None,
-    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
+    source_language: Optional[str] = None,
+    cache: Optional[dict[tuple[str, Optional[int], Optional[str]], list[tuple[int, int]]]] = None,
 ) -> tuple[Optional[int], Optional[int], float, str]:
     """@brief Resolve a symbol by name while exposing heuristic confidence.
 
     @param cur Open database cursor.
     @param target_name Symbol name to resolve.
     @param source_file_id Optional source file id used for same-file scoping.
+    @param source_language Optional source-file language for language-family
+           scoped candidate lookup.
     @param cache Optional reusable candidate cache.
     @return Tuple of `(target_symbol_id, target_file_id, confidence, method)`.
     """
@@ -471,6 +493,7 @@ def _resolve_target_symbol_heuristic(
         cur,
         target_name,
         source_file_id=source_file_id,
+        source_language=source_language,
         cache=cache,
     )
     if not candidates:
@@ -585,7 +608,7 @@ def _resolve_reference_rows(
     """@brief Resolve a batch of reference rows with exact strategies then fallback."""
     exact_matches = _collect_exact_matches(repo_root, rows)
     exact_lookup_cache: dict[tuple[str, str, int], tuple[Optional[int], Optional[int]]] = {}
-    name_lookup_cache: dict[tuple[str, Optional[int]], list[tuple[int, int]]] = {}
+    name_lookup_cache: dict[tuple[str, Optional[int], Optional[str]], list[tuple[int, int]]] = {}
     resolved_rows = []
 
     for row in rows:
@@ -620,6 +643,7 @@ def _resolve_reference_rows(
             cur,
             row["target_name"],
             source_file_id=row.get("source_file_id"),
+            source_language=row.get("language"),
             cache=name_lookup_cache,
         )
         resolved_rows.append(
@@ -635,19 +659,9 @@ def _resolve_reference_rows(
     return resolved_rows
 
 
-def _extract_declared_class_names(chunks: list[dict]) -> set[str]:
-    """@brief Collect class-like symbol names declared within the current file."""
-    return {
-        str(chunk.get("symbol_name"))
-        for chunk in chunks
-        if chunk.get("symbol_name") and chunk.get("symbol_type") in LANGUAGE_CLASS_SYMBOL_TYPES
-    }
-
-
 def _extract_instantiation_targets_for_line(
     line: str,
     language: Optional[str],
-    declared_class_names: set[str],
 ) -> list[str]:
     """@brief Return class names instantiated on a source line for a language."""
     normalized_language = (language or "").lower()
@@ -670,9 +684,7 @@ def _extract_instantiation_targets_for_line(
 
     if normalized_language == "python":
         for match in PYTHON_CLASS_CALL_PATTERN.finditer(line):
-            class_name = match.group(1)
-            if class_name in declared_class_names:
-                targets.append(class_name)
+            targets.append(match.group(1))
 
     seen = set()
     unique_targets = []
@@ -693,8 +705,6 @@ def extract_symbol_references(chunks: list[dict], language: Optional[str] = None
             and line number.
     """
     references = []
-    declared_class_names = _extract_declared_class_names(chunks)
-
     for chunk_index, chunk in enumerate(chunks):
         source_symbol_name = chunk.get("symbol_name") or chunk.get("parent_symbol")
         seen = set()
@@ -725,7 +735,7 @@ def extract_symbol_references(chunks: list[dict], language: Optional[str] = None
                         }
                     )
 
-            for target_name in _extract_instantiation_targets_for_line(line, language, declared_class_names):
+            for target_name in _extract_instantiation_targets_for_line(line, language):
                 if not target_name or target_name == source_symbol_name:
                     continue
                 key = (line_no, target_name, "instantiation")
@@ -748,7 +758,7 @@ def extract_symbol_references(chunks: list[dict], language: Optional[str] = None
 def resolve_target_symbol(
     cur,
     target_name: str,
-    cache: Optional[dict[tuple[str, Optional[int]], list[tuple[int, int]]]] = None,
+    cache: Optional[dict[tuple[str, Optional[int], Optional[str]], list[tuple[int, int]]]] = None,
 ) -> tuple[Optional[int], Optional[int]]:
     """@brief Resolve a target symbol name to a preferred symbol/file id pair.
 
@@ -799,14 +809,17 @@ def resolve_references(
     return _resolve_reference_rows(cur, rows, repo_name=repo_name, repo_root=repo_root)
 
 
-def build_reference_records(chunks: list[dict]) -> list[dict]:
+def build_reference_records(chunks: list[dict], language: Optional[str] = None) -> list[dict]:
     """@brief Build unresolved resolver records for later cross-file resolution.
 
     @param chunks Chunk dictionaries emitted by the parser/chunker stage.
+    @param language Optional CodeBrain language label so language-specific
+        extraction (e.g. Python class-call instantiation) fires during the
+        bulk ingest path.
     @return Resolver records with a stable unresolved shape suitable for
             persistence before a later resolution pass.
     """
-    references = extract_symbol_references(chunks)
+    references = extract_symbol_references(chunks, language=language)
     unresolved_references = []
 
     for reference in references:

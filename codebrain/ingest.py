@@ -66,6 +66,8 @@ CLUSTER_SUMMARY_MAX_CHARS = 3_000
 CLUSTER_MEMBER_CONTEXT_LIMIT = 30
 CLUSTER_CLASS_KINDS = ("class", "struct", "interface", "protocol", "enum")
 MIN_SYMBOL_CLUSTER_NODES = 5
+DEADLOCK_RETRY_ATTEMPTS = 2
+DEADLOCK_RETRY_BASE_DELAY_SECONDS = 0.05
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -199,6 +201,17 @@ def _is_readme_doc_source(language: Optional[str], rel_path: str) -> bool:
     normalized_path = rel_path.replace("\\", "/")
     basename = posixpath.basename(normalized_path).lower()
     return basename.startswith("readme") or "/" not in normalized_path
+
+
+def _is_deadlock_error(error: Exception) -> bool:
+    """@brief Return whether an exception represents a PostgreSQL deadlock.
+
+    @param error Exception raised during SQL execution.
+    @return True when the error is a deadlock and safe to retry.
+    """
+    if isinstance(error, psycopg2.errors.DeadlockDetected):
+        return True
+    return "deadlock detected" in str(error).lower()
 
 
 def _build_doc_link_embedding_input(rel_path: str, source: str, content: str) -> str:
@@ -1964,6 +1977,51 @@ def _build_cluster_embedding_input(
     return payload[:CLUSTER_SUMMARY_MAX_CHARS]
 
 
+def _detect_communities(graph: nx.Graph, resolution: float) -> tuple[list[set[int]], str]:
+    """@brief Detect graph communities with backend-safe fallback behavior.
+
+    Prefers Leiden communities when the active NetworkX backend supports it.
+    Falls back to Louvain, then connected components, to avoid hard failures
+    during ingestion when optional backend features are unavailable.
+
+    @param graph Weighted undirected graph for clustering.
+    @param resolution Community-resolution parameter used by Leiden/Louvain.
+    @return Tuple of `(communities, algorithm_name)` where communities are
+            non-empty node sets.
+    """
+    try:
+        communities = list(
+            nx.community.leiden_communities(
+                graph,
+                weight="weight",
+                resolution=resolution,
+                seed=42,
+            )
+        )
+        normalized = [set(community) for community in communities if len(community) > 0]
+        if normalized:
+            return normalized, "leiden"
+    except (AttributeError, NotImplementedError):
+        pass
+
+    try:
+        communities = list(
+            nx.community.louvain_communities(
+                graph,
+                weight="weight",
+                resolution=resolution,
+                seed=42,
+            )
+        )
+        normalized = [set(community) for community in communities if len(community) > 0]
+        if normalized:
+            return normalized, "louvain"
+    except (AttributeError, NotImplementedError):
+        pass
+
+    return [set(component) for component in nx.connected_components(graph)], "connected_components"
+
+
 def materialize_clusters(
     conn,
     repo_name: str,
@@ -1972,14 +2030,14 @@ def materialize_clusters(
     no_classify: bool = False,
     resolution: float = 1.0,
 ) -> tuple[int, str]:
-    """@brief Rebuild repository cluster rows using Leiden community detection.
+    """@brief Rebuild repository cluster rows using resilient community detection.
 
     @param conn Open database connection.
     @param repo_name Repository identifier.
     @param embedder Embedding client for cluster profile vectors.
     @param classifier Intent classifier for name/summary generation.
     @param no_classify Whether classifier calls are disabled.
-    @param resolution Leiden resolution parameter.
+    @param resolution Leiden/Louvain resolution parameter.
     @return Tuple of `(cluster_count, granularity)`.
     """
     cur = conn.cursor()
@@ -1997,8 +2055,11 @@ def materialize_clusters(
         conn.commit()
         return 0, granularity
 
-    communities = list(nx.community.leiden_communities(graph, weight="weight", resolution=resolution, seed=42))
-    communities = [set(community) for community in communities if len(community) > 0]
+    communities, community_algorithm = _detect_communities(graph, resolution)
+    if community_algorithm != "leiden":
+        console.print(
+            f"  [yellow]![/] [dim]Leiden unavailable; using {community_algorithm} communities fallback.[/]"
+        )
     communities.sort(key=lambda community: sorted(node_meta[node]["label"] for node in community)[0])
 
     cluster_count = 0
@@ -2138,6 +2199,7 @@ def process_file(
     force: bool = False,
     no_classify: bool = False,
     incremental_update: bool = False,
+    _deadlock_retry_attempt: int = 0,
 ) -> dict:
     """@brief Parse, classify, embed, and persist one file.
 
@@ -2153,6 +2215,7 @@ def process_file(
     @param no_classify Whether to skip classifier calls.
     @param incremental_update Whether to re-resolve impacted inbound references
             for a single changed file instead of doing batch-style indexing.
+    @param _deadlock_retry_attempt Internal retry counter for deadlock recovery.
     @return Result dictionary containing status, optional counters/error details,
             and optional processing warning messages under `warnings`.
     """
@@ -2163,6 +2226,8 @@ def process_file(
 
     conn = db_pool.getconn()
     register_vector(conn)
+    retry_deadlock = False
+    retry_error: Optional[Exception] = None
     try:
         cur = conn.cursor()
 
@@ -2499,7 +2564,7 @@ def process_file(
                 repo_name=repo_name,
             )
             if incremental_update
-            else resolver.build_reference_records(chunks)
+            else resolver.build_reference_records(chunks, language=language)
         )
         for reference in reference_records:
             cur.execute(
@@ -2553,14 +2618,49 @@ def process_file(
             conn.rollback()
         except Exception:
             pass
+        if _is_deadlock_error(e) and _deadlock_retry_attempt < DEADLOCK_RETRY_ATTEMPTS:
+            retry_deadlock = True
+            retry_error = e
+        else:
+            deadlock_suffix = ""
+            if _is_deadlock_error(e):
+                deadlock_suffix = (
+                    f" (deadlock retries exhausted after {_deadlock_retry_attempt} attempts)"
+                )
+            return {
+                "status": "error",
+                "path": rel_path,
+                "error": f"{e}{deadlock_suffix}",
+                "warnings": processing_warnings if "processing_warnings" in locals() else [],
+            }
+    finally:
+        db_pool.putconn(conn)
+
+    if retry_deadlock:
+        # Small bounded backoff gives concurrent workers time to release locks.
+        time.sleep(DEADLOCK_RETRY_BASE_DELAY_SECONDS * (2 ** _deadlock_retry_attempt))
+        return process_file(
+            fpath=fpath,
+            repo_root=repo_root,
+            repo_name=repo_name,
+            config=config,
+            embedder=embedder,
+            classifier=classifier,
+            chunker=chunker,
+            db_pool=db_pool,
+            force=force,
+            no_classify=no_classify,
+            incremental_update=incremental_update,
+            _deadlock_retry_attempt=_deadlock_retry_attempt + 1,
+        )
+    if retry_error is not None:
         return {
             "status": "error",
             "path": rel_path,
-            "error": str(e),
+            "error": str(retry_error),
             "warnings": processing_warnings if "processing_warnings" in locals() else [],
         }
-    finally:
-        db_pool.putconn(conn)
+    return {"status": "error", "path": rel_path, "error": "Unknown ingestion failure"}
 
 
 class ReindexHandler(FileSystemEventHandler):

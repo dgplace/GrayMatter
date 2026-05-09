@@ -1093,13 +1093,30 @@ export function registerTools(server: McpServer): void {
             s.start_line
           LIMIT 25
         ),
-        subtype_tree AS (
+        root_targets AS (
           SELECT
             ss.id AS root_symbol_id,
             ss.name AS root_symbol_name,
             ss.file_path AS root_symbol_path,
             ss.start_line AS root_symbol_start_line,
-            ss.end_line AS root_symbol_end_line,
+            ss.end_line AS root_symbol_end_line
+          FROM start_symbols ss
+          UNION ALL
+          SELECT
+            NULL::int AS root_symbol_id,
+            $2::text AS root_symbol_name,
+            NULL::text AS root_symbol_path,
+            NULL::int AS root_symbol_start_line,
+            NULL::int AS root_symbol_end_line
+          WHERE NOT EXISTS (SELECT 1 FROM start_symbols)
+        ),
+        subtype_tree AS (
+          SELECT
+            rt.root_symbol_id,
+            rt.root_symbol_name,
+            rt.root_symbol_path,
+            rt.root_symbol_start_line,
+            rt.root_symbol_end_line,
             sr.source_symbol_id,
             sr.target_symbol_id,
             sr.relationship_kind,
@@ -1107,13 +1124,14 @@ export function registerTools(server: McpServer): void {
             sr.external_module,
             sr.line_no,
             1 AS depth,
-            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
-          FROM start_symbols ss
+            ARRAY[COALESCE(rt.root_symbol_id, -1), sr.source_symbol_id]::int[] AS walk_path
+          FROM root_targets rt
           JOIN symbol_relationships sr
             ON sr.relationship_kind IN ('extends', 'implements')
            AND (
-             sr.target_symbol_id = ss.id
-             OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(ss.name))
+             (rt.root_symbol_id IS NOT NULL AND sr.target_symbol_id = rt.root_symbol_id)
+             OR (sr.target_symbol_id IS NULL
+                 AND lower(sr.target_name) = lower(rt.root_symbol_name))
            )
 
           UNION ALL
@@ -1310,7 +1328,7 @@ export function registerTools(server: McpServer): void {
 
   server.tool(
     "find_implementations",
-    "Returns direct and transitive implementers for an interface/abstract symbol by walking symbol_relationships with kind=implements. Repository scope is required.",
+    "Returns direct and transitive implementers/subclasses for a symbol by walking symbol_relationships with kind=implements/extends. Repository scope is required.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Interface or abstract symbol name to inspect."),
@@ -1340,36 +1358,50 @@ export function registerTools(server: McpServer): void {
               lower(s.name) = lower($2)
               OR COALESCE(s.qualified_name, '') ILIKE '%' || $2
             )
-            AND (
-              s.kind IN ('interface', 'protocol')
-              OR COALESCE(s.signature, '') ILIKE '%abstract%'
-            )
           ORDER BY
             CASE WHEN lower(s.name) = lower($2) THEN 0 ELSE 1 END,
             CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
             s.start_line
           LIMIT 25
         ),
-        implementation_tree AS (
+        root_targets AS (
           SELECT
             ss.id AS root_symbol_id,
             ss.name AS root_symbol_name,
             ss.file_path AS root_symbol_path,
             ss.start_line AS root_symbol_start_line,
-            ss.end_line AS root_symbol_end_line,
+            ss.end_line AS root_symbol_end_line
+          FROM start_symbols ss
+          UNION ALL
+          SELECT
+            NULL::int AS root_symbol_id,
+            $2::text AS root_symbol_name,
+            NULL::text AS root_symbol_path,
+            NULL::int AS root_symbol_start_line,
+            NULL::int AS root_symbol_end_line
+          WHERE NOT EXISTS (SELECT 1 FROM start_symbols)
+        ),
+        implementation_tree AS (
+          SELECT
+            rt.root_symbol_id,
+            rt.root_symbol_name,
+            rt.root_symbol_path,
+            rt.root_symbol_start_line,
+            rt.root_symbol_end_line,
             sr.source_symbol_id AS implementer_symbol_id,
             sr.target_symbol_id,
+            sr.relationship_kind,
             sr.target_name,
             sr.external_module,
             sr.line_no,
             1 AS depth,
-            ARRAY[ss.id, sr.source_symbol_id]::int[] AS walk_path
-          FROM start_symbols ss
+            ARRAY[sr.source_symbol_id]::int[] AS walk_path
+          FROM root_targets rt
           JOIN symbol_relationships sr
-            ON sr.relationship_kind = 'implements'
+            ON sr.relationship_kind IN ('implements', 'extends')
            AND (
-             sr.target_symbol_id = ss.id
-             OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(ss.name))
+             (rt.root_symbol_id IS NOT NULL AND sr.target_symbol_id = rt.root_symbol_id)
+             OR (sr.target_symbol_id IS NULL AND lower(sr.target_name) = lower(rt.root_symbol_name))
            )
 
           UNION ALL
@@ -1382,6 +1414,7 @@ export function registerTools(server: McpServer): void {
             it.root_symbol_end_line,
             sr.source_symbol_id AS implementer_symbol_id,
             sr.target_symbol_id,
+            sr.relationship_kind,
             sr.target_name,
             sr.external_module,
             sr.line_no,
@@ -1389,7 +1422,7 @@ export function registerTools(server: McpServer): void {
             it.walk_path || sr.source_symbol_id
           FROM implementation_tree it
           JOIN symbol_relationships sr
-            ON sr.relationship_kind = 'implements'
+            ON sr.relationship_kind IN ('implements', 'extends')
            AND sr.target_symbol_id = it.implementer_symbol_id
           WHERE it.depth < $3
             AND NOT sr.source_symbol_id = ANY(it.walk_path)
@@ -1401,6 +1434,7 @@ export function registerTools(server: McpServer): void {
           it.root_symbol_start_line,
           it.root_symbol_end_line,
           it.depth,
+          it.relationship_kind,
           impl.name AS implementer_name,
           impl.kind AS implementer_kind,
           impl_file.path AS implementer_path,
@@ -1439,8 +1473,9 @@ export function registerTools(server: McpServer): void {
         const implementerPath = String(row.implementer_path || "unknown");
         const implementerStart = Number(row.implementer_start_line || 0);
         const implementerEnd = Number(row.implementer_end_line || 0);
+        const relationshipKind = String(row.relationship_kind || "implements");
         lines.push(
-          `  depth ${depth} [implements] <- ${implementerName} (${implementerKind}, ${implementerPath}:${implementerStart}-${implementerEnd})`,
+          `  depth ${depth} [${relationshipKind}] <- ${implementerName} (${implementerKind}, ${implementerPath}:${implementerStart}-${implementerEnd})`,
         );
       }
 
@@ -1477,11 +1512,6 @@ export function registerTools(server: McpServer): void {
           WHERE repo = $2
             AND path LIKE '%' || $1 || '%'
         ),
-        target_symbol_names AS (
-          SELECT DISTINCT s.name
-          FROM symbols s
-          JOIN target_files tf ON tf.id = s.file_id
-        ),
         edges AS (
           SELECT
             d.source_file_id,
@@ -1516,15 +1546,75 @@ export function registerTools(server: McpServer): void {
 
           SELECT
             sr.source_file_id,
-            target_file.id AS target_file_id,
-            sr.reference_kind AS dep_kind,
+            COALESCE(
+              CASE
+                WHEN resolved_file.id IS NOT NULL
+                  AND (
+                    (COALESCE(source_file.language, '') = COALESCE(resolved_file.language, ''))
+                    OR (
+                      source_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                      AND resolved_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                    )
+                  )
+                THEN resolved_file.id
+                ELSE NULL
+              END,
+              fallback_file.id
+            ) AS target_file_id,
+            COALESCE(sr.reference_kind_v2, sr.reference_kind) AS dep_kind,
             sr.source_symbol_name AS source_symbol,
-            s.name AS target_symbol,
+            COALESCE(
+              CASE
+                WHEN resolved_file.id IS NOT NULL
+                  AND (
+                    (COALESCE(source_file.language, '') = COALESCE(resolved_file.language, ''))
+                    OR (
+                      source_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                      AND resolved_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                    )
+                  )
+                THEN resolved_symbol.name
+                ELSE NULL
+              END,
+              fallback_symbol.name
+            ) AS target_symbol,
             NULL::text AS external_module
           FROM symbol_references sr
           JOIN files source_file ON source_file.id = sr.source_file_id AND source_file.repo = $2
-          JOIN symbols s ON lower(s.name) = lower(sr.target_name)
-          JOIN files target_file ON target_file.id = s.file_id AND target_file.repo = $2
+          LEFT JOIN symbols resolved_symbol ON resolved_symbol.id = sr.target_symbol_id
+          LEFT JOIN files resolved_file ON resolved_file.id = resolved_symbol.file_id AND resolved_file.repo = $2
+          LEFT JOIN LATERAL (
+            SELECT s.id, s.file_id, s.name
+            FROM symbols s
+            JOIN files tf ON tf.id = s.file_id AND tf.repo = $2
+            WHERE lower(s.name) = lower(sr.target_name)
+              AND (
+                (COALESCE(source_file.language, '') = COALESCE(tf.language, ''))
+                OR (
+                  source_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                  AND tf.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                )
+              )
+              AND (
+                sr.target_symbol_id IS NULL
+                OR resolved_file.id IS NULL
+                OR NOT (
+                  (COALESCE(source_file.language, '') = COALESCE(resolved_file.language, ''))
+                  OR (
+                    source_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                    AND resolved_file.language IN ('typescript', 'tsx', 'javascript', 'jsx')
+                  )
+                )
+              )
+            ORDER BY
+              CASE WHEN s.is_primary_declaration THEN 0 ELSE 1 END,
+              CASE WHEN s.declared_in_extension THEN 1 ELSE 0 END,
+              s.is_exported DESC,
+              s.start_line
+            LIMIT 1
+          ) fallback_symbol ON TRUE
+          LEFT JOIN files fallback_file ON fallback_file.id = fallback_symbol.file_id AND fallback_file.repo = $2
+          WHERE COALESCE(resolved_file.id, fallback_file.id) IS NOT NULL
         ),
         dep_tree AS (
           SELECT
@@ -1545,13 +1635,7 @@ export function registerTools(server: McpServer): void {
             )
             OR (
               $3 IN ('inbound', 'both')
-              AND (
-                e.target_file_id IN (SELECT id FROM target_files)
-                OR (
-                  e.target_file_id IS NOT NULL
-                  AND e.target_symbol IN (SELECT name FROM target_symbol_names)
-                )
-              )
+              AND e.target_file_id IN (SELECT id FROM target_files)
             )
 
           UNION ALL

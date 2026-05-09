@@ -335,6 +335,46 @@ def test_parse_cluster_profile_returns_fallback_on_parse_failure() -> None:
     assert summary == "Fallback summary"
 
 
+def test_detect_communities_falls_back_to_louvain_when_leiden_backend_is_unavailable(monkeypatch) -> None:
+    """@brief Verify community detection uses Louvain when Leiden backend support is missing."""
+    graph = ingest.nx.Graph()
+    graph.add_edge(1, 2, weight=1.0)
+    graph.add_node(3)
+
+    def _raise_unavailable(*args, **kwargs):
+        raise NotImplementedError("backend missing")
+
+    monkeypatch.setattr(ingest.nx.community, "leiden_communities", _raise_unavailable)
+    monkeypatch.setattr(
+        ingest.nx.community,
+        "louvain_communities",
+        lambda *args, **kwargs: [{1, 2}, {3}],
+    )
+
+    communities, algorithm = ingest._detect_communities(graph, resolution=1.0)
+
+    assert algorithm == "louvain"
+    assert communities == [{1, 2}, {3}]
+
+
+def test_detect_communities_falls_back_to_connected_components_when_community_apis_unavailable(monkeypatch) -> None:
+    """@brief Verify final cluster fallback uses connected components when Leiden/Louvain are unavailable."""
+    graph = ingest.nx.Graph()
+    graph.add_edge(1, 2, weight=1.0)
+    graph.add_node(3)
+
+    def _raise_unavailable(*args, **kwargs):
+        raise NotImplementedError("backend missing")
+
+    monkeypatch.setattr(ingest.nx.community, "leiden_communities", _raise_unavailable)
+    monkeypatch.setattr(ingest.nx.community, "louvain_communities", _raise_unavailable)
+
+    communities, algorithm = ingest._detect_communities(graph, resolution=1.0)
+
+    assert algorithm == "connected_components"
+    assert {frozenset(group) for group in communities} == {frozenset({1, 2}), frozenset({3})}
+
+
 def test_walk_repo_includes_markdown_toml_and_yaml_extensions(tmp_path) -> None:
     """@brief Verify walk_repo honors doc/config extension mappings in language config."""
     repo_root = tmp_path / "repo"
@@ -1003,6 +1043,79 @@ def test_process_file_clears_symbol_relationships_before_code_chunks(monkeypatch
         "symbols",
         "code_chunks",
     ]
+
+
+def test_process_file_retries_deadlock_and_succeeds(monkeypatch, tmp_path) -> None:
+    """@brief Verify transient deadlocks trigger bounded retry and return indexed status."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fpath = repo_root / "demo.py"
+    fpath.write_text("print('x')\n", encoding="utf-8")
+
+    class _RetryCursor:
+        def __init__(self) -> None:
+            self._pending_fetch: tuple | None = None
+            self.calls = 0
+
+        def execute(self, query: str, params=None) -> None:
+            normalized = " ".join(query.strip().lower().split())
+            if normalized.startswith("select id, hash from files"):
+                self._pending_fetch = (42, "stale-hash")
+                return
+            if normalized.startswith("update files set"):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ingest.psycopg2.errors.DeadlockDetected("deadlock detected")
+            self._pending_fetch = None
+
+        def fetchone(self):
+            return self._pending_fetch
+
+    class _RetryConn:
+        def __init__(self) -> None:
+            self._cursor = _RetryCursor()
+            self.rollbacks = 0
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    class _RetryPool:
+        def __init__(self) -> None:
+            self._conn = _RetryConn()
+
+        def getconn(self):
+            return self._conn
+
+        def putconn(self, conn) -> None:
+            return None
+
+    monkeypatch.setattr(ingest, "register_vector", lambda conn: None)
+    monkeypatch.setattr(ingest.time, "sleep", lambda seconds: None)
+
+    retry_pool = _RetryPool()
+
+    result = ingest.process_file(
+        fpath=fpath,
+        repo_root=repo_root,
+        repo_name="repo",
+        config={"languages": {"extensions": {"py": "python"}}},
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_FakeChunker(),
+        db_pool=retry_pool,
+        force=True,
+        no_classify=False,
+    )
+
+    assert result["status"] == "indexed"
+    assert retry_pool._conn.rollbacks == 1
+    assert retry_pool._conn._cursor.calls == 2
 
 
 def test_reindex_handler_on_deleted_executes_delete_query(monkeypatch) -> None:
