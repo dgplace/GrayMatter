@@ -212,6 +212,81 @@ def test_forced_non_code_intent_maps_markdown_and_config_languages() -> None:
     assert ingest.forced_non_code_intent(None) is None
 
 
+def test_is_readme_doc_source_matches_readmes_and_top_level_markdown() -> None:
+    """@brief Verify readme-source tagging for README files and repo-root markdown docs."""
+    assert ingest._is_readme_doc_source("markdown", "README.md")
+    assert ingest._is_readme_doc_source("markdown", "docs/README.MD")
+    assert ingest._is_readme_doc_source("markdown", "ARCHITECTURE.md")
+    assert not ingest._is_readme_doc_source("markdown", "docs/guide.md")
+    assert not ingest._is_readme_doc_source("python", "README.md")
+
+
+def test_persist_doc_links_embeds_and_inserts_rows() -> None:
+    """@brief Verify doc_links persistence batches embeddings and inserts one row per payload."""
+
+    class _DocLinkCursor:
+        """@brief Cursor stub that records executed SQL statements."""
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple | None]] = []
+
+        def execute(self, query: str, params=None) -> None:
+            self.calls.append((" ".join(query.strip().split()), params))
+
+    cursor = _DocLinkCursor()
+    rows = [
+        {
+            "source": "docstring",
+            "target_kind": "symbol",
+            "target_id": 17,
+            "content": "Returns hydrated session data.",
+        },
+        {
+            "source": "readme",
+            "target_kind": "file",
+            "target_id": 9,
+            "content": "# Quickstart\nRun indexer first.",
+        },
+    ]
+
+    inserted = ingest._persist_doc_links(
+        cur=cursor,
+        embedder=_FakeEmbedder(),
+        repo_name="CodeBrain",
+        rel_path="README.md",
+        source_file_id=9,
+        rows=rows,
+    )
+    assert inserted == 2
+
+    insert_calls = [
+        params
+        for query, params in cursor.calls
+        if query.lower().startswith("insert into doc_links")
+    ]
+    assert len(insert_calls) == 2
+    assert insert_calls[0] == (
+        "CodeBrain",
+        9,
+        "docstring",
+        "README.md",
+        "symbol",
+        17,
+        "Returns hydrated session data.",
+        [0.0],
+    )
+    assert insert_calls[1] == (
+        "CodeBrain",
+        9,
+        "readme",
+        "README.md",
+        "file",
+        9,
+        "# Quickstart\nRun indexer first.",
+        [0.0],
+    )
+
+
 def test_walk_repo_includes_markdown_toml_and_yaml_extensions(tmp_path) -> None:
     """@brief Verify walk_repo honors doc/config extension mappings in language config."""
     repo_root = tmp_path / "repo"

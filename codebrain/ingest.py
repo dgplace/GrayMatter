@@ -60,6 +60,7 @@ NON_CODE_INTENT_BY_LANGUAGE = {
     "yaml": "configuration",
 }
 DEFAULT_NON_CODE_MAX_BYTES = 262_144
+DOC_LINK_EMBED_MAX_CHARS = 6_000
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -162,6 +163,100 @@ def forced_non_code_intent(language: Optional[str]) -> Optional[str]:
     if not language:
         return None
     return NON_CODE_INTENT_BY_LANGUAGE.get(language)
+
+
+def _normalize_doc_link_content(content: Optional[str]) -> Optional[str]:
+    """@brief Normalize prose content before persisting doc_links rows.
+
+    @param content Raw documentation text payload.
+    @return Trimmed content, or `None` when payload is empty/whitespace.
+    """
+    if content is None:
+        return None
+    normalized = content.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _is_readme_doc_source(language: Optional[str], rel_path: str) -> bool:
+    """@brief Decide whether a file should emit `source='readme'` doc links.
+
+    Treats repository-level Markdown docs as readme-style prose so they can be
+    associated with file-level targets in `doc_links`.
+
+    @param language Detected file language.
+    @param rel_path Repository-relative file path.
+    @return True when the file is a README markdown file or top-level markdown doc.
+    """
+    if language != "markdown":
+        return False
+    normalized_path = rel_path.replace("\\", "/")
+    basename = posixpath.basename(normalized_path).lower()
+    return basename.startswith("readme") or "/" not in normalized_path
+
+
+def _build_doc_link_embedding_input(rel_path: str, source: str, content: str) -> str:
+    """@brief Build bounded embedding input text for doc_links payloads.
+
+    @param rel_path Repository-relative source path.
+    @param source Doc link source label such as `docstring` or `readme`.
+    @param content Normalized prose content.
+    @return Embedding prompt text clipped to the configured max size.
+    """
+    return f"{source} {rel_path}\n{content[:DOC_LINK_EMBED_MAX_CHARS]}"
+
+
+def _persist_doc_links(
+    cur,
+    embedder: EmbeddingClient,
+    repo_name: str,
+    rel_path: str,
+    source_file_id: int,
+    rows: list[dict],
+) -> int:
+    """@brief Persist prose links with embeddings for a single source file.
+
+    @param cur Open database cursor scoped to the file transaction.
+    @param embedder Shared embedding client.
+    @param repo_name Repository identifier.
+    @param rel_path Repository-relative source path.
+    @param source_file_id File id that produced the doc links.
+    @param rows Row payloads (`source`, `target_kind`, `target_id`, `content`).
+    @return Number of inserted rows.
+    @raises ValueError When embedding batch cardinality does not match rows.
+    """
+    if not rows:
+        return 0
+
+    embedding_inputs = [
+        _build_doc_link_embedding_input(rel_path, row["source"], row["content"])
+        for row in rows
+    ]
+    embeddings = embedder.embed_batch(embedding_inputs)
+    if len(embeddings) != len(rows):
+        raise ValueError(
+            f"doc_links embedding cardinality mismatch for {rel_path}: "
+            f"expected {len(rows)}, got {len(embeddings)}"
+        )
+
+    for row, embedding in zip(rows, embeddings):
+        cur.execute(
+            """INSERT INTO doc_links
+               (repo, source_file_id, source, source_path, target_kind, target_id, content, embedding)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                repo_name,
+                source_file_id,
+                row["source"],
+                rel_path,
+                row["target_kind"],
+                row["target_id"],
+                row["content"],
+                embedding,
+            ),
+        )
+    return len(rows)
 
 
 def should_exclude(path: Path, repo_root: Path, excludes: list[str]) -> bool:
@@ -1682,6 +1777,7 @@ def process_file(
             cur.execute("DELETE FROM symbol_references WHERE source_file_id = %s", (file_id,))
             cur.execute("DELETE FROM symbol_relationships WHERE source_file_id = %s", (file_id,))
             cur.execute("DELETE FROM dependencies WHERE source_file_id = %s", (file_id,))
+            cur.execute("DELETE FROM doc_links WHERE source_file_id = %s", (file_id,))
             cur.execute("DELETE FROM symbols WHERE file_id = %s", (file_id,))
             cur.execute("DELETE FROM code_chunks WHERE file_id = %s", (file_id,))
         else:
@@ -1742,6 +1838,7 @@ def process_file(
 
         chunk_count = 0
         symbol_count = 0
+        doc_link_rows: list[dict] = []
         chunk_ids = {}
         container_symbol_ids: dict[str, int] = {}
         file_symbol_ids: dict[str, int] = {}
@@ -1793,6 +1890,16 @@ def process_file(
                     container_symbol_ids[chunk["qualified_name"]] = symbol_id
                 file_symbol_ids.setdefault(chunk["symbol_name"], symbol_id)
                 symbol_count += 1
+                normalized_docstring = _normalize_doc_link_content(chunk.get("docstring"))
+                if normalized_docstring:
+                    doc_link_rows.append(
+                        {
+                            "source": "docstring",
+                            "target_kind": "symbol",
+                            "target_id": symbol_id,
+                            "content": normalized_docstring,
+                        }
+                    )
 
                 for member_symbol in chunk.get("member_symbols", []):
                     member_id = insert_symbol(
@@ -1818,6 +1925,27 @@ def process_file(
                     )
                     file_symbol_ids.setdefault(member_symbol["symbol_name"], member_id)
                     symbol_count += 1
+                    normalized_member_docstring = _normalize_doc_link_content(member_symbol.get("docstring"))
+                    if normalized_member_docstring:
+                        doc_link_rows.append(
+                            {
+                                "source": "docstring",
+                                "target_kind": "symbol",
+                                "target_id": member_id,
+                                "content": normalized_member_docstring,
+                            }
+                        )
+
+        normalized_readme_content = _normalize_doc_link_content(content)
+        if normalized_readme_content and _is_readme_doc_source(language, rel_path):
+            doc_link_rows.append(
+                {
+                    "source": "readme",
+                    "target_kind": "file",
+                    "target_id": file_id,
+                    "content": normalized_readme_content,
+                }
+            )
 
         structural_edges = extract_symbol_relationships(chunks, language)
         for edge in structural_edges:
@@ -1937,6 +2065,15 @@ def process_file(
                     reference["line_no"],
                 ),
             )
+
+        _persist_doc_links(
+            cur=cur,
+            embedder=embedder,
+            repo_name=repo_name,
+            rel_path=rel_path,
+            source_file_id=file_id,
+            rows=doc_link_rows,
+        )
 
         if incremental_refresh:
             resolver.re_resolve_inbound_references(
