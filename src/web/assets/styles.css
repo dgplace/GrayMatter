@@ -152,11 +152,11 @@ main {
 }
 
 .sidebar {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
-  align-content: start;
-  overflow-y: auto;
   min-height: 0;
+  overflow: hidden;
 }
 
 .panel {
@@ -164,7 +164,12 @@ main {
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: 0 8px 22px rgba(13, 19, 32, 0.05);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
+  /* Each panel takes a fair share of the sidebar height. */
+  flex: 1 1 0;
 }
 
 .panel h2 {
@@ -176,23 +181,18 @@ main {
   text-transform: uppercase;
   background: var(--panel-soft);
   color: var(--ink-soft);
+  flex: 0 0 auto;
 }
 
 .panel .body {
-  padding: 0.9rem 1rem 0;
+  padding: 0.9rem 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  max-height: 35vh;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-}
-
-/* Sentinel so the last item is fully scrollable; browsers drop the */
-/* scroll container's padding-bottom from scrollHeight, hiding it.  */
-.panel .body::after {
-  content: "";
-  flex: 0 0 0.9rem;
 }
 
 .metric {
@@ -479,7 +479,8 @@ main {
     height: auto;
     min-height: calc(100vh - 88px);
   }
-  .sidebar { overflow-y: visible; max-height: none; }
-  .panel .body { max-height: none; }
+  .sidebar { overflow: visible; flex: none; }
+  .panel { flex: none; }
+  .panel .body { overflow: visible; }
   .workspace { min-height: 60vh; }
 }
