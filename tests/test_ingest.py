@@ -221,6 +221,15 @@ def test_is_content_only_language_matches_html_and_css() -> None:
     assert ingest.is_content_only_language(None) is False
 
 
+def test_enabled_callback_extractors_reads_ingestion_config_list() -> None:
+    """@brief Verify callback extractor enablement keys are normalized from config."""
+    assert ingest.enabled_callback_extractors({}) is None
+    assert ingest.enabled_callback_extractors({"ingestion": {"callback_extractors_enabled": "invalid"}}) == set()
+    assert ingest.enabled_callback_extractors(
+        {"ingestion": {"callback_extractors_enabled": [" event_emit ", "HTTP_ROUTE", ""]}}
+    ) == {"event_emit", "http_route"}
+
+
 def test_is_readme_doc_source_matches_readmes_and_top_level_markdown() -> None:
     """@brief Verify readme-source tagging for README files and repo-root markdown docs."""
     assert ingest._is_readme_doc_source("markdown", "README.md")

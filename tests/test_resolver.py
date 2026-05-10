@@ -382,6 +382,98 @@ def test_extract_symbol_references_emits_swift_call_member_and_instantiation_edg
     assert (12, "helper", "call") in observed
 
 
+def test_extract_symbol_references_emits_callback_register_and_event_emit_edges() -> None:
+    """@brief Verify callback and event extractor patterns add callback_register/event_emit edges."""
+    references = resolver.extract_symbol_references(
+        [
+            {
+                "content": "\n".join(
+                    [
+                        'emitter.on("ready", handleReady)',
+                        'button.addEventListener("click", handleClick)',
+                        'app.get("/users", listUsers)',
+                        'socket.emit("connected")',
+                    ]
+                ),
+                "start_line": 20,
+                "end_line": 23,
+                "symbol_name": "wireCallbacks",
+                "symbol_type": "function",
+            }
+        ],
+        language="javascript",
+        enabled_callback_extractors={"emitter_on", "dom_add_event_listener", "http_route", "event_emit"},
+    )
+
+    callback_edges = {
+        (row["line_no"], row["target_name"], row["reference_kind"])
+        for row in references
+        if row["reference_kind"] in {"callback_register", "event_emit"}
+    }
+    assert callback_edges == {
+        (20, "handleReady", "callback_register"),
+        (21, "handleClick", "callback_register"),
+        (22, "listUsers", "callback_register"),
+        (23, "__event__", "event_emit"),
+    }
+
+
+def test_extract_symbol_references_emits_fastapi_route_callback_edges() -> None:
+    """@brief Verify FastAPI decorators map to callback_register edges on the next function definition."""
+    references = resolver.extract_symbol_references(
+        [
+            {
+                "content": "\n".join(
+                    [
+                        '@app.get("/health")',
+                        "def health_check():",
+                        "    return 'ok'",
+                    ]
+                ),
+                "start_line": 5,
+                "end_line": 7,
+                "symbol_name": None,
+                "symbol_type": None,
+            }
+        ],
+        language="python",
+        enabled_callback_extractors={"http_route"},
+    )
+
+    callback_edges = [row for row in references if row["reference_kind"] == "callback_register"]
+    assert callback_edges == [
+        {
+            "chunk_index": 0,
+            "source_symbol_name": None,
+            "target_name": "health_check",
+            "reference_kind": "callback_register",
+            "line_no": 6,
+        }
+    ]
+
+
+def test_extract_symbol_references_allows_disabling_callback_extractors() -> None:
+    """@brief Verify callback and event extractors can be disabled independently from base lexical extraction."""
+    references = resolver.extract_symbol_references(
+        [
+            {
+                "content": 'emitter.on("ready", handleReady)\nsocket.emit("connected")',
+                "start_line": 1,
+                "end_line": 2,
+                "symbol_name": None,
+                "symbol_type": None,
+            }
+        ],
+        language="javascript",
+        enabled_callback_extractors=set(),
+    )
+
+    assert not any(
+        row["reference_kind"] in {"callback_register", "event_emit"}
+        for row in references
+    )
+
+
 def test_resolve_references_marks_python_class_calls_as_instantiation() -> None:
     """@brief Verify Python class constructor calls resolve as instantiation references."""
     cur = _ResolverCursor()

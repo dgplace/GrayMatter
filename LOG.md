@@ -97,3 +97,4 @@
 2026-05-10 CODEBRAIN-49 added scip-dotnet C# exact-reference resolution with automatic .sln/.csproj detection, heuristic fallback on index failures, indexer-image scip-dotnet installation, and resolver regression coverage.
 2026-05-10 CODEBRAIN-51 marked HTML/CSS as content-only ingestion inputs (chunk/embed/search retained) and skipped symbol_relationships/symbol_references persistence for those languages with regression tests.
 2026-05-10 CODEBRAIN-10 added callback-framework registry detection and ingestion_diagnostics missing_extractor persistence (Express/FastAPI/Flask/React/EventEmitter/DOM/NestJS/Spring/Qt), surfaced in codebase_stats with schema + regression tests.
+2026-05-10 CODEBRAIN-27 added opt-in callback/event extractors (emitter.on, DOM addEventListener, HTTP route registration including FastAPI decorators, and event emit) emitting reference_kind_v2 callback_register/event_emit with resolver regression tests.

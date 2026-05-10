@@ -201,6 +201,20 @@ def is_content_only_language(language: Optional[str]) -> bool:
     return language in CONTENT_ONLY_LANGUAGES
 
 
+def enabled_callback_extractors(config: dict) -> Optional[set[str]]:
+    """@brief Resolve callback extractor keys enabled for resolver reference extraction.
+
+    @param config Parsed CodeBrain configuration dictionary.
+    @return Set of enabled extractor keys, or `None` to use resolver defaults.
+    """
+    raw_value = config.get("ingestion", {}).get("callback_extractors_enabled")
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, list):
+        return set()
+    return {str(value).strip().lower() for value in raw_value if str(value).strip()}
+
+
 def _normalize_doc_link_content(content: Optional[str]) -> Optional[str]:
     """@brief Normalize prose content before persisting doc_links rows.
 
@@ -760,6 +774,8 @@ def process_file(
                     ),
                 )
 
+        callback_extractor_keys = enabled_callback_extractors(config)
+
         # Persist unresolved rows during parallel ingest; refresh cross-file
         # target ids in a later serial pass once all symbols are stable.
         reference_records = []
@@ -773,9 +789,14 @@ def process_file(
                     source_file_id=file_id,
                     repo_root=repo_root,
                     repo_name=repo_name,
+                    enabled_callback_extractors=callback_extractor_keys,
                 )
                 if incremental_update
-                else resolver.build_reference_records(chunks, language=language)
+                else resolver.build_reference_records(
+                    chunks,
+                    language=language,
+                    enabled_callback_extractors=callback_extractor_keys,
+                )
             )
         for reference in reference_records:
             cur.execute(

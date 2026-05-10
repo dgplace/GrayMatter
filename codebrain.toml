@@ -9,6 +9,8 @@ workers = 4
 # Per-file cap for non-code content (markdown/toml/yaml) to avoid indexing
 # oversized generated or vendored docs/config blobs.
 non_code_max_bytes = 262144
+# Resolver callback/event extractors (set [] to disable all, or remove entries to disable specific patterns).
+callback_extractors_enabled = ["emitter_on", "dom_add_event_listener", "http_route", "event_emit"]
 exclude = [
     "node_modules", ".git", "dist", "build", "__pycache__",
     ".venv", "venv", ".env", ".claude", "*.lock", "*.min.js", "*.min.css",

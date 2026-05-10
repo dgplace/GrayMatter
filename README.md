@@ -25,6 +25,10 @@ By default, ingestion includes Markdown (`.md`), TOML (`.toml`), YAML
 per-file size cap controlled by `ingestion.non_code_max_bytes` in
 `codebrain.toml`. HTML/CSS are content-only: they are chunked, embedded, and
 searchable, but do not emit symbol graph edges.
+Callback/event edge extractors are configured by
+`ingestion.callback_extractors_enabled` (for example `emitter_on`,
+`dom_add_event_listener`, `http_route`, `event_emit`) so noisy patterns can be
+disabled per repo.
 
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 

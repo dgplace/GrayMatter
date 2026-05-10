@@ -79,6 +79,23 @@ CPP_STACK_INSTANTIATION_PATTERN = re.compile(
 SWIFT_INIT_INSTANTIATION_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\.init\s*\(")
 SWIFT_CALL_INSTANTIATION_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*\(")
 PYTHON_CLASS_CALL_PATTERN = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*\(")
+EMITTER_REGISTER_PATTERN = re.compile(
+    r"\.(?:on|addListener)\s*\(\s*['\"][^'\"]+['\"]\s*,\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+DOM_EVENT_LISTENER_PATTERN = re.compile(
+    r"\baddEventListener\s*\(\s*['\"][^'\"]+['\"]\s*,\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+HTTP_ROUTE_REGISTER_PATTERN = re.compile(
+    r"\.(?:get|post|put|patch|delete|options|head|all)\s*\([^,\n]+,\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+FASTAPI_ROUTE_DECORATOR_PATTERN = re.compile(
+    r"^\s*@\w+\.(?:get|post|put|patch|delete|options|head)\s*\("
+)
+PYTHON_DEF_PATTERN = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+EVENT_EMIT_PATTERN = re.compile(r"\.(?:emit|dispatchEvent)\s*\(\s*['\"][^'\"]+['\"]")
+DEFAULT_CALLBACK_EXTRACTORS = frozenset(
+    {"emitter_on", "dom_add_event_listener", "http_route", "event_emit"}
+)
 
 REFERENCE_STOPWORDS = {
     "as", "catch", "class", "defer", "else", "enum", "extension", "for", "func",
@@ -1096,18 +1113,118 @@ def _extract_instantiation_targets_for_line(
     return unique_targets
 
 
-def extract_symbol_references(chunks: list[dict], language: Optional[str] = None) -> list[dict]:
+def _normalize_enabled_callback_extractors(
+    enabled_callback_extractors: Optional[set[str]],
+) -> frozenset[str]:
+    """@brief Normalize callback extractor config values to supported keys."""
+    if enabled_callback_extractors is None:
+        return DEFAULT_CALLBACK_EXTRACTORS
+    normalized = {
+        value.strip().lower()
+        for value in enabled_callback_extractors
+        if isinstance(value, str) and value.strip()
+    }
+    return frozenset(normalized.intersection(DEFAULT_CALLBACK_EXTRACTORS))
+
+
+def _extract_callback_edges_for_line(
+    line: str,
+    line_no: int,
+    language: Optional[str],
+    enabled_callback_extractors: frozenset[str],
+    source_symbol_name: Optional[str],
+    pending_fastapi_decorator: bool,
+) -> tuple[list[dict], bool]:
+    """@brief Extract callback registration and event-emission edges for one line."""
+    normalized_language = (language or "").lower()
+    callback_edges: list[dict] = []
+    pending_next = False
+
+    if normalized_language in {"typescript", "tsx", "javascript", "jsx"}:
+        if "emitter_on" in enabled_callback_extractors:
+            for match in EMITTER_REGISTER_PATTERN.finditer(line):
+                target_name = match.group(1)
+                if target_name and target_name != source_symbol_name:
+                    callback_edges.append(
+                        {
+                            "line_no": line_no,
+                            "target_name": target_name,
+                            "reference_kind": "callback_register",
+                        }
+                    )
+        if "dom_add_event_listener" in enabled_callback_extractors:
+            for match in DOM_EVENT_LISTENER_PATTERN.finditer(line):
+                target_name = match.group(1)
+                if target_name and target_name != source_symbol_name:
+                    callback_edges.append(
+                        {
+                            "line_no": line_no,
+                            "target_name": target_name,
+                            "reference_kind": "callback_register",
+                        }
+                    )
+        if "http_route" in enabled_callback_extractors:
+            for match in HTTP_ROUTE_REGISTER_PATTERN.finditer(line):
+                target_name = match.group(1)
+                if target_name and target_name != source_symbol_name:
+                    callback_edges.append(
+                        {
+                            "line_no": line_no,
+                            "target_name": target_name,
+                            "reference_kind": "callback_register",
+                        }
+                    )
+
+    if normalized_language == "python" and "http_route" in enabled_callback_extractors:
+        if pending_fastapi_decorator:
+            function_match = PYTHON_DEF_PATTERN.match(line)
+            if function_match:
+                target_name = function_match.group(1)
+                if target_name and target_name != source_symbol_name:
+                    callback_edges.append(
+                        {
+                            "line_no": line_no,
+                            "target_name": target_name,
+                            "reference_kind": "callback_register",
+                        }
+                    )
+                pending_fastapi_decorator = False
+        if FASTAPI_ROUTE_DECORATOR_PATTERN.match(line):
+            pending_next = True
+
+    if "event_emit" in enabled_callback_extractors and EVENT_EMIT_PATTERN.search(line):
+        callback_edges.append(
+            {
+                "line_no": line_no,
+                "target_name": "__event__",
+                "reference_kind": "event_emit",
+            }
+        )
+
+    return callback_edges, pending_next or pending_fastapi_decorator
+
+
+def extract_symbol_references(
+    chunks: list[dict],
+    language: Optional[str] = None,
+    enabled_callback_extractors: Optional[set[str]] = None,
+) -> list[dict]:
     """@brief Extract lexical, call, and class-instantiation references from chunks.
 
     @param chunks Chunk dictionaries emitted by the parser/chunker stage.
     @param language Optional CodeBrain language label for language-specific extraction.
+    @param enabled_callback_extractors Optional set of enabled callback/event
+           extractor keys (`emitter_on`, `dom_add_event_listener`, `http_route`,
+           `event_emit`).
     @return Reference records with source symbol, chunk index, target name, kind,
             and line number.
     """
     references = []
+    enabled_extractors = _normalize_enabled_callback_extractors(enabled_callback_extractors)
     for chunk_index, chunk in enumerate(chunks):
         source_symbol_name = chunk.get("symbol_name") or chunk.get("parent_symbol")
         seen = set()
+        pending_fastapi_decorator = False
 
         for offset, line in enumerate(chunk["content"].split("\n")):
             line_no = chunk["start_line"] + offset
@@ -1134,6 +1251,29 @@ def extract_symbol_references(chunks: list[dict], language: Optional[str] = None
                             "line_no": line_no,
                         }
                     )
+
+            callback_edges, pending_fastapi_decorator = _extract_callback_edges_for_line(
+                line=line,
+                line_no=line_no,
+                language=language,
+                enabled_callback_extractors=enabled_extractors,
+                source_symbol_name=source_symbol_name,
+                pending_fastapi_decorator=pending_fastapi_decorator,
+            )
+            for edge in callback_edges:
+                edge_key = (edge["line_no"], edge["target_name"], edge["reference_kind"])
+                if edge_key in seen:
+                    continue
+                seen.add(edge_key)
+                references.append(
+                    {
+                        "chunk_index": chunk_index,
+                        "source_symbol_name": source_symbol_name,
+                        "target_name": edge["target_name"],
+                        "reference_kind": edge["reference_kind"],
+                        "line_no": edge["line_no"],
+                    }
+                )
 
             for target_name in _extract_instantiation_targets_for_line(line, language):
                 if not target_name or target_name == source_symbol_name:
@@ -1183,6 +1323,7 @@ def resolve_references(
     source_file_id: Optional[int] = None,
     repo_root: Optional[Path] = None,
     repo_name: Optional[str] = None,
+    enabled_callback_extractors: Optional[set[str]] = None,
 ) -> list[dict]:
     """@brief Resolve parsed chunk references into a uniform resolver record shape.
 
@@ -1193,10 +1334,16 @@ def resolve_references(
     @param source_file_id Optional source file id for same-file heuristic fallback.
     @param repo_root Repository root on disk.
     @param repo_name Repository identifier stored in the database.
+    @param enabled_callback_extractors Optional set of enabled callback/event
+           extractor keys.
     @return Resolver records ready for persistence, with target ids, confidence,
             method, and richer reference kind fields populated.
     """
-    references = extract_symbol_references(chunks, language=language)
+    references = extract_symbol_references(
+        chunks,
+        language=language,
+        enabled_callback_extractors=enabled_callback_extractors,
+    )
     rows = [
         {
             **reference,
@@ -1209,17 +1356,27 @@ def resolve_references(
     return _resolve_reference_rows(cur, rows, repo_name=repo_name, repo_root=repo_root)
 
 
-def build_reference_records(chunks: list[dict], language: Optional[str] = None) -> list[dict]:
+def build_reference_records(
+    chunks: list[dict],
+    language: Optional[str] = None,
+    enabled_callback_extractors: Optional[set[str]] = None,
+) -> list[dict]:
     """@brief Build unresolved resolver records for later cross-file resolution.
 
     @param chunks Chunk dictionaries emitted by the parser/chunker stage.
     @param language Optional CodeBrain language label so language-specific
         extraction (e.g. Python class-call instantiation) fires during the
         bulk ingest path.
+    @param enabled_callback_extractors Optional set of enabled callback/event
+        extractor keys.
     @return Resolver records with a stable unresolved shape suitable for
             persistence before a later resolution pass.
     """
-    references = extract_symbol_references(chunks, language=language)
+    references = extract_symbol_references(
+        chunks,
+        language=language,
+        enabled_callback_extractors=enabled_callback_extractors,
+    )
     unresolved_references = []
 
     for reference in references:
