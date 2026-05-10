@@ -84,6 +84,7 @@ Primary tables:
 - `flows`
 - `flow_members`
 - `doc_links`
+- `ingestion_diagnostics`
 - `ingestion_runs`
 
 Responsibilities:
@@ -91,6 +92,7 @@ Responsibilities:
 - store vector embeddings for semantic retrieval
 - store lexical and structural relationships for exact and dependency-style queries
 - preserve lexical references alongside optional resolved symbol targets, confidence, and resolver metadata for future exact-reference upgrades
+- persist callback-framework missing-extractor diagnostics so coverage gaps are queryable per repository
 - support repo-scoped query-time filtering across tools and UI APIs
 
 Design pattern:
@@ -113,9 +115,10 @@ Design pattern:
 10. Heuristic fallback resolution is language-family scoped to prevent cross-language collisions (for example, TypeScript references do not co-resolve to same-named Python symbols). Node-family files (`typescript|tsx|javascript|jsx`) share one compatibility bucket; other languages resolve by exact language match.
 11. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
 12. `codebrain/ingest.py` + `codebrain/ingestion/*` store normalized records in PostgreSQL.
-13. After each ingest run, dependency cycles are materialized and clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
-14. A flow materialization pass computes call-style weakly connected symbol groups from resolved call/service edges, assigns deterministic `flow_key` ids, and persists `flows` + `flow_members` for symbol-to-flow and flow-to-symbol queries.
-15. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
+13. After each ingest run, dependency cycles are materialized and callback-framework diagnostics are rebuilt from dependency/reference evidence (for example `missing_extractor` gaps keyed by framework and affected file count).
+14. Clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
+15. A flow materialization pass computes call-style weakly connected symbol groups from resolved call/service edges, assigns deterministic `flow_key` ids, and persists `flows` + `flow_members` for symbol-to-flow and flow-to-symbol queries.
+16. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 
 ### MCP query flow
 

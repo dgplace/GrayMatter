@@ -461,6 +461,25 @@ SCHEMA_PATCHES = [
     ALTER TABLE module_intents
     ADD COLUMN IF NOT EXISTS member_symbols TEXT[]
     """,
+    """
+    CREATE TABLE IF NOT EXISTS ingestion_diagnostics (
+        id SERIAL PRIMARY KEY,
+        repo TEXT NOT NULL,
+        diagnostic_kind TEXT NOT NULL,
+        framework TEXT NOT NULL,
+        extractor_module TEXT,
+        affected_file_count INTEGER NOT NULL DEFAULT 0,
+        affected_file_ids INTEGER[] NOT NULL DEFAULT '{}',
+        details JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(repo, diagnostic_kind, framework)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ingestion_diagnostics_repo_kind
+    ON ingestion_diagnostics(repo, diagnostic_kind)
+    """,
 ]
 
 
@@ -502,4 +521,3 @@ def insert_symbol(cur, file_id: int, chunk_id: Optional[int], symbol: dict, embe
         ),
     )
     return cur.fetchone()[0]
-

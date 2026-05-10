@@ -265,6 +265,20 @@ const SCHEMA_PATCHES = [
     )`,
   `CREATE INDEX IF NOT EXISTS idx_module_intents_repo ON module_intents(repo)`,
   `CREATE INDEX IF NOT EXISTS idx_module_intents_kind ON module_intents(repo, kind)`,
+  `CREATE TABLE IF NOT EXISTS ingestion_diagnostics (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      diagnostic_kind TEXT NOT NULL,
+      framework TEXT NOT NULL,
+      extractor_module TEXT,
+      affected_file_count INTEGER NOT NULL DEFAULT 0,
+      affected_file_ids INTEGER[] NOT NULL DEFAULT '{}',
+      details JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(repo, diagnostic_kind, framework)
+    )`,
+  `CREATE INDEX IF NOT EXISTS idx_ingestion_diagnostics_repo_kind ON ingestion_diagnostics(repo, diagnostic_kind)`,
   `
   CREATE OR REPLACE FUNCTION search_code(
       query_embedding vector(768),

@@ -32,12 +32,19 @@ export type RepoSymbolKindStat = {
   count: number;
 };
 
+/** @brief Missing-extractor callback framework diagnostic row. */
+export type FrameworkDiagnostic = {
+  framework: string;
+  affectedFileCount: number;
+};
+
 /** @brief Detailed repository stats payload used by MCP and UI. */
 export type RepositoryStats = {
   summary: RepositorySummary;
   languages: RepoLanguageStat[];
   intents: RepoIntentStat[];
   symbolKinds: RepoSymbolKindStat[];
+  frameworkDiagnostics: FrameworkDiagnostic[];
 };
 
 /** @brief Aggregated semantic graph edge representation. */
@@ -202,6 +209,16 @@ export async function getRepositoryStats(repo: string): Promise<RepositoryStats 
   );
 
   const summaryRow = summaryResult.rows[0] as Record<string, unknown>;
+  const frameworkDiagnosticsResult = await query(
+    `
+    SELECT framework, affected_file_count
+    FROM ingestion_diagnostics
+    WHERE repo = $1
+      AND diagnostic_kind = 'missing_extractor'
+    ORDER BY affected_file_count DESC, framework
+  `,
+    [repo],
+  );
 
   return {
     summary: {
@@ -222,6 +239,10 @@ export async function getRepositoryStats(repo: string): Promise<RepositoryStats 
     symbolKinds: symbolKindResult.rows.map((row: Record<string, unknown>) => ({
       kind: String(row.kind),
       count: Number(row.count),
+    })),
+    frameworkDiagnostics: frameworkDiagnosticsResult.rows.map((row: Record<string, unknown>) => ({
+      framework: String(row.framework),
+      affectedFileCount: Number(row.affected_file_count),
     })),
   };
 }

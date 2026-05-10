@@ -470,6 +470,15 @@ export function registerDependencyTraceTools(server: McpServer): void {
         output += `- ${kind.kind}: ${kind.count}\n`;
       }
 
+      output += "\n### Callback Extractor Gaps\n";
+      if (stats.frameworkDiagnostics.length === 0) {
+        output += "- none detected\n";
+      } else {
+        for (const diagnostic of stats.frameworkDiagnostics) {
+          output += `- ${diagnostic.framework}: missing extractor (${diagnostic.affectedFileCount} files)\n`;
+        }
+      }
+
       return { content: [{ type: "text", text: output }] };
     },
   );

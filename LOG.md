@@ -96,3 +96,4 @@
 2026-05-09 CODEBRAIN-56 added deterministic execution-flow materialization (flows/flow_members) from call-graph + intent signals, wired ingest/runtime summary updates, and shipped MCP find_flows symbol/flow lookup support with regression tests.
 2026-05-10 CODEBRAIN-49 added scip-dotnet C# exact-reference resolution with automatic .sln/.csproj detection, heuristic fallback on index failures, indexer-image scip-dotnet installation, and resolver regression coverage.
 2026-05-10 CODEBRAIN-51 marked HTML/CSS as content-only ingestion inputs (chunk/embed/search retained) and skipped symbol_relationships/symbol_references persistence for those languages with regression tests.
+2026-05-10 CODEBRAIN-10 added callback-framework registry detection and ingestion_diagnostics missing_extractor persistence (Express/FastAPI/Flask/React/EventEmitter/DOM/NestJS/Spring/Qt), surfaced in codebase_stats with schema + regression tests.

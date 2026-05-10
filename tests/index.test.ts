@@ -288,6 +288,10 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS doc_links/);
   assert.match(dbSource, /embedding vector\(768\) NOT NULL/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_doc_links_target ON doc_links\(target_kind, target_id\)/);
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS ingestion_diagnostics/);
+  assert.match(dbSource, /diagnostic_kind TEXT NOT NULL/);
+  assert.match(dbSource, /affected_file_count INTEGER NOT NULL DEFAULT 0/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_ingestion_diagnostics_repo_kind ON ingestion_diagnostics/);
   assert.match(dbSource, /CREATE OR REPLACE FUNCTION impact_of/);
   assert.match(dbSource, /min_confidence\s+REAL DEFAULT 0\.55/);
 });
@@ -444,6 +448,14 @@ test("find_flows tool supports symbol-to-flow and flow-to-members lookup directi
   assert.match(toolsSource, /FROM flow_members fm/);
   assert.match(toolsSource, /JOIN flows fl ON fl.id = fm\.flow_id/);
   assert.match(toolsSource, /JOIN symbols s ON s\.id = fm\.symbol_id/);
+});
+
+test("codebase_stats includes callback extractor-gap diagnostics", () => {
+  const toolsSource = readMcpToolSource();
+
+  assert.match(toolsSource, /### Callback Extractor Gaps/);
+  assert.match(toolsSource, /FROM ingestion_diagnostics/);
+  assert.match(toolsSource, /diagnostic_kind = 'missing_extractor'/);
 });
 
 test("describe_node supports file/symbol/cluster kinds and includes linked doc_links rows", () => {

@@ -50,6 +50,7 @@ from codebrain.ingestion.dependencies import (
     materialize_dependency_cycles,
 )
 from codebrain.ingestion.flows import materialize_flows
+from codebrain.ingestion.framework_diagnostics import materialize_missing_extractor_diagnostics
 from codebrain.ingestion.relationships import _clean_swift_type, extract_swift_service_edges, extract_symbol_relationships
 from codebrain.ingestion.runtime import (
     ReindexHandler as _RuntimeReindexHandler,
@@ -60,6 +61,7 @@ from codebrain.ingestion.runtime import (
     discover_ingestion_files,
     materialize_clusters_for_repo as _runtime_materialize_clusters_for_repo,
     materialize_cycles_for_repo as _runtime_materialize_cycles_for_repo,
+    materialize_framework_diagnostics_for_repo as _runtime_materialize_framework_diagnostics_for_repo,
     materialize_flows_for_repo as _runtime_materialize_flows_for_repo,
     normalize_result_status,
     print_detail_samples,
@@ -993,6 +995,12 @@ def main(
             repo_name=resolved_repo_name,
             get_db_fn=get_db,
             materialize_dependency_cycles_fn=materialize_dependency_cycles,
+        )
+        _runtime_materialize_framework_diagnostics_for_repo(
+            cfg=cfg,
+            repo_name=resolved_repo_name,
+            get_db_fn=get_db,
+            materialize_missing_extractor_diagnostics_fn=materialize_missing_extractor_diagnostics,
         )
         cluster_count, cluster_granularity = _runtime_materialize_clusters_for_repo(
             cfg=cfg,

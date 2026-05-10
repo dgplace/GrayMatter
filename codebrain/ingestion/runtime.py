@@ -482,6 +482,21 @@ def materialize_cycles_for_repo(
         cycle_conn.close()
 
 
+def materialize_framework_diagnostics_for_repo(
+    cfg: dict,
+    repo_name: str,
+    get_db_fn: Callable[[dict], object],
+    materialize_missing_extractor_diagnostics_fn: Callable[[object, str], int],
+) -> int:
+    """@brief Rebuild callback-framework missing-extractor diagnostics for a repository."""
+    console.print("\n  [dim]Materializing callback framework diagnostics...[/]")
+    diagnostics_conn = get_db_fn(cfg)
+    try:
+        return materialize_missing_extractor_diagnostics_fn(diagnostics_conn, repo_name)
+    finally:
+        diagnostics_conn.close()
+
+
 def materialize_clusters_for_repo(
     cfg: dict,
     repo_name: str,
