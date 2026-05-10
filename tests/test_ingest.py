@@ -212,6 +212,15 @@ def test_forced_non_code_intent_maps_markdown_and_config_languages() -> None:
     assert ingest.forced_non_code_intent(None) is None
 
 
+def test_is_content_only_language_matches_html_and_css() -> None:
+    """@brief Verify HTML/CSS are indexed as content-only (no symbol graph writes)."""
+    assert ingest.is_content_only_language("html") is True
+    assert ingest.is_content_only_language("css") is True
+    assert ingest.is_content_only_language("markdown") is False
+    assert ingest.is_content_only_language("python") is False
+    assert ingest.is_content_only_language(None) is False
+
+
 def test_is_readme_doc_source_matches_readmes_and_top_level_markdown() -> None:
     """@brief Verify readme-source tagging for README files and repo-root markdown docs."""
     assert ingest._is_readme_doc_source("markdown", "README.md")
@@ -891,6 +900,111 @@ def test_process_file_skips_non_code_files_over_size_cap(monkeypatch, tmp_path) 
 
     assert result["status"] == "skipped"
     assert "Skipped non-code file over cap" in result["warnings"][0]
+
+
+def test_process_file_skips_symbol_graph_writes_for_html(monkeypatch, tmp_path) -> None:
+    """@brief Verify HTML ingestion keeps chunk/index behavior but skips graph persistence."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fpath = repo_root / "index.html"
+    fpath.write_text("PhotoService()", encoding="utf-8")
+
+    class _ContentOnlyCursor:
+        def __init__(self) -> None:
+            self._pending_fetch: tuple | None = None
+            self.executed: list[str] = []
+            self._chunk_id = 20
+
+        def execute(self, query: str, params=None) -> None:
+            normalized = " ".join(query.strip().lower().split())
+            self.executed.append(normalized)
+            if normalized.startswith("select id, hash from files"):
+                self._pending_fetch = None
+                return
+            if normalized.startswith("insert into files"):
+                self._pending_fetch = (1,)
+                return
+            if normalized.startswith("insert into code_chunks"):
+                self._pending_fetch = (self._chunk_id,)
+                self._chunk_id += 1
+                return
+            self._pending_fetch = None
+
+        def fetchone(self):
+            return self._pending_fetch
+
+    class _ContentOnlyConn:
+        def __init__(self) -> None:
+            self._cursor = _ContentOnlyCursor()
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    class _ContentOnlyPool:
+        def __init__(self) -> None:
+            self._conn = _ContentOnlyConn()
+
+        def getconn(self):
+            return self._conn
+
+        def putconn(self, conn) -> None:
+            return None
+
+    class _ContentOnlyChunker:
+        def chunk_file(self, content: str, language: str, rel_path: str) -> list[dict]:
+            return [
+                {
+                    "content": content,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "symbol_name": None,
+                    "symbol_type": None,
+                }
+            ]
+
+        def extract_dependencies(self, content: str, language: str, rel_path: str) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(ingest, "register_vector", lambda conn: None)
+    monkeypatch.setattr(
+        ingest,
+        "extract_symbol_relationships",
+        lambda chunks, language: [
+            {
+                "source_symbol_name": "ignored",
+                "target_name": "IgnoredTarget",
+                "relationship_kind": "inherits",
+                "external_module": None,
+                "line_no": 1,
+            }
+        ],
+    )
+
+    pool = _ContentOnlyPool()
+    result = ingest.process_file(
+        fpath=fpath,
+        repo_root=repo_root,
+        repo_name="repo",
+        config={"languages": {"extensions": {"html": "html"}}},
+        embedder=_FakeEmbedder(),
+        classifier=_FakeClassifier(),
+        chunker=_ContentOnlyChunker(),
+        db_pool=pool,
+        force=True,
+        no_classify=True,
+    )
+
+    assert result["status"] == "indexed"
+    executed = pool._conn._cursor.executed
+    assert any(query.startswith("insert into code_chunks") for query in executed)
+    assert not any(query.startswith("insert into symbol_references") for query in executed)
+    assert not any(query.startswith("insert into symbol_relationships") for query in executed)
 
 
 def test_clear_repo_per_file_data_runs_deletes_in_dependency_order(monkeypatch) -> None:

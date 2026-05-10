@@ -20,9 +20,11 @@ Runtime defaults live in:
 - `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
-By default, ingestion now includes Markdown (`.md`), TOML (`.toml`), and YAML
-(`.yml`/`.yaml`) files, with a non-code per-file size cap controlled by
-`ingestion.non_code_max_bytes` in `codebrain.toml`.
+By default, ingestion includes Markdown (`.md`), TOML (`.toml`), YAML
+(`.yml`/`.yaml`), HTML (`.html`), and CSS (`.css`) files, with a non-code
+per-file size cap controlled by `ingestion.non_code_max_bytes` in
+`codebrain.toml`. HTML/CSS are content-only: they are chunked, embedded, and
+searchable, but do not emit symbol graph edges.
 
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 

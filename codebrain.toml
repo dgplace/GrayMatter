@@ -21,7 +21,7 @@ supported = [
     "python", "typescript", "javascript", "tsx", "jsx",
     "rust", "go", "java", "c", "cpp", "ruby", "php",
     "swift", "kotlin", "scala", "zig", "elixir", "csharp",
-    "markdown", "toml", "yaml"
+    "markdown", "toml", "yaml", "html", "css"
 ]
 
 # File extension → language mapping (tree-sitter grammar names)
@@ -52,3 +52,5 @@ md = "markdown"
 toml = "toml"
 yml = "yaml"
 yaml = "yaml"
+html = "html"
+css = "css"

@@ -95,3 +95,4 @@
 2026-05-09 Refactored oversized src/mcp/tools.ts into grouped src/mcp/tooling modules plus shared helpers, preserved MCP behavior, and updated source-level tests to scan split tool registry files.
 2026-05-09 CODEBRAIN-56 added deterministic execution-flow materialization (flows/flow_members) from call-graph + intent signals, wired ingest/runtime summary updates, and shipped MCP find_flows symbol/flow lookup support with regression tests.
 2026-05-10 CODEBRAIN-49 added scip-dotnet C# exact-reference resolution with automatic .sln/.csproj detection, heuristic fallback on index failures, indexer-image scip-dotnet installation, and resolver regression coverage.
+2026-05-10 CODEBRAIN-51 marked HTML/CSS as content-only ingestion inputs (chunk/embed/search retained) and skipped symbol_relationships/symbol_references persistence for those languages with regression tests.

@@ -80,6 +80,7 @@ NON_CODE_INTENT_BY_LANGUAGE = {
     "toml": "configuration",
     "yaml": "configuration",
 }
+CONTENT_ONLY_LANGUAGES = frozenset({"html", "css"})
 DEFAULT_NON_CODE_MAX_BYTES = 262_144
 DOC_LINK_EMBED_MAX_CHARS = 6_000
 DEADLOCK_RETRY_ATTEMPTS = 2
@@ -185,6 +186,17 @@ def forced_non_code_intent(language: Optional[str]) -> Optional[str]:
     if not language:
         return None
     return NON_CODE_INTENT_BY_LANGUAGE.get(language)
+
+
+def is_content_only_language(language: Optional[str]) -> bool:
+    """@brief Return whether a language should skip symbol-graph extraction.
+
+    @param language Detected language label for the file.
+    @return True when only chunk/embed search behavior should run.
+    """
+    if not language:
+        return False
+    return language in CONTENT_ONLY_LANGUAGES
 
 
 def _normalize_doc_link_content(content: Optional[str]) -> Optional[str]:
@@ -662,26 +674,27 @@ def process_file(
                 }
             )
 
-        structural_edges = extract_symbol_relationships(chunks, language)
-        for edge in structural_edges:
-            source_symbol_id = file_symbol_ids.get(edge["source_symbol_name"])
-            if source_symbol_id is None:
-                continue
-            target_symbol_id, _ = resolve_target_symbol(cur, edge["target_name"])
-            cur.execute(
-                """INSERT INTO symbol_relationships
-                   (source_file_id, source_symbol_id, target_symbol_id, relationship_kind, target_name, external_module, line_no)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    file_id,
-                    source_symbol_id,
-                    target_symbol_id,
-                    edge["relationship_kind"],
-                    edge["target_name"],
-                    edge["external_module"],
-                    edge["line_no"],
-                ),
-            )
+        if not is_content_only_language(language):
+            structural_edges = extract_symbol_relationships(chunks, language)
+            for edge in structural_edges:
+                source_symbol_id = file_symbol_ids.get(edge["source_symbol_name"])
+                if source_symbol_id is None:
+                    continue
+                target_symbol_id, _ = resolve_target_symbol(cur, edge["target_name"])
+                cur.execute(
+                    """INSERT INTO symbol_relationships
+                       (source_file_id, source_symbol_id, target_symbol_id, relationship_kind, target_name, external_module, line_no)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        file_id,
+                        source_symbol_id,
+                        target_symbol_id,
+                        edge["relationship_kind"],
+                        edge["target_name"],
+                        edge["external_module"],
+                        edge["line_no"],
+                    ),
+                )
 
         # Extract and store dependencies
         manifest_versions = _manifest_versions(str(repo_root))
@@ -747,19 +760,21 @@ def process_file(
 
         # Persist unresolved rows during parallel ingest; refresh cross-file
         # target ids in a later serial pass once all symbols are stable.
-        reference_records = (
-            resolver.resolve_references(
-                cur,
-                chunks,
-                language=language,
-                file_path=rel_path,
-                source_file_id=file_id,
-                repo_root=repo_root,
-                repo_name=repo_name,
+        reference_records = []
+        if not is_content_only_language(language):
+            reference_records = (
+                resolver.resolve_references(
+                    cur,
+                    chunks,
+                    language=language,
+                    file_path=rel_path,
+                    source_file_id=file_id,
+                    repo_root=repo_root,
+                    repo_name=repo_name,
+                )
+                if incremental_update
+                else resolver.build_reference_records(chunks, language=language)
             )
-            if incremental_update
-            else resolver.build_reference_records(chunks, language=language)
-        )
         for reference in reference_records:
             cur.execute(
                 """INSERT INTO symbol_references
