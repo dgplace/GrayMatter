@@ -63,6 +63,7 @@ from codebrain.ingestion.runtime import (
     materialize_cycles_for_repo as _runtime_materialize_cycles_for_repo,
     materialize_framework_diagnostics_for_repo as _runtime_materialize_framework_diagnostics_for_repo,
     materialize_flows_for_repo as _runtime_materialize_flows_for_repo,
+    materialize_module_intents_for_repo as _runtime_materialize_module_intents_for_repo,
     normalize_result_status,
     print_detail_samples,
     print_ingestion_header,
@@ -947,6 +948,8 @@ class ReindexHandler(_RuntimeReindexHandler):
 @click.option("--no-classify", is_flag=True, help="Skip LLM classification (embed only, much faster)")
 @click.option("--debug", is_flag=True, help="Print per-file error details during ingestion")
 @click.option("--repo-name", default=None, help="Optional repository identifier override for indexed rows")
+@click.option("--synthesize", is_flag=True, default=False,
+              help="After ingestion, synthesize directory and logical module_intents (LLM-driven; ignored with --no-classify)")
 def main(
     repo_path: str,
     config: str,
@@ -956,6 +959,7 @@ def main(
     no_classify: bool,
     debug: bool,
     repo_name: Optional[str],
+    synthesize: bool,
 ):
     """@brief Ingest a repository into CodeBrain."""
     cfg = load_config(config)
@@ -1038,6 +1042,20 @@ def main(
             get_db_fn=get_db,
             materialize_flows_fn=materialize_flows,
         )
+        if synthesize:
+            from codebrain.synthesize_modules import (
+                synthesize_directory_modules,
+                synthesize_logical_modules,
+            )
+            _runtime_materialize_module_intents_for_repo(
+                cfg=cfg,
+                repo_name=resolved_repo_name,
+                classifier=classifier,
+                no_classify=no_classify,
+                get_db_fn=get_db,
+                synthesize_directory_fn=synthesize_directory_modules,
+                synthesize_logical_fn=synthesize_logical_modules,
+            )
         complete_ingestion_run(cfg=cfg, run_id=run_id, stats=stats, get_db_fn=get_db)
     finally:
         db_pool.closeall()

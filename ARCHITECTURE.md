@@ -163,24 +163,33 @@ The refactoring tools (`analyze_coupling`, `extract_module_interface`, `find_cyc
 
 ### Module intent synthesis
 
-`codebrain/synthesize_modules.py` runs as a post-ingestion step to identify logical modules and assign domain-specific narrative intents.  Two module kinds are produced:
+`codebrain/synthesize_modules.py` overlays domain-specific narrative intents on
+directories and on the existing coupling-based clusters. It runs either inline as the
+final stage of `codebrain.ingest --synthesize`, or as a standalone command for refreshing
+narratives without re-ingesting. Two module kinds are produced:
 
-**Directory modules** (`kind='directory'`): one per directory with enough files.  The LLM receives file summaries and chunk-level `intent_detail` to produce a narrative intent describing what the directory accomplishes in the application.
+**Directory modules** (`kind='directory'`): one per directory with enough files. The LLM
+receives file summaries and chunk-level `intent_detail` to produce a narrative intent
+describing what the directory accomplishes in the application.
 
-**Logical modules** (`kind='logical'`): cross-directory groupings detected via weighted community detection on a class-level coupling graph.
+**Logical modules** (`kind='logical'`): cross-directory communities sourced from the
+`clusters` / `cluster_members` rows produced during ingestion (see *Cluster
+materialization* in this document). Synthesis does not run a second clustering pass — it
+filters existing symbol-granularity clusters down to those that span ≥2 directories and
+cover at least `--min-files` distinct files, then asks the LLM to author a narrative
+`module_name`, `summary`, and `dominant_intent` for each survivor. When a repository has
+no symbol clusters, file-granularity clusters are used instead. Each `module_intents` row
+records its source `cluster_id` so the two surfaces can be joined.
 
-The class-level graph is built from `symbols` (filtered to classes, structs, interfaces, protocols, enums), `dependencies` (symbol-to-symbol edges), and `symbol_references` (source-symbol-to-target-name edges).  Edges are weighted by reference count so tightly-coupled classes cluster together while loose imports have little influence.
+Because ingestion already runs Leiden (with Louvain and connected-components fallbacks)
+on the resolved symbol-coupling graph, logical-module quality is improved transitively
+when clustering is improved. Tune Leiden resolution under `codebrain.toml`
+`[clustering] resolution` and re-ingest; synthesis itself has no community-detection
+knobs.
 
-Three mechanisms prevent overbroad modules:
-- **Hub dampening**: high-degree nodes (above the 90th-percentile) have edge weights scaled down by `median_degree / node_degree` so utility types don't merge unrelated clusters.
-- **Louvain with tunable resolution**: `nx.community.louvain_communities(G, weight='weight', resolution=R)` with default R=1.5 (higher = smaller communities).
-- **Recursive splitting**: communities exceeding `max_community_size` (default 20) are re-partitioned at doubled resolution until they fit.
-
-For repos with fewer than 5 class-level symbols, synthesis falls back to a weighted file-level graph using the same algorithm.
-
-Synthesis parameters are configurable via `codebrain.toml` `[synthesis]` section or CLI flags (`--resolution`, `--max-community-size`, `--hub-percentile`).
-
-Each module's `dominant_intent` is a narrative sentence describing what the code is trying to accomplish (the "story"), not a generic category like "business logic".  The `member_symbols` column stores the class/type names in each logical module.
+The `member_symbols` column stores the class/type names (or file basenames, in the
+file-cluster fallback) for each logical module so `get_module_map` can render them
+without re-joining.
 
 ### Explicit metadata over query-time inference
 

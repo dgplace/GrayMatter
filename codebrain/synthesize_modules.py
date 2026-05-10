@@ -3,19 +3,21 @@
 @file synthesize_modules.py
 @brief Module Intent Synthesis CLI.
 
-Analyzes files, classes, and dependencies to synthesize directory-based and
+Analyzes files and existing repository clusters to synthesize directory-based and
 logical modules with domain-specific narrative intents.
 
-Logical modules are detected via weighted community detection on a class-level
-coupling graph (Louvain algorithm with configurable resolution).  Hub classes
-are dampened to prevent utility types from merging unrelated clusters, and
-oversized communities are recursively split.
+Logical modules are derived from the repository's existing `clusters` /
+`cluster_members` rows (produced by the ingestion pipeline using Leiden with
+Louvain/connected-components fallback). Synthesis filters those clusters down to
+cross-directory, multi-file communities and overlays a narrative `dominant_intent`
+via the LLM. There is no separate community-detection pass at synthesis time; the
+ingestion-built Leiden clustering is the single source of truth for coupling-based
+communities.
 """
 
 import sys
 
 import click
-import networkx as nx
 from rich.console import Console
 from rich.progress import track
 
@@ -30,67 +32,7 @@ from codebrain.classifier import IntentClassifier
 
 console = Console()
 
-_CLASS_KINDS = ('class', 'struct', 'interface', 'protocol', 'enum')
-_MIN_CLASS_SYMBOLS_FOR_CLASS_GRAPH = 5
-
-
-# ── Graph helpers ────────────────────────────────────────────────────────────
-
-def _dampen_hub_edges(G: nx.Graph, hub_percentile: float = 90.0) -> None:
-    """@brief Reduce edge weights for high-degree hub nodes.
-
-    Nodes above the hub_percentile degree threshold have all their edge weights
-    scaled by median_degree / node_degree, preserving their strongest connections
-    while weakening tenuous ones so they don't merge unrelated clusters.
-
-    @param G Weighted undirected graph (modified in place).
-    @param hub_percentile Degree percentile above which nodes are treated as hubs.
-    """
-    if len(G.nodes) < 3:
-        return
-    degrees = sorted(d for _, d in G.degree())
-    threshold_idx = int(len(degrees) * hub_percentile / 100)
-    hub_threshold = degrees[min(threshold_idx, len(degrees) - 1)]
-    median_degree = degrees[len(degrees) // 2]
-
-    if hub_threshold <= median_degree:
-        return
-
-    for node in list(G.nodes):
-        deg = G.degree(node)
-        if deg > hub_threshold:
-            scale = median_degree / deg
-            for neighbor in list(G.neighbors(node)):
-                G[node][neighbor]['weight'] *= scale
-
-
-def _split_oversized(G: nx.Graph, communities: list[set],
-                     max_size: int, resolution: float) -> list[set]:
-    """@brief Recursively sub-partition communities that exceed max_size.
-
-    @param G The full weighted graph.
-    @param communities Initial community partition.
-    @param max_size Maximum allowed community size.
-    @param resolution Current Louvain resolution (doubled on each recursion).
-    @return Flat list of communities, all at or below max_size.
-    """
-    result = []
-    for comm in communities:
-        if len(comm) <= max_size:
-            result.append(comm)
-            continue
-        subgraph = G.subgraph(comm).copy()
-        sub_resolution = resolution * 2.0
-        sub_communities = nx.community.louvain_communities(
-            subgraph, weight='weight', resolution=sub_resolution, seed=42
-        )
-        if len(sub_communities) <= 1:
-            result.append(comm)
-            continue
-        result.extend(
-            _split_oversized(subgraph, list(sub_communities), max_size, sub_resolution)
-        )
-    return result
+_LOGICAL_MEMBER_CONTEXT_LIMIT = 30
 
 
 # ── Directory modules ────────────────────────────────────────────────────────
@@ -230,278 +172,202 @@ Respond with ONLY this JSON object:
     conn.commit()
 
 
-# ── Logical modules ──────────────────────────────────────────────────────────
+# ── Logical modules (overlay on Leiden clusters) ─────────────────────────────
 
-def _build_class_graph(cur, repo: str) -> tuple[nx.Graph, dict]:
-    """@brief Build a weighted coupling graph at the class/type level.
+def _fetch_cluster_candidates(cur, repo: str) -> list[dict]:
+    """@brief Load symbol-granularity clusters with their member symbols.
 
-    Nodes are symbol IDs for classes, structs, interfaces, protocols, and enums.
-    Edges come from symbol-to-symbol dependencies and symbol references, weighted
-    by the number of distinct coupling points.
+    Symbol clusters are preferred because they encode coupling at the type/class
+    level. When a repository has no symbol clusters, file-level clusters are used
+    instead.
 
     @param cur Database cursor.
     @param repo Repository name.
-    @return Tuple of (graph, symbol_meta dict keyed by symbol ID).
+    @return List of cluster dicts with id, name, summary, granularity, and a
+            members list of dicts (label, kind, path, context).
     """
-    kind_placeholders = ','.join(f"'{k}'" for k in _CLASS_KINDS)
+    cur.execute(
+        """
+        SELECT id FROM clusters
+        WHERE repo = %s AND granularity = 'symbol'
+        LIMIT 1
+        """,
+        (repo,),
+    )
+    granularity = 'symbol' if cur.fetchone() else 'file'
 
-    # Fetch class-level symbol metadata
-    cur.execute(f"""
-        SELECT s.id, s.name, s.qualified_name, s.kind, s.docstring, f.path,
-               cc.intent_detail
-        FROM symbols s
-        JOIN files f ON s.file_id = f.id
-        LEFT JOIN code_chunks cc ON cc.id = s.chunk_id
-        WHERE f.repo = %s
-          AND s.kind IN ({kind_placeholders})
-          AND s.parent_id IS NULL
-    """, (repo,))
-
-    symbol_meta = {}
-    for row in cur.fetchall():
-        sid, name, qname, kind, docstring, path, intent_detail = row
-        symbol_meta[sid] = {
-            'name': name,
-            'qualified_name': qname,
-            'kind': kind,
-            'docstring': docstring,
-            'path': path,
-            'intent_detail': intent_detail,
+    cur.execute(
+        """
+        SELECT id, cluster_key, name, summary
+        FROM clusters
+        WHERE repo = %s AND granularity = %s
+        ORDER BY id
+        """,
+        (repo, granularity),
+    )
+    clusters = [
+        {
+            'id': int(row[0]),
+            'cluster_key': row[1],
+            'name': row[2],
+            'summary': row[3],
+            'granularity': granularity,
+            'members': [],
         }
+        for row in cur.fetchall()
+    ]
+    if not clusters:
+        return []
 
-    if len(symbol_meta) < _MIN_CLASS_SYMBOLS_FOR_CLASS_GRAPH:
-        return nx.Graph(), symbol_meta
+    cluster_ids = [c['id'] for c in clusters]
+    by_id = {c['id']: c for c in clusters}
 
-    class_ids = set(symbol_meta.keys())
-
-    # Build weighted edges between class symbols
-    cur.execute("""
-        WITH dep_edges AS (
-            SELECT d.source_symbol_id AS src, d.target_symbol_id AS tgt
-            FROM dependencies d
-            WHERE d.source_symbol_id IS NOT NULL
-              AND d.target_symbol_id IS NOT NULL
-        ),
-        ref_edges AS (
-            SELECT DISTINCT
-                COALESCE(src_parent.id, src_sym.id) AS src,
-                tgt_sym.id AS tgt
-            FROM symbol_references sr
-            JOIN symbols src_sym ON src_sym.name = sr.source_symbol_name
-                AND src_sym.file_id = sr.source_file_id
-            JOIN symbols tgt_sym ON lower(tgt_sym.name) = lower(sr.target_name)
-            LEFT JOIN symbols src_parent ON src_parent.id = src_sym.parent_id
-        ),
-        all_edges AS (
-            SELECT src, tgt FROM dep_edges
-            UNION ALL
-            SELECT src, tgt FROM ref_edges
+    if granularity == 'symbol':
+        cur.execute(
+            """
+            SELECT
+                cm.cluster_id,
+                s.name,
+                s.kind,
+                f.path,
+                COALESCE(
+                    NULLIF(s.docstring, ''),
+                    NULLIF(cc.intent_detail, ''),
+                    NULLIF(f.summary, '')
+                ) AS context
+            FROM cluster_members cm
+            JOIN symbols s ON s.id = cm.symbol_id
+            JOIN files f ON f.id = s.file_id
+            LEFT JOIN code_chunks cc ON cc.id = s.chunk_id
+            WHERE cm.cluster_id = ANY(%s)
+            ORDER BY cm.membership_weight DESC NULLS LAST, f.path, s.name
+            """,
+            (cluster_ids,),
         )
-        SELECT src, tgt, COUNT(*) AS weight
-        FROM all_edges
-        WHERE src != tgt
-        GROUP BY src, tgt
-    """)
-
-    G = nx.Graph()
-    for src, tgt, weight in cur.fetchall():
-        if src not in class_ids or tgt not in class_ids:
-            continue
-        if G.has_edge(src, tgt):
-            G[src][tgt]['weight'] += weight
-        else:
-            G.add_edge(src, tgt, weight=weight)
-
-    return G, symbol_meta
-
-
-def _build_file_graph(cur, repo: str) -> tuple[nx.Graph, dict]:
-    """@brief Fallback: build a weighted coupling graph at the file level.
-
-    Used when the repo has too few class-level symbols for meaningful
-    class-level clustering.
-
-    @param cur Database cursor.
-    @param repo Repository name.
-    @return Tuple of (graph, file_meta dict keyed by file path).
-    """
-    cur.execute("""
-        WITH reference_edges AS (
-            SELECT sf.path AS source, tf.path AS target
-            FROM symbol_references sr
-            JOIN files sf ON sf.id = sr.source_file_id
-            JOIN symbols s ON lower(s.name) = lower(sr.target_name)
-            JOIN files tf ON tf.id = s.file_id
-            WHERE sf.repo = %s AND tf.repo = %s AND sf.id != tf.id
-        ),
-        dependency_edges AS (
-            SELECT sf.path AS source, tf.path AS target
-            FROM dependencies d
-            JOIN files sf ON sf.id = d.source_file_id
-            JOIN files tf ON tf.id = d.target_file_id
-            WHERE sf.repo = %s AND tf.repo = %s AND sf.id != tf.id
-        ),
-        all_edges AS (
-            SELECT source, target FROM reference_edges
-            UNION ALL
-            SELECT source, target FROM dependency_edges
-        )
-        SELECT source, target, COUNT(*) AS weight
-        FROM all_edges
-        GROUP BY source, target
-    """, (repo, repo, repo, repo))
-
-    G = nx.Graph()
-    for source, target, weight in cur.fetchall():
-        if G.has_edge(source, target):
-            G[source][target]['weight'] += weight
-        else:
-            G.add_edge(source, target, weight=weight)
-
-    # Fetch file metadata for prompt context
-    cur.execute("""
-        SELECT f.path, f.summary, f.role,
-               COUNT(c.id) AS chunk_count,
-               STRING_AGG(DISTINCT c.intent_detail, ' | ') AS intent_details
-        FROM files f
-        LEFT JOIN code_chunks c ON c.file_id = f.id
-        WHERE f.repo = %s
-        GROUP BY f.id, f.path, f.summary, f.role
-    """, (repo,))
-
-    file_meta = {}
-    for path, summary, role, chunk_count, intent_details in cur.fetchall():
-        file_meta[path] = {
-            'name': path.rsplit('/', 1)[-1],
-            'path': path,
-            'summary': summary,
-            'role': role,
-            'chunk_count': chunk_count,
-            'intent_detail': intent_details,
-        }
-
-    return G, file_meta
-
-
-def _build_community_context(community_nodes, meta: dict,
-                             is_class_level: bool) -> tuple[str, list[str], int]:
-    """@brief Build the LLM prompt context and metadata for one community.
-
-    @param community_nodes Set of node IDs (symbol IDs or file paths).
-    @param meta Metadata dict keyed by node ID.
-    @param is_class_level True if nodes are class symbols, False if files.
-    @return Tuple of (context_string, member_names, total_chunks).
-    """
-    context_lines = []
-    member_names = []
-    total_chunks = 0
-
-    for node in community_nodes:
-        m = meta.get(node)
-        if not m:
-            continue
-        name = m.get('name', str(node))
-        member_names.append(name)
-        detail = m.get('intent_detail') or m.get('docstring') or m.get('summary') or ''
-        if is_class_level:
-            context_lines.append(
-                f"- {name} ({m['kind']}, {m['path']}): {detail}"
-            )
-        else:
-            context_lines.append(
-                f"- {m['path']}: {m.get('role', '')} — {detail}"
-            )
-            total_chunks += m.get('chunk_count', 0)
-
-    return "\n".join(context_lines[:30]), member_names, total_chunks
-
-
-def _load_logical_graph(cur, repo: str, machine: bool) -> tuple[nx.Graph, dict, bool]:
-    """@brief Load the class-level graph with fallback to file-level graph when needed.
-
-    @param cur Database cursor.
-    @param repo Repository name.
-    @param machine Emit machine-readable output when true.
-    @return Tuple of graph, metadata map, and class-level mode flag.
-    """
-    graph, meta = _build_class_graph(cur, repo)
-    is_class_level = len(graph.nodes) > 0
-    if not is_class_level:
-        if not machine:
-            console.print("[dim]Few class-level symbols; falling back to file-level graph[/]")
-        graph, meta = _build_file_graph(cur, repo)
-    return graph, meta, is_class_level
-
-
-def _report_logical_graph_shape(graph: nx.Graph, is_class_level: bool, machine: bool) -> None:
-    """@brief Print graph size diagnostics for logical-module synthesis.
-
-    @param graph Weighted graph used for community detection.
-    @param is_class_level Whether graph nodes represent class-level symbols.
-    @param machine Emit machine-readable output when true.
-    """
-    if machine:
-        return
-    console.print(
-        f"[dim]Graph: {len(graph.nodes)} nodes, {len(graph.edges)} edges "
-        f"({'class-level' if is_class_level else 'file-level'})[/]"
-    )
-
-
-def _detect_logical_communities(
-    graph: nx.Graph,
-    resolution: float,
-    max_community_size: int,
-) -> list[set]:
-    """@brief Compute and recursively split Louvain communities for logical modules.
-
-    @param graph Weighted graph used for community detection.
-    @param resolution Louvain resolution parameter.
-    @param max_community_size Maximum community size before recursive splitting.
-    @return Community list constrained to max_community_size.
-    """
-    raw_communities = nx.community.louvain_communities(
-        graph, weight='weight', resolution=resolution, seed=42
-    )
-    return _split_oversized(
-        graph,
-        list(raw_communities),
-        max_community_size,
-        resolution,
-    )
-
-
-def _community_spans_multiple_dirs(comm: set, meta: dict, is_class_level: bool) -> bool:
-    """@brief Determine whether a community crosses directory boundaries.
-
-    @param comm Community member set (symbol IDs or file paths).
-    @param meta Metadata map keyed by community node.
-    @param is_class_level True when community members are class symbols.
-    @return True when members span more than one directory.
-    """
-    if is_class_level:
-        dirs = {
-            meta[node]['path'].rsplit('/', 1)[0] if '/' in meta[node]['path'] else '.'
-            for node in comm
-            if node in meta
-        }
+        for cluster_id, name, kind, path, context in cur.fetchall():
+            by_id[int(cluster_id)]['members'].append({
+                'label': name,
+                'kind': kind,
+                'path': path,
+                'context': (context or '').strip(),
+            })
     else:
-        dirs = {node.rsplit('/', 1)[0] if '/' in node else '.' for node in comm}
-    return len(dirs) > 1
+        cur.execute(
+            """
+            SELECT
+                cm.cluster_id,
+                f.path,
+                f.role,
+                COALESCE(NULLIF(f.summary, ''), NULLIF(f.role, '')) AS context,
+                (SELECT COUNT(*) FROM code_chunks cc WHERE cc.file_id = f.id) AS chunk_count
+            FROM cluster_members cm
+            JOIN files f ON f.id = cm.file_id
+            WHERE cm.cluster_id = ANY(%s)
+            ORDER BY cm.membership_weight DESC NULLS LAST, f.path
+            """,
+            (cluster_ids,),
+        )
+        for cluster_id, path, role, context, chunk_count in cur.fetchall():
+            by_id[int(cluster_id)]['members'].append({
+                'label': path.rsplit('/', 1)[-1],
+                'kind': role or 'file',
+                'path': path,
+                'context': (context or '').strip(),
+                'chunk_count': int(chunk_count or 0),
+            })
+
+    return clusters
 
 
-def _build_logical_module_prompt(context_str: str, is_class_level: bool) -> str:
+def _cluster_directories(members: list[dict]) -> set[str]:
+    """@brief Distinct parent directories spanned by a cluster's members.
+
+    @param members Cluster members (each with a `path`).
+    @return Set of parent directory paths (`.` for root-level files).
+    """
+    return {
+        m['path'].rsplit('/', 1)[0] if '/' in m['path'] else '.'
+        for m in members
+    }
+
+
+def _cluster_file_count(members: list[dict], granularity: str) -> int:
+    """@brief Number of distinct files covered by a cluster's members.
+
+    @param members Cluster members.
+    @param granularity 'symbol' or 'file'.
+    @return Distinct file count.
+    """
+    if granularity == 'symbol':
+        return len({m['path'] for m in members})
+    return len(members)
+
+
+def _cluster_chunk_count(cur, repo: str, members: list[dict],
+                         granularity: str) -> int:
+    """@brief Total code-chunk count across a cluster's distinct files.
+
+    @param cur Database cursor.
+    @param repo Repository name.
+    @param members Cluster members.
+    @param granularity 'symbol' or 'file'.
+    @return Aggregate chunk count.
+    """
+    if granularity == 'file':
+        return sum(m.get('chunk_count', 0) for m in members)
+    paths = list({m['path'] for m in members})
+    if not paths:
+        return 0
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM code_chunks cc
+        JOIN files f ON f.id = cc.file_id
+        WHERE f.repo = %s AND f.path = ANY(%s)
+        """,
+        (repo, paths),
+    )
+    return int(cur.fetchone()[0] or 0)
+
+
+def _build_logical_module_prompt(cluster: dict) -> str:
     """@brief Build the LLM prompt used to name and describe one logical module.
 
-    @param context_str Formatted context lines for module members.
-    @param is_class_level True when context members are classes/types.
+    @param cluster Cluster record with members and existing name/summary.
     @return Prompt string for classifier generation.
     """
-    entity_label = "classes/types" if is_class_level else "files"
-    return f"""You are reading the source code of an application like reading chapters of a book.
-These {entity_label} work together as one logical module. Your job is to describe the STORY —
-what is this code trying to accomplish? What problem is it solving? What is the narrative arc?
+    granularity = cluster['granularity']
+    entity_label = "classes/types" if granularity == 'symbol' else "files"
+    members = cluster['members'][:_LOGICAL_MEMBER_CONTEXT_LIMIT]
+    if granularity == 'symbol':
+        member_lines = [
+            f"- {m['label']} ({m['kind']}, {m['path']}): {m['context']}"
+            if m['context']
+            else f"- {m['label']} ({m['kind']}, {m['path']})"
+            for m in members
+        ]
+    else:
+        member_lines = [
+            f"- {m['path']}: {m['kind']} — {m['context']}"
+            if m['context']
+            else f"- {m['path']}: {m['kind']}"
+            for m in members
+        ]
+    context_str = "\n".join(member_lines)
 
+    existing = ""
+    if cluster.get('name') or cluster.get('summary'):
+        existing = (
+            "\nCluster profile from coupling analysis:\n"
+            f"- name: {cluster.get('name') or '(none)'}\n"
+            f"- summary: {cluster.get('summary') or '(none)'}\n"
+        )
+
+    return f"""You are reading the source code of an application like reading chapters of a book.
+These {entity_label} were detected as one community by Leiden coupling analysis and span multiple
+directories. Your job is to describe the STORY — what is this code trying to accomplish? What
+problem is it solving? What is the narrative arc?
+{existing}
 {entity_label.capitalize()} in this module:
 {context_str}
 
@@ -530,39 +396,27 @@ Respond with ONLY this JSON:
 def _parse_logical_module_metadata(
     classifier: IntentClassifier,
     prompt: str,
-    idx: int,
+    fallback_slug: str,
+    fallback_summary: str,
 ) -> tuple[str, str, str, str]:
-    """@brief Parse classifier JSON output for logical module metadata with fallback defaults.
+    """@brief Parse classifier JSON output for logical module metadata.
 
     @param classifier Intent classifier client.
     @param prompt Prompt text for the classifier model.
-    @param idx Community index used for deterministic fallback naming.
+    @param fallback_slug Deterministic fallback module slug.
+    @param fallback_summary Deterministic fallback summary text.
     @return Tuple of module_name, summary, role, and dominant_intent.
     """
     try:
         res = classifier._parse_json(classifier._generate(prompt, max_tokens=300))
         return (
-            res.get("module_name", f"logical-{idx}"),
-            res.get("summary", ""),
+            res.get("module_name", fallback_slug),
+            res.get("summary", fallback_summary),
             res.get("role", "unknown"),
             res.get("dominant_intent", ""),
         )
     except Exception:
-        return (f"logical-{idx}", "Logical module", "module", "")
-
-
-def _logical_file_count(comm: set, meta: dict, is_class_level: bool) -> int:
-    """@brief Count unique files represented by a logical community.
-
-    @param comm Community member set (symbol IDs or file paths).
-    @param meta Metadata map keyed by community node.
-    @param is_class_level True when community members are class symbols.
-    @return Number of files covered by the community.
-    """
-    if is_class_level:
-        file_paths = {meta[node]['path'] for node in comm if node in meta}
-        return len(file_paths)
-    return len(comm)
+        return (fallback_slug, fallback_summary, "module", "")
 
 
 def _upsert_logical_module_intent(
@@ -574,28 +428,30 @@ def _upsert_logical_module_intent(
     role: str,
     dominant_intent: str,
     file_count: int,
-    total_chunks: int,
+    chunk_count: int,
     member_names: list[str],
+    cluster_id: int,
 ) -> None:
-    """@brief Upsert one logical module_intents record.
+    """@brief Upsert one logical module_intents record bound to a cluster.
 
     @param cur Database cursor.
     @param repo Repository name.
-    @param module_path Persisted module path key.
+    @param module_path Persisted module path key (e.g. `_logical/<slug>`).
     @param module_name Display module name.
     @param summary Module summary text.
     @param role Architectural role label.
     @param dominant_intent Narrative intent sentence.
     @param file_count Number of covered files.
-    @param total_chunks Aggregate chunk count represented by this community.
-    @param member_names Optional ordered member label list.
+    @param chunk_count Aggregate chunk count represented by this cluster.
+    @param member_names Ordered member labels for quick get_module_map rendering.
+    @param cluster_id Source cluster id from the `clusters` table.
     """
     cur.execute("""
         INSERT INTO module_intents
             (repo, module_path, kind, module_name, summary, role,
              dominant_intent, file_count, chunk_count, member_symbols,
-             updated_at)
-        VALUES (%s, %s, 'logical', %s, %s, %s, %s, %s, %s, %s, NOW())
+             cluster_id, updated_at)
+        VALUES (%s, %s, 'logical', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (repo, module_path) DO UPDATE SET
             kind = EXCLUDED.kind,
             module_name = EXCLUDED.module_name,
@@ -605,6 +461,7 @@ def _upsert_logical_module_intent(
             file_count = EXCLUDED.file_count,
             chunk_count = EXCLUDED.chunk_count,
             member_symbols = EXCLUDED.member_symbols,
+            cluster_id = EXCLUDED.cluster_id,
             updated_at = NOW()
     """, (
         repo,
@@ -614,30 +471,25 @@ def _upsert_logical_module_intent(
         role,
         dominant_intent,
         file_count,
-        total_chunks,
+        chunk_count,
         member_names or None,
+        cluster_id,
     ))
 
 
 def synthesize_logical_modules(conn, repo: str, min_files: int,
                                classifier: IntentClassifier,
-                               resolution: float = 1.5,
-                               max_community_size: int = 20,
-                               hub_percentile: float = 90.0,
                                machine: bool = False):
-    """@brief Detect cross-directory logical modules via weighted community detection.
+    """@brief Overlay narrative intents on cross-directory clusters.
 
-    Builds a weighted coupling graph at class level (falling back to file level),
-    dampens hub nodes, runs Louvain community detection, recursively splits
-    oversized communities, and synthesizes narrative-driven intents via LLM.
+    Reads existing `clusters` / `cluster_members` (produced by ingestion using
+    Leiden) and promotes the multi-file, multi-directory ones to logical
+    modules. There is no second clustering pass at synthesis time.
 
     @param conn Database connection.
     @param repo Repository name.
-    @param min_files Minimum members for a community to become a module.
+    @param min_files Minimum distinct files for a cluster to qualify.
     @param classifier IntentClassifier for LLM-based naming and summarization.
-    @param resolution Louvain resolution parameter (higher = smaller communities).
-    @param max_community_size Max members per module before recursive splitting.
-    @param hub_percentile Degree percentile above which nodes get dampened edges.
     @param machine Emit machine-readable progress lines instead of rich progress.
     """
     cur = conn.cursor()
@@ -646,50 +498,67 @@ def synthesize_logical_modules(conn, repo: str, min_files: int,
         (repo,),
     )
 
-    graph, meta, is_class_level = _load_logical_graph(cur, repo, machine)
-    if len(graph.nodes) == 0:
+    clusters = _fetch_cluster_candidates(cur, repo)
+    if not clusters:
         conn.commit()
         return
 
-    _report_logical_graph_shape(graph, is_class_level, machine)
-    _dampen_hub_edges(graph, hub_percentile)
-    communities = _detect_logical_communities(graph, resolution, max_community_size)
+    candidates = []
+    for cluster in clusters:
+        members = cluster['members']
+        if not members:
+            continue
+        file_count = _cluster_file_count(members, cluster['granularity'])
+        if file_count < min_files:
+            continue
+        if len(_cluster_directories(members)) < 2:
+            continue
+        candidates.append((cluster, file_count))
 
-    total_communities = len(communities)
+    total = len(candidates)
     if machine:
-        print(f"SYNTH:logical:0:{total_communities}", flush=True)
+        print(f"SYNTH:logical:0:{total}", flush=True)
 
-    items = enumerate(communities)
     if not machine:
-        items = enumerate(track(communities, description="Synthesizing logical modules..."))
+        iterator = track(
+            enumerate(candidates),
+            total=total,
+            description="Synthesizing logical modules...",
+        )
+    else:
+        iterator = enumerate(candidates)
 
-    for idx, comm in items:
+    used_slugs: set[str] = set()
+    for idx, (cluster, file_count) in iterator:
         if machine:
-            print(f"SYNTH:logical:{idx + 1}:{total_communities}", flush=True)
-        if len(comm) < min_files:
-            continue
-        if not _community_spans_multiple_dirs(comm, meta, is_class_level):
-            continue
+            print(f"SYNTH:logical:{idx + 1}:{total}", flush=True)
 
-        context_str, member_names, total_chunks = _build_community_context(comm, meta, is_class_level)
-        if not context_str:
-            continue
+        fallback_slug = f"logical-{cluster['id']}"
+        fallback_summary = cluster.get('summary') or "Logical module"
+        prompt = _build_logical_module_prompt(cluster)
+        module_name, summary, role, dominant_intent = _parse_logical_module_metadata(
+            classifier, prompt, fallback_slug, fallback_summary,
+        )
+        slug = module_name or fallback_slug
+        if slug in used_slugs:
+            slug = f"{slug}-{cluster['id']}"
+        used_slugs.add(slug)
 
-        prompt = _build_logical_module_prompt(context_str, is_class_level)
-        module_name, summary, role, dominant_intent = _parse_logical_module_metadata(classifier, prompt, idx)
-        module_path = f"_logical/{module_name}"
-        file_count = _logical_file_count(comm, meta, is_class_level)
+        member_names = [m['label'] for m in cluster['members']]
+        chunk_count = _cluster_chunk_count(cur, repo, cluster['members'], cluster['granularity'])
+
         _upsert_logical_module_intent(
             cur=cur,
             repo=repo,
-            module_path=module_path,
-            module_name=module_name,
+            module_path=f"_logical/{slug}",
+            module_name=slug,
             summary=summary,
             role=role,
             dominant_intent=dominant_intent,
             file_count=file_count,
-            total_chunks=total_chunks,
+            chunk_count=chunk_count,
             member_names=member_names,
+            cluster_id=cluster['id'],
         )
 
     conn.commit()
@@ -702,27 +571,14 @@ def synthesize_logical_modules(conn, repo: str, min_files: int,
 @click.option("--mode", type=click.Choice(['directory', 'logical', 'all']),
               default='all', help="Synthesis mode")
 @click.option("--min-files", default=3, help="Minimum files per module")
-@click.option("--resolution", default=None, type=float,
-              help="Louvain resolution (higher = smaller communities, default 1.5)")
-@click.option("--max-community-size", default=None, type=int,
-              help="Max members per module before recursive splitting (default 20)")
-@click.option("--hub-percentile", default=None, type=float,
-              help="Degree percentile for hub dampening (default 90.0)")
 @click.option("--config", default="codebrain.toml", help="Config file path")
 @click.option("--machine", is_flag=True, default=False,
               help="Emit machine-readable progress lines (for desktop app)")
-def main(repo: str, mode: str, min_files: int,
-         resolution: float | None, max_community_size: int | None,
-         hub_percentile: float | None, config: str, machine: bool):
+def main(repo: str, mode: str, min_files: int, config: str, machine: bool):
     """@brief Synthesize module intents for a repository."""
     cfg = load_config(config)
     conn = get_db(cfg)
     classifier = IntentClassifier(cfg)
-
-    synthesis_cfg = cfg.get("synthesis", {})
-    effective_resolution = resolution or synthesis_cfg.get("resolution", 1.5)
-    effective_max_size = max_community_size or synthesis_cfg.get("max_community_size", 20)
-    effective_hub_pct = hub_percentile or synthesis_cfg.get("hub_percentile", 90.0)
 
     if not machine:
         console.print(f"Synthesizing modules for [bold]{repo}[/] (mode: {mode})")
@@ -733,11 +589,7 @@ def main(repo: str, mode: str, min_files: int,
 
     if mode in ('logical', 'all'):
         synthesize_logical_modules(
-            conn, repo, min_files, classifier,
-            resolution=effective_resolution,
-            max_community_size=effective_max_size,
-            hub_percentile=effective_hub_pct,
-            machine=machine,
+            conn, repo, min_files, classifier, machine=machine,
         )
 
     if machine:

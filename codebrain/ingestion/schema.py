@@ -462,6 +462,15 @@ SCHEMA_PATCHES = [
     ADD COLUMN IF NOT EXISTS member_symbols TEXT[]
     """,
     """
+    ALTER TABLE module_intents
+    ADD COLUMN IF NOT EXISTS cluster_id INTEGER
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_module_intents_cluster
+    ON module_intents(cluster_id)
+    WHERE cluster_id IS NOT NULL
+    """,
+    """
     CREATE TABLE IF NOT EXISTS ingestion_diagnostics (
         id SERIAL PRIMARY KEY,
         repo TEXT NOT NULL,

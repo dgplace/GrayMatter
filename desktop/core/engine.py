@@ -552,7 +552,7 @@ class IngestionEngine(QObject):
         except Exception:
             return []
 
-    def start_synthesis(self, repo_name: str, resolution: float = 1.5) -> None:
+    def start_synthesis(self, repo_name: str) -> None:
         """@brief Launch module synthesis for one repository on a background thread.
 
         Runs synthesize_modules.py with --machine flag to receive parseable
@@ -560,7 +560,6 @@ class IngestionEngine(QObject):
         signals for deterministic UI updates.
 
         @param repo_name Repository name to synthesize.
-        @param resolution Louvain resolution (higher = smaller communities).
         """
         self.synthesis_started.emit(repo_name)
 
@@ -569,8 +568,7 @@ class IngestionEngine(QObject):
             try:
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "codebrain.synthesize_modules",
-                     "--repo", repo_name, "--mode", "all", "--machine",
-                     "--resolution", str(resolution)],
+                     "--repo", repo_name, "--mode", "all", "--machine"],
                     cwd=str(_ROOT),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

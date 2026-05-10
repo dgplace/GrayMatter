@@ -28,7 +28,7 @@ Examples:
 Notes:
   - REPO_PATH defaults to the current working directory.
   - Remaining arguments are passed through to `python -m codebrain.ingest`.
-  - Pass `--synthesize` to run module synthesis after ingestion completes.
+  - Pass `--synthesize` to overlay narrative module_intents inline (single container run).
   - The target repo is mounted at /target inside the container.
   - The host folder basename is passed via `--repo-name` unless you override it.
 EOF_HELP
@@ -56,32 +56,14 @@ if [[ ! -d "$target_repo" ]]; then
   exit 1
 fi
 
-synthesize_modules=false
-ingest_args=()
-for arg in "$@"; do
-  if [[ "$arg" == "--synthesize" ]]; then
-    synthesize_modules=true
-    continue
-  fi
-  ingest_args+=("$arg")
-done
+ingest_args=("$@")
 
 has_repo_name_flag=false
-effective_repo_name="$target_repo_name"
 for ((i = 0; i < ${#ingest_args[@]}; i++)); do
   arg="${ingest_args[$i]}"
-  if [[ "$arg" == "--repo-name" ]]; then
+  if [[ "$arg" == "--repo-name" || "$arg" == --repo-name=* ]]; then
     has_repo_name_flag=true
-    if ((i + 1 >= ${#ingest_args[@]})); then
-      echo "Missing value for --repo-name" >&2
-      exit 1
-    fi
-    effective_repo_name="${ingest_args[$((i + 1))]}"
-    continue
-  fi
-  if [[ "$arg" == --repo-name=* ]]; then
-    has_repo_name_flag=true
-    effective_repo_name="${arg#--repo-name=}"
+    break
   fi
 done
 
@@ -162,8 +144,3 @@ docker_compose_indexer=(
 
 "${docker_compose_indexer[@]}" \
   python -m codebrain.ingest /target "${repo_name_args[@]}" "${ingest_args[@]}"
-
-if [[ "$synthesize_modules" == true ]]; then
-  "${docker_compose_indexer[@]}" \
-    python -m codebrain.synthesize_modules --repo "$effective_repo_name"
-fi

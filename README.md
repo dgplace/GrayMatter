@@ -92,26 +92,37 @@ The desktop app provides:
 
 ## Synthesize Module Intents
 
-After ingestion, run synthesis to identify logical modules and generate domain-specific intents:
+Module-intent synthesis overlays narrative LLM intents on directories and on the existing
+Leiden clusters rebuilt by ingestion. It can be run inline as part of an ingest, or as a
+standalone follow-up command.
+
+Inline (single command, recommended for normal use):
+
+```bash
+python -m codebrain.ingest <repo-path> --synthesize
+```
+
+Standalone (e.g. to refresh narratives without re-ingesting):
 
 ```bash
 python -m codebrain.synthesize_modules --repo <repo-name>
-python -m codebrain.synthesize_modules --repo <repo-name> --mode logical --resolution 2.5
+python -m codebrain.synthesize_modules --repo <repo-name> --mode logical
 ```
 
-Options:
+Options for the standalone command:
 
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--mode` | `all` | `directory`, `logical`, or `all` |
-| `--min-files` | `3` | Minimum files for a module to be created |
-| `--resolution` | `1.5` | Louvain resolution. **Higher = smaller, more focused modules**. Lower = broader groupings. |
-| `--max-community-size` | `20` | Modules exceeding this are recursively split |
-| `--hub-percentile` | `90.0` | Degree percentile above which nodes are dampened to prevent utility classes from merging unrelated clusters |
+| `--min-files` | `3` | Minimum distinct files for a module to be created |
 
-These can also be set in `codebrain.toml` under `[synthesis]`.
+Logical modules are not re-clustered at synthesis time — they are sourced directly from
+the `clusters` and `cluster_members` rows produced during ingestion (Leiden, with Louvain
+and connected-components fallbacks). To tune community granularity, set Leiden resolution
+in `codebrain.toml` under `[clustering]` and re-ingest.
 
-The desktop app runs synthesis from the repo panel with a deterministic progress bar.
+Synthesis is LLM-driven, so it is silently skipped when `--no-classify` is set. The
+desktop app runs synthesis from the repo panel with a deterministic progress bar.
 
 ## Run the MCP Server
 

@@ -14,10 +14,9 @@ context_length = 8192
 model = "mistralai/devstral-medium-2507"
 base_url = "http://127.0.0.1:3000"
 
-[synthesis]
-# Louvain resolution: higher = smaller, more focused modules (default 1.5)
-resolution = 1.5
-# Maximum members per logical module before recursive splitting (default 20)
-max_community_size = 20
-# Degree percentile above which nodes are treated as hubs and dampened (default 90.0)
-hub_percentile = 90.0
+[clustering]
+# Leiden/Louvain resolution used when ingestion materializes the `clusters`
+# table (higher = smaller, more focused communities; default 1.0).
+# Logical modules in `module_intents` are derived from these clusters, so this
+# is the single knob controlling community granularity for both surfaces.
+resolution = 1.0

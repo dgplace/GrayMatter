@@ -510,8 +510,8 @@ def materialize_clusters_for_repo(
     console.print("\n  [dim]Materializing Leiden clusters...[/]")
     cluster_conn = get_db_fn(cfg)
     try:
-        synthesis_cfg = cfg.get("synthesis", {})
-        cluster_resolution = float(synthesis_cfg.get("resolution", 1.0) or 1.0)
+        clustering_cfg = cfg.get("clustering", {})
+        cluster_resolution = float(clustering_cfg.get("resolution", 1.0) or 1.0)
         return materialize_clusters_fn(
             conn=cluster_conn,
             repo_name=repo_name,
@@ -537,6 +537,43 @@ def materialize_flows_for_repo(
         return materialize_flows_fn(flow_conn, repo_name)
     finally:
         flow_conn.close()
+
+
+def materialize_module_intents_for_repo(
+    cfg: dict,
+    repo_name: str,
+    classifier: IntentClassifier,
+    no_classify: bool,
+    get_db_fn: Callable[[dict], object],
+    synthesize_directory_fn: Callable[..., None],
+    synthesize_logical_fn: Callable[..., None],
+    min_files: int = 3,
+) -> bool:
+    """@brief Run module-intent synthesis (directory + logical) inline.
+
+    Synthesis is LLM-driven, so it is skipped when classification is disabled.
+
+    @param cfg Loaded configuration dict.
+    @param repo_name Repository identifier.
+    @param classifier Intent classifier client.
+    @param no_classify Whether classifier calls are disabled for this run.
+    @param get_db_fn Factory returning a fresh database connection.
+    @param synthesize_directory_fn Callable that writes directory module_intents rows.
+    @param synthesize_logical_fn Callable that writes logical module_intents rows.
+    @param min_files Minimum distinct files for a module to qualify.
+    @return True when synthesis ran, False when skipped.
+    """
+    if no_classify:
+        console.print("\n  [yellow]![/] [dim]Skipping module-intent synthesis (classifier disabled).[/]")
+        return False
+    console.print("\n  [dim]Synthesizing module intents...[/]")
+    synth_conn = get_db_fn(cfg)
+    try:
+        synthesize_directory_fn(synth_conn, repo_name, min_files, classifier)
+        synthesize_logical_fn(synth_conn, repo_name, min_files, classifier)
+    finally:
+        synth_conn.close()
+    return True
 
 
 def complete_ingestion_run(cfg: dict, run_id: int, stats: dict[str, int], get_db_fn: Callable[[dict], object]) -> None:
