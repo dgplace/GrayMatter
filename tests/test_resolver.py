@@ -85,6 +85,20 @@ class _ResolverCursor:
                 and target_line == 2
             ):
                 self._pending_fetchone = (932, 391)
+            elif (
+                repo_name == "fixture-csharp"
+                and target_path == "src/Helpers.cs"
+                and target_name == "Greeter"
+                and target_line == 1
+            ):
+                self._pending_fetchone = (941, 491)
+            elif (
+                repo_name == "fixture-csharp"
+                and target_path == "src/Helpers.cs"
+                and target_name == "greet"
+                and target_line == 2
+            ):
+                self._pending_fetchone = (942, 491)
             else:
                 self._pending_fetchone = None
             self._pending_fetchall = []
@@ -153,6 +167,11 @@ class _ResolverCursor:
                 self._pending_fetchall = [
                     (801, 81, "src/main.cpp", "cpp", "run", "Renderer", "type_reference", 3),
                     (802, 81, "src/main.cpp", "cpp", "run", "draw", "member_call", 4),
+                ]
+            elif params[0] == "fixture-csharp":
+                self._pending_fetchall = [
+                    (901, 91, "src/Program.cs", "csharp", "run", "Greeter", "type_reference", 3),
+                    (902, 91, "src/Program.cs", "csharp", "run", "greet", "member_call", 4),
                 ]
             else:
                 self._pending_fetchall = [
@@ -712,6 +731,26 @@ def test_refresh_repo_references_prefers_scip_clang_exact_matches(monkeypatch) -
     assert cur.updated_rows == [
         (931, resolver.EXACT_MATCH_CONFIDENCE, "scip_clang", "type_reference", 801),
         (932, resolver.EXACT_MATCH_CONFIDENCE, "scip_clang", "member_call", 802),
+    ]
+
+
+def test_refresh_repo_references_prefers_scip_dotnet_exact_matches(monkeypatch) -> None:
+    """@brief Verify C# repo refresh uses scip-dotnet matches before heuristic fallback."""
+    fixture_root = Path(__file__).parent / "fixtures" / "scip_csharp"
+    fixture_index = json.loads((fixture_root / "scip_print.json").read_text(encoding="utf-8"))
+    strategy = resolver.DotnetScipResolverStrategy()
+    monkeypatch.setattr(resolver, "_has_scip_dotnet_tools", lambda: True)
+    monkeypatch.setattr(resolver, "_find_csharp_project_root", lambda _repo_root: fixture_root)
+    monkeypatch.setattr(strategy, "_load_scip_index", lambda repo_root, project_root: fixture_index)
+    monkeypatch.setattr(resolver, "RESOLVER_STRATEGIES", (strategy,))
+
+    cur = _ResolverCursor()
+    updated = resolver.refresh_repo_references(cur, "fixture-csharp", repo_root=fixture_root)
+
+    assert updated == 2
+    assert cur.updated_rows == [
+        (941, resolver.EXACT_MATCH_CONFIDENCE, "scip_dotnet", "type_reference", 901),
+        (942, resolver.EXACT_MATCH_CONFIDENCE, "scip_dotnet", "member_call", 902),
     ]
 
 

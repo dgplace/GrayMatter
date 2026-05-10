@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "tool_info": {
+      "name": "scip-dotnet",
+      "version": "0.2.14"
+    },
+    "project_root": "file:///probe",
+    "text_document_encoding": 1
+  },
+  "documents": [
+    {
+      "relative_path": "src/Helpers.cs",
+      "occurrences": [
+        {
+          "range": [0, 0, 0],
+          "symbol": "scip-dotnet nuget fixture src/Helpers.cs",
+          "symbol_roles": 1
+        },
+        {
+          "range": [0, 13, 20],
+          "symbol": "scip-dotnet nuget fixture src/Helpers.cs/Greeter#",
+          "symbol_roles": 1
+        },
+        {
+          "range": [1, 10, 15],
+          "symbol": "scip-dotnet nuget fixture src/Helpers.cs/Greeter#greet().",
+          "symbol_roles": 1
+        }
+      ]
+    },
+    {
+      "relative_path": "src/Program.cs",
+      "occurrences": [
+        {
+          "range": [2, 9, 16],
+          "symbol": "scip-dotnet nuget fixture src/Helpers.cs/Greeter#"
+        },
+        {
+          "range": [3, 9, 14],
+          "symbol": "scip-dotnet nuget fixture src/Helpers.cs/Greeter#greet()."
+        }
+      ]
+    }
+  ]
+}

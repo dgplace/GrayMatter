@@ -25,6 +25,7 @@ SCIP_DEFINITION_SYMBOL_ROLE = 1
 SCIP_TYPESCRIPT_LANGUAGES = frozenset({"typescript", "tsx", "javascript", "jsx"})
 SCIP_PYTHON_LANGUAGES = frozenset({"python"})
 SCIP_JAVA_LANGUAGES = frozenset({"java"})
+SCIP_DOTNET_LANGUAGES = frozenset({"csharp"})
 SCIP_CLANG_LANGUAGES = frozenset({"c", "cpp"})
 PYTHON_PROJECT_MARKERS = frozenset(
     {
@@ -401,6 +402,129 @@ class JavaScipResolverStrategy(ReferenceResolverStrategy):
             return _print_scip_index(repo_root, index_path)
 
 
+class DotnetScipResolverStrategy(ReferenceResolverStrategy):
+    """@brief Resolve C# references with scip-dotnet occurrences."""
+
+    name = "scip_dotnet"
+    supported_languages = SCIP_DOTNET_LANGUAGES
+
+    def build_exact_match_index(self, repo_root: Path, rows: list[dict]) -> dict[tuple[str, int, str], dict]:
+        """@brief Map C# source references to exact declaration locations.
+
+        @param repo_root Repository root being indexed.
+        @param rows Resolver batch rows for C# source files.
+        @return Exact-match mapping keyed by source path, line number, and target
+                symbol name.
+        """
+        if not _has_scip_dotnet_tools():
+            return {}
+        project_root = _find_csharp_project_root(repo_root)
+        if project_root is None:
+            return {}
+
+        try:
+            scip_index = self._load_scip_index(repo_root, project_root)
+        except RuntimeError:
+            return {}
+
+        normalized_documents = []
+        prefix = _normalize_relative_path(os.path.relpath(project_root, repo_root))
+        for document in scip_index.get("documents", []):
+            patched_document = dict(document)
+            relative_path = _normalize_relative_path(document.get("relative_path", ""))
+            if prefix and prefix != "." and relative_path and not relative_path.startswith(f"{prefix}/"):
+                patched_document["relative_path"] = f"{prefix}/{relative_path}"
+            else:
+                patched_document["relative_path"] = relative_path
+            normalized_documents.append(patched_document)
+        normalized_scip_index = {**scip_index, "documents": normalized_documents}
+
+        definition_index = _build_scip_definition_index(normalized_scip_index)
+        candidate_paths = {
+            _normalize_relative_path(row["source_path"])
+            for row in rows
+            if row.get("source_path")
+        }
+        candidate_names = {row["target_name"] for row in rows}
+        exact_matches: dict[tuple[str, int, str], dict] = {}
+
+        for document in normalized_scip_index.get("documents", []):
+            relative_path = _normalize_relative_path(document.get("relative_path", ""))
+            if relative_path not in candidate_paths:
+                continue
+
+            for occurrence in document.get("occurrences", []):
+                symbol_roles = occurrence.get("symbol_roles", 0)
+                if symbol_roles & SCIP_DEFINITION_SYMBOL_ROLE:
+                    continue
+
+                symbol = occurrence.get("symbol")
+                target_name = _extract_scip_target_name(symbol)
+                if not symbol or not target_name or target_name not in candidate_names:
+                    continue
+
+                target_location = definition_index.get(symbol)
+                if not target_location:
+                    continue
+
+                key = _reference_key(relative_path, occurrence["range"][0] + 1, target_name)
+                exact_matches[key] = {
+                    "target_path": target_location["path"],
+                    "target_line": target_location["line_no"],
+                    "resolution_method": self.name,
+                }
+
+        return exact_matches
+
+    def _load_scip_index(self, repo_root: Path, project_root: Path) -> dict:
+        """@brief Run scip-dotnet and print the resulting SCIP index as JSON.
+
+        @param repo_root Repository root being indexed.
+        @param project_root Directory containing the detected `.sln`/`.csproj`.
+        @return Parsed JSON object emitted by `scip print --json`.
+        """
+        if not _has_scip_dotnet_tools():
+            raise RuntimeError(
+                "scip-dotnet and scip must be available on PATH; "
+                "run ingestion through the codebrain indexer container."
+            )
+
+        index_path = project_root / "index.scip"
+        backup_path = None
+        if index_path.exists():
+            backup_path = project_root / "index.codebrain.backup.scip"
+            if backup_path.exists():
+                backup_path.unlink()
+            index_path.rename(backup_path)
+
+        index_cmd = [
+            "scip-dotnet",
+            "index",
+            "--working-directory",
+            str(project_root),
+        ]
+        index_result = subprocess.run(
+            index_cmd,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if index_result.returncode != 0:
+            stderr = (index_result.stderr or index_result.stdout).strip()
+            raise RuntimeError(f"scip-dotnet index failed for {repo_root}: {stderr}")
+        if not index_path.exists():
+            raise RuntimeError(f"scip-dotnet did not produce {index_path}")
+
+        try:
+            return _print_scip_index(repo_root, index_path)
+        finally:
+            if index_path.exists():
+                index_path.unlink()
+            if backup_path is not None and backup_path.exists():
+                backup_path.rename(index_path)
+
+
 class ClangScipResolverStrategy(ReferenceResolverStrategy):
     """@brief Resolve C/C++ references with scip-clang occurrences."""
 
@@ -514,6 +638,7 @@ RESOLVER_STRATEGIES: tuple[ReferenceResolverStrategy, ...] = (
     TypeScriptScipResolverStrategy(),
     PythonScipResolverStrategy(),
     JavaScipResolverStrategy(),
+    DotnetScipResolverStrategy(),
     ClangScipResolverStrategy(),
 )
 
@@ -556,6 +681,25 @@ def _has_java_project_markers(repo_root: Path) -> bool:
     return False
 
 
+def _find_csharp_project_root(repo_root: Path) -> Optional[Path]:
+    """@brief Return the best C# project root containing `.sln` or `.csproj`."""
+    solution_dirs: list[Path] = []
+    project_dirs: list[Path] = []
+    for current_root, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [dirname for dirname in dirnames if dirname not in SCIP_DISCOVERY_EXCLUDED_DIRS]
+        for filename in filenames:
+            if filename.endswith(".sln"):
+                solution_dirs.append(Path(current_root))
+            elif filename.endswith(".csproj"):
+                project_dirs.append(Path(current_root))
+
+    candidates = solution_dirs or project_dirs
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: (len(path.parts), path.as_posix()))
+    return candidates[0]
+
+
 def _find_compile_commands(repo_root: Path) -> Optional[Path]:
     """@brief Return the nearest compile_commands.json within a repository tree."""
     candidates: list[Path] = []
@@ -582,6 +726,11 @@ def _has_scip_python_tools() -> bool:
 def _has_scip_java_tools() -> bool:
     """@brief Return whether the Java SCIP CLI tools are available on PATH."""
     return shutil.which("scip-java") is not None and shutil.which("scip") is not None
+
+
+def _has_scip_dotnet_tools() -> bool:
+    """@brief Return whether the C# SCIP CLI tools are available on PATH."""
+    return shutil.which("scip-dotnet") is not None and shutil.which("scip") is not None
 
 
 def _has_scip_clang_tools() -> bool:
