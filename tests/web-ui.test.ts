@@ -40,7 +40,7 @@ test("client app source wires the expected /ui/api endpoints", () => {
   assert.match(appSrc, /\/stats/);
   assert.match(appSrc, /\/graph/);
   assert.match(appSrc, /\/modules/);
-  assert.match(appSrc, /\/size/);
+  assert.match(appSrc, /\/tables/);
 });
 
 test("client app source uses the 3D force-graph renderer with directional arrows and exposes edge-kind colors", () => {

@@ -25,14 +25,16 @@ interface RepositoryStats {
   symbolKinds: CountedRow[];
 }
 
-interface IndexSize {
-  file_count: number;
-  chunk_count: number;
-  symbol_count: number;
-  ref_count: number;
-  content_bytes: number;
-  estimated_embedding_bytes: number;
-  estimated_total_bytes: number;
+interface BrowseColumn { key: string; label: string }
+interface BrowseTableInfo { name: string; label: string; description: string; row_count: number }
+interface BrowseTablePage {
+  name: string;
+  label: string;
+  columns: BrowseColumn[];
+  rows: Record<string, unknown>[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 interface ModuleIntent {
@@ -199,14 +201,6 @@ function colorForEdge(l: ForceLink): string {
   return colorForEdgeKind(l.kind);
 }
 
-/** @brief Format a byte count as a human-readable string. */
-function humanBytes(bytes: number): string {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-}
-
 /** @brief Escape a value for safe HTML interpolation. */
 function esc(value: unknown): string {
   return String(value)
@@ -284,23 +278,21 @@ async function refreshToolCalls(): Promise<void> {
   }
 }
 
-/** @brief Render the Index Management panel and wire its delete button. */
-function renderIndexSize(size: IndexSize): void {
+/**
+ * @brief Render the Index Management panel: two action buttons (View / Delete)
+ *        scoped to the currently selected repository.
+ */
+function renderIndexMgmt(repo: string): void {
   indexMgmtBody.innerHTML = [
-    '<div class="metric"><span>Files</span><strong>' + Number(size.file_count).toLocaleString() + "</strong></div>",
-    '<div class="metric"><span>Chunks</span><strong>' + Number(size.chunk_count).toLocaleString() + "</strong></div>",
-    '<div class="metric"><span>Symbols</span><strong>' + Number(size.symbol_count).toLocaleString() + "</strong></div>",
-    '<div class="metric"><span>References</span><strong>' + Number(size.ref_count).toLocaleString() + "</strong></div>",
-    '<div class="metric"><span>Content text</span><strong>' + humanBytes(size.content_bytes) + "</strong></div>",
-    '<div class="metric"><span>Embeddings</span><strong>' + humanBytes(size.estimated_embedding_bytes) + "</strong></div>",
-    '<div class="metric"><span>Total (est.)</span><strong>' + humanBytes(size.estimated_total_bytes) + "</strong></div>",
-    '<p class="size-note">Embedding estimate: 768-dim float32 × chunk count.</p>',
+    '<button id="viewIndexBtn" type="button">View Index</button>',
     '<button class="btn-danger" id="deleteIndexBtn" type="button">Delete Index</button>',
   ].join("");
 
+  const viewBtn = document.getElementById("viewIndexBtn") as HTMLButtonElement;
+  viewBtn.addEventListener("click", () => { void openIndexModal(repo); });
+
   const deleteBtn = document.getElementById("deleteIndexBtn") as HTMLButtonElement;
   deleteBtn.addEventListener("click", async () => {
-    const repo = repoSelect.value;
     if (!repo) return;
     if (!confirm('Permanently delete the index for "' + repo + '"? This cannot be undone.')) return;
     deleteBtn.disabled = true;
@@ -320,14 +312,171 @@ function renderIndexSize(size: IndexSize): void {
   });
 }
 
-/** @brief Reload the index-size panel for a repo. */
-async function loadIndexSize(repo: string): Promise<void> {
-  try {
-    const size = await getJson<IndexSize>("/ui/api/repos/" + encodeURIComponent(repo) + "/size");
-    renderIndexSize(size);
-  } catch (e: any) {
-    indexMgmtBody.innerHTML = '<p class="warn">Failed to load index size: ' + esc(e?.message || String(e)) + "</p>";
+/** @brief Lazily create the index-browser modal DOM and return its references. */
+function ensureIndexModal(): {
+  overlay: HTMLElement; titleEl: HTMLElement; tabs: HTMLElement; pane: HTMLElement;
+} {
+  let overlay = document.getElementById("indexModal") as HTMLElement | null;
+  if (overlay) {
+    return {
+      overlay,
+      titleEl: document.getElementById("indexModalTitle") as HTMLElement,
+      tabs: document.getElementById("indexModalTabs") as HTMLElement,
+      pane: document.getElementById("indexModalPane") as HTMLElement,
+    };
   }
+  overlay = document.createElement("div");
+  overlay.id = "indexModal";
+  overlay.className = "modal-overlay";
+  overlay.hidden = true;
+  overlay.innerHTML = [
+    '<div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="indexModalTitle">',
+    '  <header class="modal-header">',
+    '    <h2 id="indexModalTitle">Index</h2>',
+    '    <button class="modal-close" id="indexModalClose" type="button" aria-label="Close">&times;</button>',
+    '  </header>',
+    '  <nav class="modal-tabs" id="indexModalTabs"></nav>',
+    '  <div class="modal-pane" id="indexModalPane"><p class="warn">Loading...</p></div>',
+    '</div>',
+  ].join("");
+  document.body.appendChild(overlay);
+
+  const close = () => closeIndexModal();
+  (document.getElementById("indexModalClose") as HTMLButtonElement).addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay && !overlay.hidden) close();
+  });
+
+  return {
+    overlay,
+    titleEl: document.getElementById("indexModalTitle") as HTMLElement,
+    tabs: document.getElementById("indexModalTabs") as HTMLElement,
+    pane: document.getElementById("indexModalPane") as HTMLElement,
+  };
+}
+
+/** @brief Hide the index-browser modal. */
+function closeIndexModal(): void {
+  const overlay = document.getElementById("indexModal");
+  if (overlay) overlay.hidden = true;
+}
+
+/**
+ * @brief Open the View Index modal for a repo: fetch the table list, render
+ *        a tab per table, and show the first tab.
+ */
+async function openIndexModal(repo: string): Promise<void> {
+  const refs = ensureIndexModal();
+  refs.titleEl.textContent = 'Index — ' + repo;
+  refs.tabs.innerHTML = "";
+  refs.pane.innerHTML = '<p class="warn">Loading tables...</p>';
+  refs.overlay.hidden = false;
+
+  try {
+    const data = await getJson<{ tables: BrowseTableInfo[] }>(
+      "/ui/api/repos/" + encodeURIComponent(repo) + "/tables",
+    );
+    const tables = data.tables || [];
+    if (!tables.length) {
+      refs.pane.innerHTML = '<p class="warn">No browseable tables for this repository.</p>';
+      return;
+    }
+    refs.tabs.innerHTML = tables
+      .map((t) => (
+        '<button class="modal-tab" type="button" data-table="' + esc(t.name) + '" title="' + esc(t.description) + '">'
+        + esc(t.label) + ' <span class="modal-tab-count">' + Number(t.row_count).toLocaleString() + '</span>'
+        + '</button>'
+      ))
+      .join("");
+    refs.tabs.querySelectorAll<HTMLButtonElement>("button.modal-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        refs.tabs.querySelectorAll(".modal-tab").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        void loadIndexTablePage(repo, btn.dataset.table || "", 0);
+      });
+    });
+    const first = refs.tabs.querySelector<HTMLButtonElement>("button.modal-tab");
+    if (first) {
+      first.classList.add("active");
+      void loadIndexTablePage(repo, first.dataset.table || "", 0);
+    }
+  } catch (e: any) {
+    refs.pane.innerHTML = '<p class="warn">Failed to load tables: ' + esc(e?.message || String(e)) + "</p>";
+  }
+}
+
+/**
+ * @brief Fetch one page of a table and render it into the modal pane with
+ *        Prev/Next pagination controls.
+ */
+async function loadIndexTablePage(repo: string, table: string, offset: number): Promise<void> {
+  const refs = ensureIndexModal();
+  refs.pane.innerHTML = '<p class="warn">Loading ' + esc(table) + '...</p>';
+  const limit = 100;
+  try {
+    const url = "/ui/api/repos/" + encodeURIComponent(repo)
+      + "/tables/" + encodeURIComponent(table)
+      + "?limit=" + limit + "&offset=" + Math.max(0, offset);
+    const page = await getJson<BrowseTablePage>(url);
+    refs.pane.innerHTML = renderTablePageHtml(page);
+    wireTablePageControls(refs.pane, repo, page);
+  } catch (e: any) {
+    refs.pane.innerHTML = '<p class="warn">Failed to load ' + esc(table) + ': ' + esc(e?.message || String(e)) + "</p>";
+  }
+}
+
+/** @brief Format any cell value into a compact HTML-safe string. */
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return '<span class="cell-null">null</span>';
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) return esc("[" + value.map((v) => String(v)).join(", ") + "]");
+  if (typeof value === "object") return esc(JSON.stringify(value));
+  const str = String(value);
+  if (str.length > 240) return esc(str.slice(0, 240)) + '<span class="cell-trunc">…</span>';
+  return esc(str);
+}
+
+/** @brief Build the HTML for a single table page (header bar + table + pager). */
+function renderTablePageHtml(page: BrowseTablePage): string {
+  const start = page.total === 0 ? 0 : page.offset + 1;
+  const end = Math.min(page.total, page.offset + page.rows.length);
+  const headerCells = page.columns.map((c) => '<th>' + esc(c.label) + '</th>').join("");
+  const bodyRows = page.rows.length
+    ? page.rows.map((row) => (
+        '<tr>' + page.columns.map((c) => '<td>' + formatCell(row[c.key]) + '</td>').join("") + '</tr>'
+      )).join("")
+    : '<tr><td class="cell-empty" colspan="' + page.columns.length + '">No rows.</td></tr>';
+  const prevDisabled = page.offset <= 0 ? ' disabled' : '';
+  const nextDisabled = end >= page.total ? ' disabled' : '';
+  return [
+    '<div class="modal-pager">',
+    '  <span class="modal-pager-info">',
+    esc(page.label) + ' &middot; ' + start.toLocaleString() + '–' + end.toLocaleString()
+      + ' of ' + Number(page.total).toLocaleString(),
+    '  </span>',
+    '  <span class="modal-pager-buttons">',
+    '    <button type="button" data-page="prev"' + prevDisabled + '>Prev</button>',
+    '    <button type="button" data-page="next"' + nextDisabled + '>Next</button>',
+    '  </span>',
+    '</div>',
+    '<div class="modal-table-wrap">',
+    '  <table class="modal-table"><thead><tr>' + headerCells + '</tr></thead>',
+    '  <tbody>' + bodyRows + '</tbody></table>',
+    '</div>',
+  ].join("");
+}
+
+/** @brief Wire up Prev/Next buttons to fetch adjacent pages of the same table. */
+function wireTablePageControls(pane: HTMLElement, repo: string, page: BrowseTablePage): void {
+  const prev = pane.querySelector<HTMLButtonElement>('button[data-page="prev"]');
+  const next = pane.querySelector<HTMLButtonElement>('button[data-page="next"]');
+  if (prev) prev.addEventListener("click", () => {
+    void loadIndexTablePage(repo, page.name, Math.max(0, page.offset - page.limit));
+  });
+  if (next) next.addEventListener("click", () => {
+    void loadIndexTablePage(repo, page.name, page.offset + page.limit);
+  });
 }
 
 /** @brief Render the Module Intents panel from a list of modules. */
@@ -539,10 +688,10 @@ function renderGraph(payload: GraphResponse): void {
   });
 }
 
-/** @brief Load all data for a repo: stats, graph, modules, index size. */
+/** @brief Load all data for a repo: stats, graph, modules. */
 async function loadRepo(repo: string): Promise<void> {
   updateStatus("Loading stats and graph for " + repo + "...");
-  indexMgmtBody.innerHTML = '<p class="warn">Loading...</p>';
+  renderIndexMgmt(repo);
   const encodedRepo = encodeURIComponent(repo);
   const [stats, graph, clustersResp, cyclesResp] = await Promise.all([
     getJson<RepositoryStats>("/ui/api/repos/" + encodedRepo + "/stats"),
@@ -595,7 +744,6 @@ async function loadRepo(repo: string): Promise<void> {
   renderGraph(graph);
   renderLegend(graph);
   updateStatus("Showing " + repo + ".");
-  void loadIndexSize(repo);
   void loadModules(repo);
 }
 

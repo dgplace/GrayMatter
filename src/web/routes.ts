@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 import {
   deleteRepository,
   getRepositoryGraph,
-  getRepositoryIndexSize,
   getRepositoryStats,
   listRepositories,
   repositoryExists,
@@ -20,6 +19,11 @@ import {
   getClusterMembers,
   findCycles,
 } from "../repositories/store.js";
+import {
+  fetchBrowseTablePage,
+  getBrowseTableSpec,
+  listBrowseTables,
+} from "../repositories/indexBrowser.js";
 import { getToolCallSnapshot } from "../mcp/toolCallStats.js";
 import { renderWebUi } from "./ui.js";
 
@@ -110,21 +114,6 @@ export function registerWebRoutes(app: any): void {
     }
   });
 
-  app.get("/ui/api/repos/:repo/size", async (req: any, res: any) => {
-    try {
-      const repo = decodeURIComponent(String(req.params.repo || ""));
-      const size = await getRepositoryIndexSize(repo);
-      if (!size) {
-        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
-        return;
-      }
-      res.status(200).json(size);
-    } catch (error) {
-      console.error("Failed to load repository size:", error);
-      res.status(500).json({ error: "Failed to load repository size." });
-    }
-  });
-
   app.delete("/ui/api/repos/:repo", async (req: any, res: any) => {
     try {
       const repo = decodeURIComponent(String(req.params.repo || ""));
@@ -137,6 +126,44 @@ export function registerWebRoutes(app: any): void {
     } catch (error) {
       console.error("Failed to delete repository:", error);
       res.status(500).json({ error: "Failed to delete repository index." });
+    }
+  });
+
+  app.get("/ui/api/repos/:repo/tables", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const tables = await listBrowseTables(repo);
+      res.status(200).json({ tables });
+    } catch (error) {
+      console.error("Failed to list browseable tables:", error);
+      res.status(500).json({ error: "Failed to list browseable tables." });
+    }
+  });
+
+  app.get("/ui/api/repos/:repo/tables/:table", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      const tableName = String(req.params.table || "");
+      const spec = getBrowseTableSpec(tableName);
+      if (!spec) {
+        res.status(404).json({ error: `Unknown table \`${tableName}\`.` });
+        return;
+      }
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const limit = Number(req.query.limit ?? 100);
+      const offset = Number(req.query.offset ?? 0);
+      const page = await fetchBrowseTablePage(repo, spec, limit, offset);
+      res.status(200).json(page);
+    } catch (error) {
+      console.error("Failed to load table page:", error);
+      res.status(500).json({ error: "Failed to load table page." });
     }
   });
 
