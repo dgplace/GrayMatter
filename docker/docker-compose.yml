@@ -1,6 +1,32 @@
 name: codebrain
 
 services:
+  embed_proxy:
+    image: alpine/socat
+    command:
+      - -d
+      - -d
+      - TCP-LISTEN:11434,fork,reuseaddr
+      - TCP:host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - codebrain_internal
+      - codebrain_host_access
+
+  classifier_proxy:
+    image: alpine/socat
+    command:
+      - -d
+      - -d
+      - TCP-LISTEN:3000,fork,reuseaddr
+      - TCP:host.docker.internal:3000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - codebrain_internal
+      - codebrain_host_access
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -8,7 +34,7 @@ services:
       POSTGRES_USER: codebrain
       POSTGRES_PASSWORD: codebrain_local
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -17,6 +43,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - codebrain_internal
 
   indexer:
     build:
@@ -26,23 +54,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      embed_proxy:
+        condition: service_started
+      classifier_proxy:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
-      # EMBED_BASE_URL and CLASSIFIER_BASE_URL are passed through from the host
-      # by scripts/index-repo.{sh,bat} (and watch-repo.{sh,bat}), which translates
-      # 127.0.0.1/localhost in the toml to host.docker.internal so the container
-      # can reach the host's services. Anything else (LAN IP, resolvable host)
-      # is passed through unchanged. If env vars are not set, the toml value
-      # in .env/codebrain.toml is used directly.
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
-      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-}
+      # Endpoint resolver scripts enforce local-only host model policy and emit
+      # proxy service URLs for container-safe access.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://embed_proxy:11434}
+      CLASSIFIER_BASE_URL: ${CLASSIFIER_BASE_URL:-http://classifier_proxy:3000}
     working_dir: /workspace
     volumes:
       - ..:/workspace
     profiles:
       - indexer
+    networks:
+      - codebrain_internal
 
   mcp:
     build:
@@ -51,24 +79,33 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      embed_proxy:
+        condition: service_started
     environment:
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "3001"
-      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1],host.docker.internal
+      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1]
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       EMBED_API_STYLE: ollama
-      EMBED_BASE_URL: http://host.docker.internal:11434
+      EMBED_BASE_URL: http://embed_proxy:11434
       EMBED_MODEL: nomic-embed-text
       EMBED_DIMENSIONS: "768"
     init: true
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     restart: unless-stopped
     profiles:
       - tools
+    networks:
+      - codebrain_internal
 
 volumes:
   postgres_data:
+
+networks:
+  codebrain_internal:
+    driver: bridge
+    internal: true
+  codebrain_host_access:
+    driver: bridge

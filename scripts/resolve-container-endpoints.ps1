@@ -5,8 +5,9 @@ Resolves container-safe endpoint environment overrides for CodeBrain helper scri
 .DESCRIPTION
 Reads `codebrain.toml` from `.env/codebrain.toml` and `codebrain.toml` at repo root,
 and emits KEY=VALUE lines for EMBED_BASE_URL and CLASSIFIER_BASE_URL. If either value
-targets localhost/loopback, host is rewritten to `host.docker.internal` so containers
-can reach host services.
+targets localhost/loopback (or host.docker.internal), it is rewritten to a fixed
+container-side proxy URL so runtime containers stay on the internal network and
+cannot connect to arbitrary external hosts.
 #>
 
 param(
@@ -45,8 +46,10 @@ function Get-SectionBaseUrlMap {
     return $map
 }
 
-function Translate-ContainerUrl {
+function Resolve-ContainerProxyUrl {
     param(
+        [Parameter(Mandatory = $true)]
+        [string]$EnvName,
         [AllowEmptyString()]
         [string]$Url
     )
@@ -58,17 +61,21 @@ function Translate-ContainerUrl {
     try {
         $uri = [System.Uri]$Url
     } catch {
-        return $Url
+        throw "Invalid URL value: $Url"
     }
 
     $uriHost = $uri.Host.ToLowerInvariant()
-    if ($uriHost -notin @("127.0.0.1", "localhost", "::1", "0.0.0.0")) {
-        return $Url
+    if ($uriHost -notin @("127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal")) {
+        throw "Non-local endpoint is blocked by policy: $Url"
     }
 
-    $builder = New-Object System.UriBuilder($uri)
-    $builder.Host = "host.docker.internal"
-    return $builder.Uri.AbsoluteUri.TrimEnd('/')
+    if ($EnvName -eq "EMBED_BASE_URL") {
+        return "http://embed_proxy:11434"
+    }
+    if ($EnvName -eq "CLASSIFIER_BASE_URL") {
+        return "http://classifier_proxy:3000"
+    }
+    throw "Unsupported endpoint variable: $EnvName"
 }
 
 $localConfigPath = Join-Path $RepoRoot ".env\codebrain.toml"
@@ -101,7 +108,8 @@ foreach ($item in @(
 
     $existing = [Environment]::GetEnvironmentVariable($envName)
     if (-not [string]::IsNullOrWhiteSpace($existing)) {
-        Write-Output "$envName=$existing"
+        $translatedExisting = Resolve-ContainerProxyUrl -EnvName $envName -Url $existing
+        Write-Output "$envName=$translatedExisting"
         continue
     }
 
@@ -110,7 +118,7 @@ foreach ($item in @(
         $raw = $configMap[$section]
     }
 
-    $translated = Translate-ContainerUrl -Url $raw
+    $translated = Resolve-ContainerProxyUrl -EnvName $envName -Url $raw
     if (-not [string]::IsNullOrWhiteSpace($translated)) {
         Write-Output "$envName=$translated"
     }

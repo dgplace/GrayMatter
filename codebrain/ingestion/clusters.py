@@ -11,6 +11,16 @@ from rich.console import Console
 from codebrain.classifier import IntentClassifier
 from codebrain.embedder import EmbeddingClient
 
+try:
+    import igraph as ig
+except ImportError:
+    ig = None
+
+try:
+    import leidenalg
+except ImportError:
+    leidenalg = None
+
 console = Console()
 
 CLUSTER_SUMMARY_MAX_CHARS = 3_000
@@ -348,8 +358,10 @@ def _detect_communities(graph: nx.Graph, resolution: float) -> tuple[list[set[in
     """@brief Detect graph communities with backend-safe fallback behavior.
 
     Prefers Leiden communities when the active NetworkX backend supports it.
-    Falls back to Louvain, then connected components, to avoid hard failures
-    during ingestion when optional backend features are unavailable.
+    If that backend is unavailable, tries a local Leiden implementation via
+    python-igraph/leidenalg. Falls back to Louvain, then connected components,
+    to avoid hard failures during ingestion when optional backend features are
+    unavailable.
 
     @param graph Weighted undirected graph for clustering.
     @param resolution Community-resolution parameter used by Leiden/Louvain.
@@ -372,6 +384,14 @@ def _detect_communities(graph: nx.Graph, resolution: float) -> tuple[list[set[in
         pass
 
     try:
+        communities = _detect_communities_with_igraph_leiden(graph, resolution)
+        normalized = [set(community) for community in communities if len(community) > 0]
+        if normalized:
+            return normalized, "leiden_igraph"
+    except (ImportError, AttributeError, NotImplementedError, TypeError, ValueError):
+        pass
+
+    try:
         communities = list(
             nx.community.louvain_communities(
                 graph,
@@ -387,6 +407,51 @@ def _detect_communities(graph: nx.Graph, resolution: float) -> tuple[list[set[in
         pass
 
     return [set(component) for component in nx.connected_components(graph)], "connected_components"
+
+
+def _detect_communities_with_igraph_leiden(graph: nx.Graph, resolution: float) -> list[set[int]]:
+    """@brief Run Leiden locally via python-igraph/leidenalg.
+
+    @param graph Weighted undirected graph for clustering.
+    @param resolution Leiden resolution parameter.
+    @return Non-empty community node sets.
+    @raises ImportError When `igraph`/`leidenalg` are not installed.
+    """
+    if ig is None or leidenalg is None:
+        raise ImportError("igraph/leidenalg unavailable")
+
+    nodes = list(graph.nodes())
+    if not nodes:
+        return []
+    index_by_node = {node: index for index, node in enumerate(nodes)}
+
+    edge_tuples: list[tuple[int, int]] = []
+    edge_weights: list[float] = []
+    for source, target, attrs in graph.edges(data=True):
+        edge_tuples.append((index_by_node[source], index_by_node[target]))
+        edge_weights.append(float(attrs.get("weight", 1.0)))
+
+    ig_graph = ig.Graph(n=len(nodes), edges=edge_tuples, directed=False)
+
+    kwargs = {
+        "weights": edge_weights if edge_weights else None,
+        "resolution_parameter": float(resolution),
+    }
+    try:
+        partition = leidenalg.find_partition(
+            ig_graph,
+            leidenalg.RBConfigurationVertexPartition,
+            seed=42,
+            **kwargs,
+        )
+    except TypeError:
+        partition = leidenalg.find_partition(
+            ig_graph,
+            leidenalg.RBConfigurationVertexPartition,
+            **kwargs,
+        )
+
+    return [{nodes[index] for index in community} for community in partition if len(community) > 0]
 
 
 def materialize_clusters(
@@ -423,7 +488,7 @@ def materialize_clusters(
         return 0, granularity
 
     communities, community_algorithm = _detect_communities(graph, resolution)
-    if community_algorithm != "leiden":
+    if not community_algorithm.startswith("leiden"):
         console.print(
             f"  [yellow]![/] [dim]Leiden unavailable; using {community_algorithm} communities fallback.[/]"
         )

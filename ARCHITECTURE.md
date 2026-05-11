@@ -117,7 +117,7 @@ Design pattern:
 12. During multi-worker full ingest, unresolved reference rows are persisted first and then refreshed in one serial repo-wide resolution pass after all symbols are stable so exact strategies can target the final `symbols` ids.
 13. `codebrain/ingest.py` + `codebrain/ingestion/*` store normalized records in PostgreSQL.
 14. After each ingest run, dependency cycles are materialized and callback-framework diagnostics are rebuilt from dependency/reference evidence (for example `missing_extractor` gaps keyed by framework and affected file count).
-15. Clustering persists semantic `clusters` + `cluster_members`; ingestion prefers Leiden, falls back to Louvain when Leiden backend support is missing, and finally falls back to connected-components so cluster materialization cannot abort the run.
+15. Clustering persists semantic `clusters` + `cluster_members`; ingestion first tries NetworkX Leiden dispatch, then a local `igraph` + `leidenalg` Leiden path, then falls back to Louvain and finally connected-components so cluster materialization cannot abort the run.
 16. A flow materialization pass computes call-style weakly connected symbol groups from resolved call/service edges, assigns deterministic `flow_key` ids, and persists `flows` + `flow_members` for symbol-to-flow and flow-to-symbol queries.
 17. Watch-mode single-file updates use the same resolver stage to resolve the changed file immediately and re-resolve only inbound refs that previously targeted symbols defined in the changed file, while surfacing warning-only guardrails for large fan-out.
 

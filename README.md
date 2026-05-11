@@ -31,6 +31,7 @@ Callback/event edge extractors are configured by
 disabled per repo.
 
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
+Compose host-exposed ports are bound to `127.0.0.1`. Runtime services use an `internal: true` network, and helper scripts enforce local-only model endpoints by mapping localhost/loopback URLs to fixed in-stack proxy services (`embed_proxy`, `classifier_proxy`) while rejecting non-local classifier/embedder URLs.
 
 Embedding/classifier transport resilience is configurable in `.env/codebrain.toml`:
 - `[embeddings]`: `request_timeout_seconds`, `max_retries`, `retry_backoff_seconds`, `batch_size`
@@ -133,6 +134,8 @@ Logical modules are not re-clustered at synthesis time — they are sourced dire
 the `clusters` and `cluster_members` rows produced during ingestion (Leiden, with Louvain
 and connected-components fallbacks). To tune community granularity, set Leiden resolution
 in `codebrain.toml` under `[clustering]` and re-ingest.
+The indexer runtime includes local Leiden dependencies (`igraph` + `leidenalg`) so
+cluster materialization stays in-process and does not require external network calls.
 
 Synthesis is LLM-driven, so it is silently skipped when `--no-classify` is set. The
 desktop app runs synthesis from the repo panel with a deterministic progress bar.

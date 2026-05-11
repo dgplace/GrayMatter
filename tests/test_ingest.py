@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from codebrain import ingest
+from codebrain.ingestion import clusters as cluster_helpers
 
 
 class _FakeCursor:
@@ -364,6 +365,11 @@ def test_detect_communities_falls_back_to_louvain_when_leiden_backend_is_unavail
 
     monkeypatch.setattr(ingest.nx.community, "leiden_communities", _raise_unavailable)
     monkeypatch.setattr(
+        cluster_helpers,
+        "_detect_communities_with_igraph_leiden",
+        _raise_unavailable,
+    )
+    monkeypatch.setattr(
         ingest.nx.community,
         "louvain_communities",
         lambda *args, **kwargs: [{1, 2}, {3}],
@@ -372,6 +378,33 @@ def test_detect_communities_falls_back_to_louvain_when_leiden_backend_is_unavail
     communities, algorithm = ingest._detect_communities(graph, resolution=1.0)
 
     assert algorithm == "louvain"
+    assert communities == [{1, 2}, {3}]
+
+
+def test_detect_communities_uses_local_igraph_leiden_when_networkx_backend_is_unavailable(monkeypatch) -> None:
+    """@brief Verify local igraph/leidenalg path is used before Louvain fallback."""
+    graph = ingest.nx.Graph()
+    graph.add_edge(1, 2, weight=1.0)
+    graph.add_node(3)
+
+    def _raise_unavailable(*args, **kwargs):
+        raise NotImplementedError("backend missing")
+
+    monkeypatch.setattr(ingest.nx.community, "leiden_communities", _raise_unavailable)
+    monkeypatch.setattr(
+        cluster_helpers,
+        "_detect_communities_with_igraph_leiden",
+        lambda *_args, **_kwargs: [{1, 2}, {3}],
+    )
+    monkeypatch.setattr(
+        ingest.nx.community,
+        "louvain_communities",
+        lambda *args, **kwargs: [{1, 2, 3}],
+    )
+
+    communities, algorithm = ingest._detect_communities(graph, resolution=1.0)
+
+    assert algorithm == "leiden_igraph"
     assert communities == [{1, 2}, {3}]
 
 
@@ -385,6 +418,11 @@ def test_detect_communities_falls_back_to_connected_components_when_community_ap
         raise NotImplementedError("backend missing")
 
     monkeypatch.setattr(ingest.nx.community, "leiden_communities", _raise_unavailable)
+    monkeypatch.setattr(
+        cluster_helpers,
+        "_detect_communities_with_igraph_leiden",
+        _raise_unavailable,
+    )
     monkeypatch.setattr(ingest.nx.community, "louvain_communities", _raise_unavailable)
 
     communities, algorithm = ingest._detect_communities(graph, resolution=1.0)
