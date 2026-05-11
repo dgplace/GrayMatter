@@ -8,6 +8,7 @@
  */
 
 import ForceGraph3D from "3d-force-graph";
+import * as THREE from "three";
 
 interface RepoListItem { repo: string; total_files: number }
 interface RepoListResponse { repositories: RepoListItem[] }
@@ -126,6 +127,7 @@ const nodeToCluster = new Map<string, number>();
 const clusterInfo = new Map<number, Cluster>();
 const cycleEdges = new Set<string>();
 const folderColors = new Map<string, string>();
+const linkLineMaterial = new THREE.LineBasicMaterial({ linewidth: 2 });
 
 /** @brief Normalize file paths for consistent map keys (strips leading ./). */
 function normalizePath(p: string): string {
@@ -616,6 +618,15 @@ function toggleNode(nodeId: string): void {
   }
 }
 
+/**
+ * @brief Hide every edge kind present in a graph payload so users can opt-in
+ *        to the kinds they want to inspect.
+ */
+function hideAllEdgeKinds(payload: GraphResponse): void {
+  hiddenKinds.clear();
+  for (const edge of payload.edges) hiddenKinds.add(edge.kind);
+}
+
 legend.addEventListener("click", (ev) => {
   const target = ev.target as HTMLElement | null;
   const item = target?.closest(".legend-item") as HTMLElement | null;
@@ -646,10 +657,6 @@ function renderGraph(payload: GraphResponse): void {
   buildFolderColors(payload);
   const maxDegree = payload.nodes.reduce((acc, n) => Math.max(acc, n.degree), 1);
   const nodeRadius = (n: ForceNode) => 1.2 + Math.min(8, (n.degree / maxDegree) * 7);
-  const linkWidth = (l: ForceLink) => {
-    const base = Math.max(0.4, Math.min(3.2, 0.4 + Math.log2(1 + l.weight)));
-    return isCycleEdge(l) ? base * 2.5 : base;
-  };
 
   const data = { nodes: toNodes(payload), links: toLinks(payload) };
 
@@ -660,21 +667,19 @@ function renderGraph(payload: GraphResponse): void {
       .nodeRelSize(4)
       .nodeOpacity(0.95)
       .linkOpacity(0.7)
-      .linkDirectionalArrowLength(3.5)
-      .linkDirectionalArrowRelPos(0.92)
-      .linkCurvature(0.18)
+      .linkDirectionalArrowLength(0)
+      .linkCurvature(0)
       .nodeColor(colorForNode)
       .nodeLabel((n: ForceNode) => `<span style="background:#fff;color:#0d1320;padding:2px 6px;border-radius:6px;border:1px solid #dbe1f1;font:600 11px Inter,sans-serif;">${esc(shortLabel(n.id))}</span>`)
       .nodeVal(nodeRadius)
       .linkColor(colorForEdge)
+      .linkMaterial(linkLineMaterial)
       .linkDirectionalArrowColor(colorForEdge)
-      .linkWidth(linkWidth)
+      .linkWidth(0)
       .linkVisibility(isLinkVisible)
       .onNodeClick((n: ForceNode) => toggleNode(n.id));
   } else {
-    graphInstance
-      .nodeVal(nodeRadius)
-      .linkWidth(linkWidth);
+    graphInstance.nodeVal(nodeRadius);
   }
 
   graphInstance.graphData(data);
@@ -738,7 +743,7 @@ async function loadRepo(repo: string): Promise<void> {
   }
 
   renderStats(stats);
-  hiddenKinds.clear();
+  hideAllEdgeKinds(graph);
   hiddenNodes.clear();
   lastGraphPayload = graph;
   renderGraph(graph);
