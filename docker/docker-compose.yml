@@ -27,14 +27,28 @@ services:
       - codebrain_internal
       - codebrain_host_access
 
+  postgres_frontdoor:
+    image: alpine/socat
+    command:
+      - -d
+      - -d
+      - TCP-LISTEN:5432,fork,reuseaddr
+      - TCP:postgres:5432
+    depends_on:
+      postgres:
+        condition: service_started
+    ports:
+      - "127.0.0.1:5433:5432"
+    networks:
+      - codebrain_internal
+      - codebrain_host_access
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: codebrain
       POSTGRES_USER: codebrain
       POSTGRES_PASSWORD: codebrain_local
-    ports:
-      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -92,13 +106,29 @@ services:
       EMBED_MODEL: nomic-embed-text
       EMBED_DIMENSIONS: "768"
     init: true
-    ports:
-      - "127.0.0.1:3001:3001"
     restart: unless-stopped
     profiles:
       - tools
     networks:
       - codebrain_internal
+
+  mcp_frontdoor:
+    image: alpine/socat
+    command:
+      - -d
+      - -d
+      - TCP-LISTEN:3001,fork,reuseaddr
+      - TCP:mcp:3001
+    depends_on:
+      mcp:
+        condition: service_started
+    ports:
+      - "127.0.0.1:3001:3001"
+    profiles:
+      - tools
+    networks:
+      - codebrain_internal
+      - codebrain_host_access
 
 volumes:
   postgres_data:

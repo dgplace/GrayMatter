@@ -115,3 +115,4 @@
 2026-05-11 Fixed host-model connectivity regression: removed internal: true from Compose network (restoring host.docker.internal access) and enforced local-only classifier/embedder endpoint policy in resolve-container-endpoints.ps1.
 2026-05-11 Reworked local-only model access: added embed_proxy/classifier_proxy sidecars (host-gateway forwarders), moved core services back to an internal-only network, and routed resolver output to in-stack proxy URLs while rejecting non-local model endpoints.
 2026-05-11 Added compose network-policy regression tests (tests/test_compose_network_policy.py) and ensured indexer image includes pytest so policy tests run directly inside the indexer runtime.
+2026-05-11 Restored host access to MCP/UI under internal-network isolation by introducing mcp_frontdoor (127.0.0.1:3001 -> mcp:3001) and postgres_frontdoor (127.0.0.1:5433 -> postgres:5432) sidecars while keeping core services on internal-only networking.

@@ -39,17 +39,21 @@ def test_indexer_uses_internal_network_only() -> None:
     assert "codebrain_host_access" not in indexer_block
 
 
-def test_only_proxy_services_attach_to_host_access_network() -> None:
-    """@brief Verify only model proxy sidecars bridge to host-access network."""
+def test_only_frontdoor_proxy_services_attach_to_host_access_network() -> None:
+    """@brief Verify only frontdoor/proxy sidecars bridge to host-access network."""
     source = _compose_source()
 
     embed_proxy_block = _service_block(source, "embed_proxy", "classifier_proxy")
-    classifier_proxy_block = _service_block(source, "classifier_proxy", "postgres")
+    classifier_proxy_block = _service_block(source, "classifier_proxy", "postgres_frontdoor")
+    postgres_frontdoor_block = _service_block(source, "postgres_frontdoor", "postgres")
     postgres_block = _service_block(source, "postgres", "indexer")
-    mcp_block = _service_block(source, "mcp", "volumes")
+    mcp_block = _service_block(source, "mcp", "mcp_frontdoor")
+    mcp_frontdoor_block = _service_block(source, "mcp_frontdoor", "volumes")
 
     assert "codebrain_host_access" in embed_proxy_block
     assert "codebrain_host_access" in classifier_proxy_block
+    assert "codebrain_host_access" in postgres_frontdoor_block
+    assert "codebrain_host_access" in mcp_frontdoor_block
     assert "codebrain_host_access" not in postgres_block
     assert "codebrain_host_access" not in mcp_block
 

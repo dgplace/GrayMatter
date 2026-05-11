@@ -168,10 +168,10 @@ MCP_TRANSPORT=stdio node dist/index.js
 
 ```bash
 docker compose -f docker/docker-compose.yml build mcp
-docker compose -f docker/docker-compose.yml up -d mcp
+docker compose -f docker/docker-compose.yml --profile tools up -d mcp_frontdoor
 ```
 
-The container publishes:
+The frontdoor sidecar publishes:
 - `http://127.0.0.1:3001/mcp`
 - `http://127.0.0.1:3001/ui`
 - `http://127.0.0.1:3001/healthz`
