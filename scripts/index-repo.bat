@@ -34,15 +34,15 @@ if not "%~1"=="" (
   )
 )
 
-:parse_args
+:collect_ingest_args
 if "%~1"=="" goto args_done
 if defined ingest_args (
-  set "ingest_args=!ingest_args! \"%~1\""
+  set "ingest_args=!ingest_args! %1"
 ) else (
-  set "ingest_args=\"%~1\""
+  set "ingest_args=%1"
 )
 shift
-goto parse_args
+goto collect_ingest_args
 
 :args_done
 for %%I in ("%target_repo%") do set "target_repo=%%~fI"
@@ -57,54 +57,25 @@ if defined ingest_args (
   echo(!ingest_args!| findstr /I /C:"--repo-name" >nul && set "has_repo_name_flag=true"
 )
 
-set "tmp_py=%TEMP%\codebrain_translate_%RANDOM%_%RANDOM%.py"
-> "%tmp_py%" (
-  echo import os
-  echo import sys
-  echo from pathlib import Path
-  echo from urllib.parse import urlparse, urlunparse
-  echo.
-  echo try:
-  echo^    import tomllib
-  echo except ModuleNotFoundError:
-  echo^    import tomli as tomllib  # type: ignore[no-redef]
-  echo.
-  echo repo_root = Path(sys.argv[1])
-  echo candidate_paths = [repo_root / ".env" / "codebrain.toml", repo_root / "codebrain.toml"]
-  echo cfg = {}
-  echo for path in candidate_paths:
-  echo^    if path.is_file():
-  echo^        with path.open("rb") as fh:
-  echo^            data = tomllib.load(fh)
-  echo^        cfg = {**cfg, **data} if cfg else data
-  echo.
-  echo LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
-  echo.
-  echo def translate(url: str) -^> str:
-  echo^    if not url:
-  echo^        return ""
-  echo^    parsed = urlparse(url)
-  echo^    if parsed.hostname in LOCAL_HOSTS:
-  echo^        port = f":{parsed.port}" if parsed.port else ""
-  echo^        return urlunparse(parsed._replace(netloc=f"host.docker.internal{port}"))
-  echo^    return url
-  echo.
-  echo for env_name, section in (("EMBED_BASE_URL", "embeddings"), ("CLASSIFIER_BASE_URL", "classifier")):
-  echo^    if os.environ.get(env_name):
-  echo^        print(f"{env_name}={os.environ[env_name]}")
-  echo^        continue
-  echo^    raw = cfg.get(section, {}).get("base_url", "")
-  echo^    translated = translate(raw)
-  echo^    if translated:
-  echo^        print(f"{env_name}={translated}")
+set "resolver_script=%script_dir%resolve-container-endpoints.ps1"
+if not exist "%resolver_script%" (
+  echo Missing helper script: %resolver_script% 1>&2
+  exit /b 1
 )
 
-for /f "usebackq delims=" %%L in (`python "%tmp_py%" "%repo_root%"`) do (
+set "resolver_out=%TEMP%\codebrain_resolver_%RANDOM%_%RANDOM%.txt"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%resolver_script%" -RepoRoot "%repo_root%" > "%resolver_out%"
+set "resolver_status=%ERRORLEVEL%"
+if not "%resolver_status%"=="0" (
+  type "%resolver_out%" 1>&2
+  del "%resolver_out%" >nul 2>&1
+  exit /b %resolver_status%
+)
+
+for /f "usebackq delims=" %%L in ("%resolver_out%") do (
   if not "%%L"=="" set "%%L"
 )
-set "python_status=%ERRORLEVEL%"
-del "%tmp_py%" >nul 2>&1
-if not "%python_status%"=="0" exit /b %python_status%
+del "%resolver_out%" >nul 2>&1
 
 if /I "%has_repo_name_flag%"=="true" (
   if defined ingest_args (

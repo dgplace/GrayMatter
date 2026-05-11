@@ -8,6 +8,24 @@ dimension for all returned vectors.
 """
 
 import httpx
+import time
+
+
+class _EmbeddingTransportError(RuntimeError):
+    """@brief Retry-aware transport error wrapper for embedding requests."""
+
+
+class _EmbeddingStatusError(RuntimeError):
+    """@brief Retry-aware HTTP status error wrapper for embedding requests."""
+
+    def __init__(self, message: str, status_code: int):
+        """@brief Build a status error with an attached HTTP status code.
+
+        @param message Human-readable error message.
+        @param status_code HTTP status code returned by the provider.
+        """
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class EmbeddingClient:
@@ -32,7 +50,11 @@ class EmbeddingClient:
         self.api_key = embed_cfg.get("api_key")
         self.context_length = embed_cfg.get("context_length", 8192)
         self.max_input_chars = embed_cfg.get("max_input_chars", self.context_length * 4)
-        self.client = httpx.Client(timeout=60.0)
+        self.request_timeout_seconds = float(embed_cfg.get("request_timeout_seconds", 120.0))
+        self.max_retries = max(0, int(embed_cfg.get("max_retries", 2)))
+        self.retry_backoff_seconds = max(0.0, float(embed_cfg.get("retry_backoff_seconds", 1.0)))
+        self.batch_size = max(1, int(embed_cfg.get("batch_size", 50)))
+        self.client = httpx.Client(timeout=self.request_timeout_seconds)
 
     def _headers(self) -> dict[str, str]:
         """@brief Build request headers for the configured provider.
@@ -66,32 +88,83 @@ class EmbeddingClient:
             endpoint = "/api/embed"
 
         endpoint_url = f"{self.url}{endpoint}"
-        try:
-            response = self.client.post(
-                endpoint_url,
-                json=payload,
-                headers=self._headers(),
-            )
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                "Embedding request transport failed "
-                f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}): {e}"
-            ) from e
-        if not response.is_success:
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.post(
+                    endpoint_url,
+                    json=payload,
+                    headers=self._headers(),
+                )
+            except httpx.HTTPError as exc:
+                if attempt < self.max_retries and self._is_retryable_transport_error(exc):
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise _EmbeddingTransportError(
+                    "Embedding request transport failed "
+                    f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}): {exc}"
+                ) from exc
+
+            if response.is_success:
+                return response.json()
+
             if response.status_code == 400 and "exceeds the context length" in response.text:
                 if isinstance(input_data, list):
-                    truncated_data = [s[:len(s)//2] for s in input_data]
+                    truncated_data = [s[: len(s) // 2] for s in input_data]
                 else:
-                    truncated_data = input_data[:len(input_data)//2]
-                if (isinstance(truncated_data, list) and any(len(s) > 0 for s in truncated_data)) or (isinstance(truncated_data, str) and len(truncated_data) > 0):
+                    truncated_data = input_data[: len(input_data) // 2]
+                has_payload = (
+                    isinstance(truncated_data, list) and any(len(s) > 0 for s in truncated_data)
+                ) or (isinstance(truncated_data, str) and len(truncated_data) > 0)
+                if has_payload:
                     return self._post(truncated_data)
 
-            raise RuntimeError(
+            if attempt < self.max_retries and self._is_retryable_status_code(response.status_code):
+                self._sleep_before_retry(attempt)
+                continue
+
+            raise _EmbeddingStatusError(
                 "Embedding request failed "
                 f"(endpoint={endpoint_url}, model={self.model}, api_style={self.api_style}, "
-                f"status={response.status_code}): {response.text}"
+                f"status={response.status_code}): {response.text}",
+                response.status_code,
             )
-        return response.json()
+
+        raise RuntimeError("Unreachable embedding retry loop exit")
+
+    def _is_retryable_transport_error(self, error: httpx.HTTPError) -> bool:
+        """@brief Determine whether a transport error should be retried.
+
+        @param error HTTP transport exception raised by `httpx`.
+        @return True when the request is safe to retry.
+        """
+        return isinstance(
+            error,
+            (
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+                httpx.RemoteProtocolError,
+            ),
+        )
+
+    def _is_retryable_status_code(self, status_code: int) -> bool:
+        """@brief Determine whether an HTTP status code should be retried.
+
+        @param status_code Provider response status code.
+        @return True for retryable throttling/transient server statuses.
+        """
+        return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        """@brief Apply bounded exponential backoff between retry attempts.
+
+        @param attempt Zero-based retry attempt counter.
+        """
+        delay = min(8.0, self.retry_backoff_seconds * (2**attempt))
+        if delay > 0:
+            time.sleep(delay)
 
     def _extract_embeddings(self, data: dict) -> list[list[float]]:
         """@brief Normalize provider responses into a list of vectors.
@@ -137,17 +210,43 @@ class EmbeddingClient:
         self._validate_dimensions(embeddings)
         return embeddings[0]
 
-    def embed_batch(self, texts: list[str], batch_size: int = 50) -> list[list[float]]:
+    def _embed_batch_payload(self, texts: list[str]) -> list[list[float]]:
+        """@brief Embed one already-sized batch payload.
+
+        @param texts Batch texts to send in one provider request.
+        @return Batch embedding vectors in input order.
+        """
+        embeddings = self._extract_embeddings(self._post([self._truncate(t) for t in texts]))
+        self._validate_dimensions(embeddings)
+        return embeddings
+
+    def _embed_batch_with_split_retry(self, texts: list[str]) -> list[list[float]]:
+        """@brief Embed a batch and split recursively when transient failures occur.
+
+        @param texts Batch texts to embed.
+        @return Batch embedding vectors in input order.
+        @raises RuntimeError When a single-item batch still fails.
+        """
+        try:
+            return self._embed_batch_payload(texts)
+        except (_EmbeddingTransportError, _EmbeddingStatusError):
+            if len(texts) <= 1:
+                raise
+            midpoint = len(texts) // 2
+            left = self._embed_batch_with_split_retry(texts[:midpoint])
+            right = self._embed_batch_with_split_retry(texts[midpoint:])
+            return left + right
+
+    def embed_batch(self, texts: list[str], batch_size: int | None = None) -> list[list[float]]:
         """@brief Generate embeddings for multiple texts, batching to avoid timeouts or limits.
 
         @param texts Source texts to embed.
-        @param batch_size Maximum number of items per request.
+        @param batch_size Optional per-call batch size override.
         @return Embedding vectors in the same order as the input list.
         """
+        resolved_batch_size = max(1, batch_size or self.batch_size)
         all_embeddings = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            embeddings = self._extract_embeddings(self._post([self._truncate(t) for t in batch]))
-            self._validate_dimensions(embeddings)
-            all_embeddings.extend(embeddings)
+        for i in range(0, len(texts), resolved_batch_size):
+            batch = texts[i : i + resolved_batch_size]
+            all_embeddings.extend(self._embed_batch_with_split_retry(batch))
         return all_embeddings

@@ -32,6 +32,12 @@ disabled per repo.
 
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
 
+Embedding/classifier transport resilience is configurable in `.env/codebrain.toml`:
+- `[embeddings]`: `request_timeout_seconds`, `max_retries`, `retry_backoff_seconds`, `batch_size`
+- `[classifier]`: `request_timeout_seconds`, `max_retries`, `retry_backoff_seconds`
+
+For Windows host-model runs (`host.docker.internal`), if Ollama is timing out under load, lower `ingestion.workers` and/or `embeddings.batch_size`.
+
 ## Ingest a Repository
 
 ### Container (default)

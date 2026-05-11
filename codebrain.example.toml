@@ -9,10 +9,17 @@ dimensions = 768
 api_style = "ollama"
 base_url = "http://127.0.0.1:11434"
 context_length = 8192
+request_timeout_seconds = 120
+max_retries = 2
+retry_backoff_seconds = 1.0
+batch_size = 50
 
 [classifier]
 model = "mistralai/devstral-medium-2507"
 base_url = "http://127.0.0.1:3000"
+request_timeout_seconds = 120
+max_retries = 2
+retry_backoff_seconds = 1.0
 
 [clustering]
 # Leiden/Louvain resolution used when ingestion materializes the `clusters`

@@ -3,6 +3,8 @@
 @brief Unit tests for the intent classifier wrapper.
 """
 
+import httpx
+
 from codebrain.classifier import IntentClassifier
 
 
@@ -123,3 +125,35 @@ def test_classify_chunks_batch_reports_warning_on_fallback(monkeypatch) -> None:
 
     assert len(warnings) == 1
     assert "Classifier chunk intent fallback for demo.py" in warnings[0]
+
+
+def test_generate_retries_once_on_retryable_server_error(monkeypatch) -> None:
+    """@brief Verify classifier generation retries transient server errors before succeeding."""
+    classifier = IntentClassifier(
+        {
+            "classifier": {
+                "model": "test-model",
+                "base_url": "http://example.test",
+                "max_retries": 1,
+                "retry_backoff_seconds": 0.0,
+            }
+        }
+    )
+    call_count = {"value": 0}
+
+    def _post_retry_once(url, json):
+        call_count["value"] += 1
+        request = httpx.Request("POST", url)
+        if call_count["value"] == 1:
+            return httpx.Response(500, json={"error": "temporary"}, request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{\"summary\":\"ok\",\"role\":\"utility\"}"}}]},
+            request=request,
+        )
+
+    monkeypatch.setattr(classifier.client, "post", _post_retry_once)
+
+    output = classifier._generate("prompt")
+    assert output == "{\"summary\":\"ok\",\"role\":\"utility\"}"
+    assert call_count["value"] == 2

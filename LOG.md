@@ -1,3 +1,6 @@
+2026-05-11 Restored strict config policy: ingestion and Windows endpoint resolver now require `.env/codebrain.toml` and fail fast with a clear setup error instead of using fallback defaults.
+2026-05-11 Fixed Windows `scripts/index-repo.bat` ingest path: replaced Python-dependent endpoint translation with `resolve-container-endpoints.ps1`, corrected no-output resolver exit handling, and fixed argument forwarding so flags like `--synthesize` pass through correctly.
+2026-05-11 Made ingest config loading resilient when `.env/codebrain.toml` is absent by layering defaults from `codebrain.example.toml` before `codebrain.toml` and local overrides.
 2026-05-11 Removed resilient `scip-clang` fallback logic in indexer image so download/smoke-test errors fail the Docker build immediately, while retaining the bookworm-compatible `v0.3.3` pin.
 2026-05-11 Fixed root cause of indexer `scip-clang` failure on Docker Desktop/bookworm: pinned `SCIP_CLANG_VERSION` to `v0.3.3` because `v0.4.0` requires `GLIBC_2.38` while base image glibc is 2.36.
 2026-05-11 Hardened indexer-image `scip-clang` install: added curl retries and non-fatal fallback (with warning + binary cleanup) so transient GitHub/download/smoke-test failures no longer abort `docker compose` builds.
@@ -106,3 +109,4 @@
 2026-05-10 CODEBRAIN-10 added callback-framework registry detection and ingestion_diagnostics missing_extractor persistence (Express/FastAPI/Flask/React/EventEmitter/DOM/NestJS/Spring/Qt), surfaced in codebase_stats with schema + regression tests.
 2026-05-10 CODEBRAIN-27 added opt-in callback/event extractors (emitter.on, DOM addEventListener, HTTP route registration including FastAPI decorators, and event emit) emitting reference_kind_v2 callback_register/event_emit with resolver regression tests.
 2026-05-10 Made indexer Docker dotnet SDK install resilient across Microsoft repo variations by selecting first available SDK package (10/9/8/7), fixing arm64 build failures where 8.0 is unavailable.
+2026-05-11 Hardened ingestion model-client reliability: added configurable embedding/classifier request timeout+retry backoff, retryable HTTP transport/status handling, and adaptive embedding batch split fallback for transient provider failures (with regression tests).

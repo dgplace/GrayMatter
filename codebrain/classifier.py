@@ -7,6 +7,7 @@ strict JSON parsing and conservative fallbacks for malformed model output.
 """
 
 import json
+import time
 from typing import Callable, Optional
 
 import httpx
@@ -66,9 +67,13 @@ class IntentClassifier:
 
         @param config Parsed CodeBrain configuration dictionary.
         """
-        self.model = config["classifier"]["model"]
-        self.url = config["classifier"]["base_url"]
-        self.client = httpx.Client(timeout=120.0)
+        classifier_cfg = config["classifier"]
+        self.model = classifier_cfg["model"]
+        self.url = classifier_cfg["base_url"]
+        self.request_timeout_seconds = float(classifier_cfg.get("request_timeout_seconds", 120.0))
+        self.max_retries = max(0, int(classifier_cfg.get("max_retries", 2)))
+        self.retry_backoff_seconds = max(0.0, float(classifier_cfg.get("retry_backoff_seconds", 1.0)))
+        self.client = httpx.Client(timeout=self.request_timeout_seconds)
 
     def _generate(self, prompt: str, max_tokens: int = 200) -> str:
         """@brief Execute one non-streaming chat completion request.
@@ -77,20 +82,77 @@ class IntentClassifier:
         @param max_tokens Maximum completion tokens to request.
         @return Raw model text response.
         """
-        response = self.client.post(
-            f"{self.url}/v1/chat/completions",
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "temperature": 0.1,
-                "max_tokens": max_tokens,
-            },
+        endpoint_url = f"{self.url}/v1/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.post(endpoint_url, json=payload)
+            except httpx.HTTPError as exc:
+                if attempt < self.max_retries and self._is_retryable_transport_error(exc):
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise RuntimeError(
+                    "Classifier request transport failed "
+                    f"(endpoint={endpoint_url}, model={self.model}): {exc}"
+                ) from exc
+
+            if response.is_success:
+                message = response.json()["choices"][0]["message"]
+                content = message.get("content") or ""
+                return str(content).strip()
+
+            if attempt < self.max_retries and self._is_retryable_status_code(response.status_code):
+                self._sleep_before_retry(attempt)
+                continue
+
+            raise RuntimeError(
+                "Classifier request failed "
+                f"(endpoint={endpoint_url}, model={self.model}, status={response.status_code}): "
+                f"{response.text}"
+            )
+
+        raise RuntimeError("Unreachable classifier retry loop exit")
+
+    def _is_retryable_transport_error(self, error: httpx.HTTPError) -> bool:
+        """@brief Determine whether a classifier transport error should be retried.
+
+        @param error HTTP transport exception raised by `httpx`.
+        @return True when the request is safe to retry.
+        """
+        return isinstance(
+            error,
+            (
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+                httpx.RemoteProtocolError,
+            ),
         )
-        response.raise_for_status()
-        message = response.json()["choices"][0]["message"]
-        content = message.get("content") or ""
-        return str(content).strip()
+
+    def _is_retryable_status_code(self, status_code: int) -> bool:
+        """@brief Determine whether an HTTP status code should be retried.
+
+        @param status_code Classifier response status code.
+        @return True for transient throttling/server statuses.
+        """
+        return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        """@brief Apply bounded exponential backoff between retry attempts.
+
+        @param attempt Zero-based retry attempt counter.
+        """
+        delay = min(8.0, self.retry_backoff_seconds * (2**attempt))
+        if delay > 0:
+            time.sleep(delay)
 
     def _extract_first_json_segment(self, raw: str) -> str:
         """@brief Extract the first balanced JSON object/array from freeform text.

@@ -100,12 +100,24 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(path: str = "codebrain.toml") -> dict:
+    """@brief Load layered runtime configuration for ingestion.
+
+    Merge order (later wins):
+    1) caller-provided config path (defaults to `codebrain.toml`)
+    2) required local overrides at `.env/codebrain.toml`
+    """
     with open(path, "rb") as f:
         cfg = tomllib.load(f)
+
     local_path = Path(".env/codebrain.toml")
-    if local_path.exists():
-        with open(local_path, "rb") as f:
-            cfg = _deep_merge(cfg, tomllib.load(f))
+    if not local_path.exists():
+        raise click.ClickException(
+            "Missing required .env/codebrain.toml. "
+            "Copy codebrain.example.toml to .env/codebrain.toml and configure it."
+        )
+
+    with open(local_path, "rb") as f:
+        cfg = _deep_merge(cfg, tomllib.load(f))
     return _apply_env_overrides(cfg)
 
 

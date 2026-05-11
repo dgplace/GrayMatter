@@ -106,3 +106,68 @@ def test_embed_raises_with_endpoint_context_on_transport_failure(monkeypatch) ->
         assert "model=embed-model" in message
     else:
         raise AssertionError("Expected embed() to raise RuntimeError on transport failures")
+
+
+def test_embed_retries_transient_transport_failures(monkeypatch) -> None:
+    """@brief Verify embed retries transient transport failures before succeeding."""
+    client = EmbeddingClient(
+        {
+            "embeddings": {
+                "model": "embed-model",
+                "dimensions": 3,
+                "api_style": "ollama",
+                "base_url": "http://127.0.0.1:11434",
+                "max_retries": 1,
+                "retry_backoff_seconds": 0.0,
+            }
+        }
+    )
+    call_count = {"value": 0}
+
+    def _post_with_one_timeout(url, json, headers):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            request = httpx.Request("POST", url)
+            raise httpx.ConnectTimeout("timed out", request=request)
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"embeddings": [[1.0, 2.0, 3.0]]}, request=request)
+
+    monkeypatch.setattr(client.client, "post", _post_with_one_timeout)
+
+    assert client.embed("hello") == [1.0, 2.0, 3.0]
+    assert call_count["value"] == 2
+
+
+def test_embed_batch_splits_when_transient_error_hits_large_batch(monkeypatch) -> None:
+    """@brief Verify batch embedding recursively splits on transient retryable failures."""
+    client = EmbeddingClient(
+        {
+            "embeddings": {
+                "model": "embed-model",
+                "dimensions": 3,
+                "api_style": "ollama",
+                "base_url": "http://127.0.0.1:11434",
+                "max_retries": 0,
+                "retry_backoff_seconds": 0.0,
+            }
+        }
+    )
+
+    def _post_timeout_for_multi_input(url, json, headers):
+        request = httpx.Request("POST", url)
+        payload_input = json["input"]
+        if isinstance(payload_input, list) and len(payload_input) > 1:
+            raise httpx.ConnectTimeout("timed out", request=request)
+        input_count = len(payload_input) if isinstance(payload_input, list) else 1
+        return httpx.Response(
+            200,
+            json={"embeddings": [[1.0, 2.0, 3.0] for _ in range(input_count)]},
+            request=request,
+        )
+
+    monkeypatch.setattr(client.client, "post", _post_timeout_for_multi_input)
+
+    assert client.embed_batch(["one", "two"], batch_size=2) == [
+        [1.0, 2.0, 3.0],
+        [1.0, 2.0, 3.0],
+    ]
