@@ -44,11 +44,18 @@ Helper scripts:
 ./scripts/watch-repo.sh /absolute/path/to/repo
 ```
 
+```bat
+scripts\build.bat
+scripts\index-repo.bat C:\absolute\path\to\repo --force
+scripts\watch-repo.bat C:\absolute\path\to\repo
+```
+
 The repo path argument is optional; if omitted, the scripts index the current
 working directory.
 
-`./scripts/build.sh` rebuilds the Compose images and then recreates the
-long-running `postgres` and `mcp` containers.
+`build.sh`/`build.bat` rebuild the Compose images. By default they recreate
+only `mcp`; pass `--reset` to recreate both `postgres` and `mcp`, or `--wipe`
+to drop the `codebrain_postgres_data` volume before recreating both services.
 
 The helper scripts mount the target repository at `/target` inside the
 container so they do not conflict with the CodeBrain source mount at

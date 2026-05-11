@@ -4,7 +4,9 @@ ARG SCIP_CLI_VERSION=v0.7.1
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 ARG SCIP_PYTHON_VERSION=0.6.6
 ARG SCIP_JAVA_VERSION=v0.12.3
-ARG SCIP_CLANG_VERSION=v0.4.0
+# v0.4.0 currently requires GLIBC_2.38, while bookworm ships GLIBC_2.36.
+# Keep v0.3.3 on this base image so scip-clang is executable.
+ARG SCIP_CLANG_VERSION=v0.3.3
 ARG SCIP_DOTNET_VERSION=0.2.14
 
 RUN apt-get update && \
@@ -59,10 +61,12 @@ RUN curl -sSL "https://github.com/sourcegraph/scip-java/releases/download/${SCIP
 
 RUN ARCH="$(dpkg --print-architecture)" && \
     if [ "$ARCH" = "amd64" ]; then \
-      curl -sSL "https://github.com/sourcegraph/scip-clang/releases/download/${SCIP_CLANG_VERSION}/scip-clang-x86_64-linux" \
-        -o /usr/local/bin/scip-clang && \
+      SCIP_CLANG_URL="https://github.com/sourcegraph/scip-clang/releases/download/${SCIP_CLANG_VERSION}/scip-clang-x86_64-linux" && \
+      echo "Installing scip-clang from ${SCIP_CLANG_URL}" && \
+      curl -fsSL "${SCIP_CLANG_URL}" -o /usr/local/bin/scip-clang && \
       chmod +x /usr/local/bin/scip-clang && \
-      scip-clang --help > /dev/null; \
+      scip-clang --help > /dev/null && \
+      echo "scip-clang installed successfully."; \
     else \
       echo "Skipping scip-clang install on unsupported architecture: $ARCH"; \
     fi
