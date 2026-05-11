@@ -4,10 +4,10 @@ Resolves container-safe endpoint environment overrides for CodeBrain helper scri
 
 .DESCRIPTION
 Reads `codebrain.toml` from `.env/codebrain.toml` and `codebrain.toml` at repo root,
-and emits KEY=VALUE lines for EMBED_BASE_URL and CLASSIFIER_BASE_URL. If either value
-targets localhost/loopback (or host.docker.internal), it is rewritten to a fixed
-container-side proxy URL so runtime containers stay on the internal network and
-cannot connect to arbitrary external hosts.
+and emits KEY=VALUE lines for EMBED_BASE_URL and CLASSIFIER_BASE_URL plus proxy
+upstream target values. Endpoint hosts are always reached through in-stack proxy
+sidecars. Non-local hosts are only allowed when they match configured
+embedding/classifier endpoint values.
 #>
 
 param(
@@ -51,12 +51,60 @@ function Resolve-ContainerProxyUrl {
         [Parameter(Mandatory = $true)]
         [string]$EnvName,
         [AllowEmptyString()]
-        [string]$Url
+        [string]$Url,
+        [AllowEmptyString()]
+        [string]$ConfiguredUrl
     )
 
     if ([string]::IsNullOrWhiteSpace($Url)) {
-        return ""
+        return @{}
     }
+
+    $resolved = Get-EndpointHostPort -Url $Url
+    $uriHost = $resolved.Host
+    $uriPort = $resolved.Port
+    $configuredResolved = $null
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredUrl)) {
+        $configuredResolved = Get-EndpointHostPort -Url $ConfiguredUrl
+    }
+
+    $proxyBaseUrl = ""
+    $proxyTargetEnv = ""
+    if ($EnvName -eq "EMBED_BASE_URL") {
+        $proxyBaseUrl = "http://embed_proxy:11434"
+        $proxyTargetEnv = "EMBED_PROXY_TARGET"
+    } elseif ($EnvName -eq "CLASSIFIER_BASE_URL") {
+        $proxyBaseUrl = "http://classifier_proxy:3000"
+        $proxyTargetEnv = "CLASSIFIER_PROXY_TARGET"
+    } else {
+        throw "Unsupported endpoint variable: $EnvName"
+    }
+
+    if ($uriHost -notin @("127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal")) {
+        if ($null -eq $configuredResolved) {
+            throw "Non-local endpoint is blocked by policy: $Url"
+        }
+        if ($uriHost -ne $configuredResolved.Host -or $uriPort -ne $configuredResolved.Port) {
+            throw "Non-local endpoint does not match configured policy value: $Url"
+        }
+    }
+
+    $upstreamHost = $uriHost
+    if ($uriHost -in @("127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal")) {
+        $upstreamHost = "host.docker.internal"
+    }
+
+    return @{
+        $EnvName = $proxyBaseUrl
+        $proxyTargetEnv = "$upstreamHost`:$uriPort"
+    }
+}
+
+function Get-EndpointHostPort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
 
     try {
         $uri = [System.Uri]$Url
@@ -65,17 +113,21 @@ function Resolve-ContainerProxyUrl {
     }
 
     $uriHost = $uri.Host.ToLowerInvariant()
-    if ($uriHost -notin @("127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal")) {
-        throw "Non-local endpoint is blocked by policy: $Url"
+    $uriPort = $uri.Port
+    if ($uriPort -lt 1) {
+        if ($uri.Scheme -eq "http") {
+            $uriPort = 80
+        } elseif ($uri.Scheme -eq "https") {
+            $uriPort = 443
+        } else {
+            throw "Unsupported URL scheme (expected http/https): $Url"
+        }
     }
 
-    if ($EnvName -eq "EMBED_BASE_URL") {
-        return "http://embed_proxy:11434"
+    return @{
+        Host = $uriHost
+        Port = $uriPort
     }
-    if ($EnvName -eq "CLASSIFIER_BASE_URL") {
-        return "http://classifier_proxy:3000"
-    }
-    throw "Unsupported endpoint variable: $EnvName"
 }
 
 $localConfigPath = Join-Path $RepoRoot ".env\codebrain.toml"
@@ -107,19 +159,23 @@ foreach ($item in @(
     $section = $item.Section
 
     $existing = [Environment]::GetEnvironmentVariable($envName)
+    $configured = ""
+    if ($configMap.ContainsKey($section)) {
+        $configured = $configMap[$section]
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($existing)) {
-        $translatedExisting = Resolve-ContainerProxyUrl -EnvName $envName -Url $existing
-        Write-Output "$envName=$translatedExisting"
+        $translatedExisting = Resolve-ContainerProxyUrl -EnvName $envName -Url $existing -ConfiguredUrl $configured
+        foreach ($key in $translatedExisting.Keys) {
+            Write-Output "$key=$($translatedExisting[$key])"
+        }
         continue
     }
 
-    $raw = ""
-    if ($configMap.ContainsKey($section)) {
-        $raw = $configMap[$section]
-    }
+    $raw = $configured
 
-    $translated = Resolve-ContainerProxyUrl -EnvName $envName -Url $raw
-    if (-not [string]::IsNullOrWhiteSpace($translated)) {
-        Write-Output "$envName=$translated"
+    $translated = Resolve-ContainerProxyUrl -EnvName $envName -Url $raw -ConfiguredUrl $configured
+    foreach ($key in $translated.Keys) {
+        Write-Output "$key=$($translated[$key])"
     }
 }

@@ -8,6 +8,8 @@ CodeBrain has two runtime concerns:
 - a Python ingestion pipeline that parses code, classifies intent, embeds content, and writes normalized records into PostgreSQL + pgvector
 - a TypeScript MCP server that serves search, symbol, reference, and dependency tools over the indexed database
 
+CodeBrain is designed to run on both Windows and Unix-like hosts (macOS/Linux) with equivalent operational behavior; helper scripts and endpoint policy changes must preserve cross-platform parity.
+
 Read `README.md` for operational quickstart and `ARCHITECTURE.md` for system design. Keep this file focused on agent behavior and engineering standards.
 
 ## Documentation Map
@@ -100,6 +102,7 @@ Keep these files focused on distinct purposes.
 - **Large File Limit**: Source files must not exceed 1000 lines. Split by responsibility before merge; do not add or rely on justification comments.
 - **Large Function Limit**: Functions or methods must not exceed 150 lines. Split logic before merge; do not add or rely on justification comments.
 - **Handler/Parser/Asset Separation**: Tool handlers, language-specific parsing logic, and HTML/CSS assets must each live in their own files. Do not co-locate those concerns in a single module.
+- **No Inline Script Bodies**: Do not embed inline executable code blocks (for example `python -c`, `python - <<'PY'`, Node here-docs, or similar) inside shell scripts. Place executable logic in dedicated versioned source files and invoke those files from shell wrappers.
 
 ### Software engineering principles
 - Prefer composition over large multi-purpose classes.
@@ -115,6 +118,7 @@ Keep these files focused on distinct purposes.
 - Reuse existing fixtures and sample inputs where possible; add new fixtures only when required.
 - Prefer small, behavior-focused tests close to the changed logic.
 - For ingestion/classification/ranking bug fixes, include assertions that would fail if the regression returns.
+- Run indexing/ingestion verification through the `indexer` container service (`docker compose -f docker/docker-compose.yml --profile indexer run --rm indexer ...`) rather than bare-metal Python.
 
 ## Documentation and Maintenance Rules
 

@@ -7,7 +7,7 @@ services:
       - -d
       - -d
       - TCP-LISTEN:11434,fork,reuseaddr
-      - TCP:host.docker.internal:11434
+      - TCP:${EMBED_PROXY_TARGET:-host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -20,7 +20,7 @@ services:
       - -d
       - -d
       - TCP-LISTEN:3000,fork,reuseaddr
-      - TCP:host.docker.internal:3000
+      - TCP:${CLASSIFIER_PROXY_TARGET:-host.docker.internal:3000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

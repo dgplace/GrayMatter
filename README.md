@@ -31,7 +31,7 @@ Callback/event edge extractors are configured by
 disabled per repo.
 
 Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
-Compose host-exposed ports are bound to `127.0.0.1`. Runtime services use an `internal: true` network, and helper scripts enforce local-only model endpoints by mapping localhost/loopback URLs to fixed in-stack proxy services (`embed_proxy`, `classifier_proxy`) while rejecting non-local classifier/embedder URLs.
+Compose host-exposed ports are bound to `127.0.0.1`. Runtime services use an `internal: true` network, and helper scripts route embedding/classifier traffic through fixed in-stack proxy services (`embed_proxy`, `classifier_proxy`). Localhost/loopback URLs are normalized to `host.docker.internal`; non-local targets are allowed only when they exactly match the configured embedding/classifier endpoint values.
 
 Embedding/classifier transport resilience is configurable in `.env/codebrain.toml`:
 - `[embeddings]`: `request_timeout_seconds`, `max_retries`, `retry_backoff_seconds`, `batch_size`
