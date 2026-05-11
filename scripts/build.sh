@@ -4,9 +4,9 @@
 #  * @file build.sh
 #  * @brief Rebuild the CodeBrain Docker images and recreate the affected containers.
 #  *
-#  * Default mode rebuilds every image and recreates only the `mcp` service,
-#  * which is the common case when iterating on MCP server code. Pass --reset
-#  * to also recreate `postgres` (the named `postgres_data` volume is preserved).
+#  * Default mode rebuilds every image and recreates the `mcp` service plus its
+#  * published-port sidecar (`mcp_frontdoor`). Pass --reset to also recreate
+#  * `postgres` (the named `postgres_data` volume is preserved).
 #  * Pass --wipe to drop the named volume before recreating, which forces
 #  * `schema.sql` to be re-applied; this destroys all indexed data.
 #  */
@@ -21,14 +21,15 @@ assume_yes=false
 show_help() {
   cat <<EOF
 Usage:
-  scripts/build.sh             Rebuild images and recreate \`mcp\` only.
-  scripts/build.sh --reset     Rebuild images and recreate \`postgres\` and \`mcp\`.
+  scripts/build.sh             Rebuild images and recreate \`mcp\` + \`mcp_frontdoor\`.
+  scripts/build.sh --reset     Rebuild images and recreate \`postgres\`, \`mcp\`, and \`mcp_frontdoor\`.
                                Indexed data is preserved.
   scripts/build.sh --wipe      Drop the \`${POSTGRES_VOLUME}\` named volume,
-                               then rebuild images and recreate \`postgres\`
-                               and \`mcp\`. Schema.sql is re-applied on first
-                               init. DESTROYS ALL INDEXED DATA. Prompts for
-                               confirmation unless -y/--yes is also passed.
+                               then rebuild images and recreate \`postgres\`,
+                               \`mcp\`, and \`mcp_frontdoor\`. Schema.sql is
+                               re-applied on first init. DESTROYS ALL INDEXED
+                               DATA. Prompts for confirmation unless -y/--yes
+                               is also passed.
   scripts/build.sh -h|--help   Show this help.
 
 Flags:
@@ -91,12 +92,12 @@ EOF
     fi
   fi
 
-  echo "Stopping postgres + mcp..."
+  echo "Stopping postgres + mcp services..."
   docker compose \
     -f "$compose_file" \
     --profile indexer \
     --profile tools \
-    rm -sf postgres mcp
+    rm -sf postgres mcp mcp_frontdoor
 
   echo "Removing volume ${POSTGRES_VOLUME}..."
   if docker volume inspect "$POSTGRES_VOLUME" >/dev/null 2>&1; then
@@ -114,10 +115,10 @@ docker compose \
 
 case "$mode" in
   reset|wipe)
-    recreate_targets=(postgres mcp)
+    recreate_targets=(postgres mcp mcp_frontdoor)
     ;;
   *)
-    recreate_targets=(mcp)
+    recreate_targets=(mcp mcp_frontdoor)
     ;;
 esac
 

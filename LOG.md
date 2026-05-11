@@ -1,3 +1,4 @@
+2026-05-11 Fixed MCP reachability after helper rebuilds: `scripts/build.sh` now recreates `mcp_frontdoor` alongside `mcp` (and with `--reset/--wipe`) so localhost port `127.0.0.1:3001` is consistently republished.
 2026-05-11 Refined endpoint sidecar policy for `index-repo` helpers: resolver now emits proxy upstream targets for configured embed/classifier hosts, permits non-local targets only when they exactly match the configured endpoint values, and rejects mismatched external IP overrides; mirrored in both Python/PowerShell resolvers with new regression tests.
 2026-05-11 Closed Windows/Unix endpoint-policy gap: `scripts/index-repo.sh` now mirrors Windows resolver behavior by requiring `.env/codebrain.toml`, rejecting non-local embed/classifier URLs, and mapping allowed local endpoints to `embed_proxy`/`classifier_proxy`; updated AGENTS.md to codify cross-platform parity.
 2026-05-11 Restored strict config policy: ingestion and Windows endpoint resolver now require `.env/codebrain.toml` and fail fast with a clear setup error instead of using fallback defaults.
@@ -120,3 +121,5 @@
 2026-05-11 Restored host access to MCP/UI under internal-network isolation by introducing mcp_frontdoor (127.0.0.1:3001 -> mcp:3001) and postgres_frontdoor (127.0.0.1:5433 -> postgres:5432) sidecars while keeping core services on internal-only networking.
 2026-05-11 Added AGENTS.md rule prohibiting inline executable script bodies in shell scripts (including inline Python); require separate dedicated source files.
 2026-05-11 Refactored scripts/index-repo.sh to remove inline Python heredoc; added scripts/resolve-container-endpoints.py and shell wrapper invocation to enforce no-inline executable code policy.
+2026-05-11 Simplified WebGL graph edge rendering for large repositories by using line links with no directional arrows and defaulting all edge kinds to hidden until enabled from the legend.
+2026-05-11 Increased WebGL line-mode edge thickness to 2x while keeping low-cost line rendering and edges hidden by default for large-repo performance.
