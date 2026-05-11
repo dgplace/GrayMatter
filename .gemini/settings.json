@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "local-mcp": {
-      "httpUrl": "http://localhost:3001/mcp"
-    }
-  }
-}

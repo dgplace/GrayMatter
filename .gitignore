@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 .claude/
+.gemini/
 
 # Node / TypeScript
 node_modules/
