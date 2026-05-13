@@ -371,7 +371,7 @@ export async function deleteRepository(repo: string): Promise<number> {
  * @returns Repo graph payload with nodes and weighted edges.
  */
 export async function getRepositoryGraph(repo: string, limit = 300): Promise<RepositoryGraph> {
-  const safeLimit = Math.max(50, Math.min(limit, 2000));
+  const safeLimit = Math.max(50, Math.min(limit, 10000));
   const result = await query(
     `
     WITH dependency_edges AS (
@@ -430,6 +430,15 @@ export async function getRepositoryGraph(repo: string, limit = 300): Promise<Rep
   `,
     [repo, safeLimit],
   );
+  const filesResult = await query(
+    `
+    SELECT path
+    FROM files
+    WHERE repo = $1
+    ORDER BY path
+    `,
+    [repo],
+  );
 
   const edges = result.rows.map((row: Record<string, unknown>) => ({
     source: String(row.source),
@@ -444,8 +453,11 @@ export async function getRepositoryGraph(repo: string, limit = 300): Promise<Rep
     degree.set(edge.target, (degree.get(edge.target) || 0) + edge.weight);
   }
 
-  const nodes = Array.from(degree.entries())
-    .map(([id, count]) => ({ id, degree: count }))
+  const nodes = filesResult.rows
+    .map((row: Record<string, unknown>) => {
+      const id = String(row.path);
+      return { id, degree: degree.get(id) || 0 };
+    })
     .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id));
 
   return { nodes, edges };
@@ -533,7 +545,7 @@ export async function findCluster(repo: string, cluster: string): Promise<Cluste
  * @returns Array of cluster member records.
  */
 export async function getClusterMembers(clusterId: number, granularity: string, limit = 200): Promise<Record<string, unknown>[]> {
-  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 10000));
 
   if (granularity === "symbol") {
     const membersResult = await query(

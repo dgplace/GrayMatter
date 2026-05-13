@@ -123,3 +123,13 @@
 2026-05-11 Refactored scripts/index-repo.sh to remove inline Python heredoc; added scripts/resolve-container-endpoints.py and shell wrapper invocation to enforce no-inline executable code policy.
 2026-05-11 Simplified WebGL graph edge rendering for large repositories by using line links with no directional arrows and defaulting all edge kinds to hidden until enabled from the legend.
 2026-05-11 Increased WebGL line-mode edge thickness to 2x while keeping low-cost line rendering and edges hidden by default for large-repo performance.
+2026-05-12 Updated WebGL graph rendering to use black links, increased UI graph edge fetch limit to 2000, and included all indexed files as graph nodes (degree 0 for files without returned edges) so large repositories no longer appear truncated.
+2026-05-12 Fixed WebGL link color by setting the shared line material to black, raised graph edge fetch/cap limits to 10,000, and switched node rendering from spheres to fixed-size glowing points for better large-repo visibility.
+2026-05-12 Switched graph grouping from semantic file-clusters to logical-module prefix clustering and added a logical-module attraction force so nodes from the same module visually cluster together.
+2026-05-12 Reduced web UI sidebar panel title-bar height (smaller padding and font size) to increase left-panel content real estate.
+2026-05-12 Corrected point-node color washout by switching from additive to normal blending with controlled opacity, preserving module colors while keeping a soft glow.
+2026-05-12 Added clustering-only refresh workflow (`python -m codebrain.recluster` plus `scripts/recluster-repo.{sh,bat}` with default 2x resolution), increased cluster-members API page cap to 10,000, and changed WebGL logical-module assignment to use logical module cluster membership with guaranteed fallback assignment for every file node.
+2026-05-12 Changed WebGL unmatched-file logical-module assignment to use graph connectivity scores (edge-weight pull) instead of directory/path heuristics, ensuring directory module intents do not influence attraction forces.
+2026-05-12 Restored folder-based node coloring (while keeping logical-module pull) so color encodes filesystem grouping and attraction encodes structural module clustering.
+2026-05-12 Hid the module legend badge when every node is assigned to the synthetic fallback logical bucket, reducing confusion that only one module is being displayed.
+2026-05-12 Added a repo-load progress bar in the Web UI header and wired staged progress updates through base API fetches, logical-module member fetches, and final graph rendering so long repo loads show live progress.

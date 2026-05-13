@@ -28,6 +28,12 @@ export function renderWebUi(): string {
     <div class="control">
       <label for="repoSelect">Repository</label>
       <select id="repoSelect"></select>
+      <div class="repo-load-progress" id="repoLoadProgress" hidden>
+        <div class="repo-load-progress-track">
+          <div class="repo-load-progress-fill" id="repoLoadProgressBar"></div>
+        </div>
+        <div class="repo-load-progress-text" id="repoLoadProgressText">Loading repository...</div>
+      </div>
     </div>
   </header>
 

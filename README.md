@@ -123,6 +123,22 @@ python -m codebrain.synthesize_modules --repo <repo-name>
 python -m codebrain.synthesize_modules --repo <repo-name> --mode logical
 ```
 
+Rebuild clustering + logical modules without re-indexing files:
+
+```bash
+python -m codebrain.recluster --repo-name <repo-name> --resolution-multiplier 2.0
+./scripts/recluster-repo.sh /absolute/path/to/repo
+```
+
+```bat
+python -m codebrain.recluster --repo-name <repo-name> --resolution-multiplier 2.0
+scripts\recluster-repo.bat C:\absolute\path\to\repo
+```
+
+`recluster` re-materializes `clusters` / `cluster_members` and (by default)
+refreshes `module_intents.kind='logical'`. It does not parse/chunk/embed source
+files again.
+
 Options for the standalone command:
 
 | Flag | Default | Effect |

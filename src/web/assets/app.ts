@@ -42,11 +42,16 @@ interface ModuleIntent {
   module_name?: string;
   module_path: string;
   kind: string;
+  cluster_id?: number | null;
   role?: string;
   dominant_intent?: string;
   file_count: number;
   chunk_count: number;
   summary?: string;
+}
+
+interface ClusterMember {
+  file_path?: string;
 }
 
 interface Cluster {
@@ -57,11 +62,6 @@ interface Cluster {
   modularity: number;
   granularity: string;
   size: number;
-}
-
-interface ClusterMember {
-  file_path?: string;
-  symbol_name?: string;
 }
 
 interface Cycle {
@@ -88,32 +88,37 @@ const indexMgmtBody = document.getElementById("indexMgmtBody") as HTMLElement;
 const modulesBody = document.getElementById("modulesBody") as HTMLElement;
 const graphContainer = document.getElementById("graph") as HTMLElement;
 const legend = document.getElementById("legend") as HTMLElement;
+const repoLoadProgress = document.getElementById("repoLoadProgress") as HTMLElement | null;
+const repoLoadProgressBar = document.getElementById("repoLoadProgressBar") as HTMLElement | null;
+const repoLoadProgressText = document.getElementById("repoLoadProgressText") as HTMLElement | null;
 
 let toolCallPollId: number | null = null;
 let graphInstance: ForceGraphInstance | null = null;
 let lastGraphPayload: GraphResponse | null = null;
 const hiddenKinds = new Set<string>();
 const hiddenNodes = new Set<string>();
+const GRAPH_EDGE_LIMIT = 10000;
+const NODE_POINT_SIZE = 6;
 
 const tokens = {
-  edgeDefault: "#5d6884",
+  edgeDefault: "#000000",
   edgeKindMap: {
-    call: "#00d3a7",
-    member_call: "#2bb8ff",
-    instantiation: "#b269ff",
-    type_reference: "#ff6fbf",
-    depends_on: "#ffb547",
-    imports: "#ffb547",
-    extends: "#ff5f3a",
-    implements: "#ff5f3a",
-    returns: "#7a8aff",
-    field_type: "#7a8aff",
+    call: "#000000",
+    member_call: "#000000",
+    instantiation: "#000000",
+    type_reference: "#000000",
+    depends_on: "#000000",
+    imports: "#000000",
+    extends: "#000000",
+    implements: "#000000",
+    returns: "#000000",
+    field_type: "#000000",
   } as Record<string, string>,
   nodeAccent: "#00b08c",
   nodeAccentHover: "#00d3a7",
   nodeMuted: "#b0b6c4",
   background: "#f6f8ff",
-  cycleEdge: "#ff3333",
+  cycleEdge: "#000000",
   folderPalette: [
     "#00b08c", "#2bb8ff", "#b269ff", "#ff6fbf",
     "#ffb547", "#ff5f3a", "#7a8aff", "#3acb6c",
@@ -127,7 +132,44 @@ const nodeToCluster = new Map<string, number>();
 const clusterInfo = new Map<number, Cluster>();
 const cycleEdges = new Set<string>();
 const folderColors = new Map<string, string>();
-const linkLineMaterial = new THREE.LineBasicMaterial({ linewidth: 2 });
+const linkLineMaterial = new THREE.LineBasicMaterial({ linewidth: 2, color: 0x000000 });
+const nodePointGeometry = new THREE.BufferGeometry();
+nodePointGeometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
+const nodePointMaterialBase = new THREE.PointsMaterial({
+  size: NODE_POINT_SIZE,
+  sizeAttenuation: false,
+  transparent: true,
+  opacity: 0.92,
+  alphaTest: 0.01,
+  depthWrite: false,
+  blending: THREE.NormalBlending,
+  map: createGlowTexture(),
+});
+
+/**
+ * @brief Build a compact radial texture so each point gets a subtle glow.
+ * @returns Texture used by node point materials.
+ */
+function createGlowTexture(): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    const texture = new THREE.Texture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
+  const gradient = ctx.createRadialGradient(32, 32, 6, 32, 32, 32);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.5, "rgba(255,255,255,0.55)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 64);
+  const texture = new THREE.Texture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
 
 /** @brief Normalize file paths for consistent map keys (strips leading ./). */
 function normalizePath(p: string): string {
@@ -179,17 +221,43 @@ function isLinkVisible(l: ForceLink): boolean {
 }
 
 /**
- * @brief Color accessor: muted grey for hidden nodes, the cluster colour when
- *        the node belongs to a file-granularity cluster, otherwise a
- *        deterministic per-folder colour so unclustered nodes still vary.
+ * @brief Color accessor: muted grey for hidden nodes, otherwise deterministic
+ *        per-folder colour.
+ *
+ * Layout attraction is module-based; color intentionally stays folder-based so
+ * structural pull and filesystem grouping can be inspected independently.
  */
 function colorForNode(n: ForceNode): string {
   if (hiddenNodes.has(n.id)) return tokens.nodeMuted;
-  const cid = nodeToCluster.get(normalizePath(n.id));
-  if (cid !== undefined && clusterColors.has(cid)) {
-    return clusterColors.get(cid)!;
-  }
   return folderColors.get(folderKey(n.id)) || tokens.nodeAccent;
+}
+
+/**
+ * @brief Build a fixed-size glowing point for a graph node.
+ * @param node Graph node.
+ * @returns Three.js points object with per-node color.
+ */
+function createNodePoint(node: ForceNode): THREE.Points {
+  const material = nodePointMaterialBase.clone();
+  material.color.set(colorForNode(node));
+  return new THREE.Points(nodePointGeometry, material);
+}
+
+/**
+ * @brief Refresh existing node point colors after node-visibility toggles.
+ *        3d-force-graph stores each object's pointer on `__threeObj`.
+ */
+function refreshNodePointColors(): void {
+  if (!graphInstance) return;
+  const liveData = (graphInstance as any).graphData?.();
+  const nodes = liveData?.nodes as Array<any> | undefined;
+  if (!nodes) return;
+  for (const node of nodes) {
+    const object = node.__threeObj as THREE.Points | undefined;
+    const material = object?.material as THREE.PointsMaterial | THREE.PointsMaterial[] | undefined;
+    if (!material || Array.isArray(material)) continue;
+    material.color.set(colorForNode(node as ForceNode));
+  }
 }
 
 /** @brief Check if an edge is part of a dependency cycle. */
@@ -226,6 +294,27 @@ async function getJson<T>(url: string): Promise<T> {
 /** @brief Set the loading-status message in the stats panel. */
 function updateStatus(message: string): void {
   statusEl.textContent = message;
+}
+
+/**
+ * @brief Update the repo-load progress bar and message.
+ * @param percent Completion percentage in [0, 100].
+ * @param message Human-readable phase text.
+ */
+function setRepoLoadProgress(percent: number, message: string): void {
+  if (!repoLoadProgress || !repoLoadProgressBar || !repoLoadProgressText) return;
+  const bounded = Math.max(0, Math.min(100, Math.round(percent)));
+  repoLoadProgress.hidden = false;
+  repoLoadProgressBar.style.width = bounded + "%";
+  repoLoadProgressText.textContent = message;
+}
+
+/** @brief Hide the repo-load progress UI. */
+function hideRepoLoadProgress(): void {
+  if (!repoLoadProgress || !repoLoadProgressBar || !repoLoadProgressText) return;
+  repoLoadProgress.hidden = true;
+  repoLoadProgressBar.style.width = "0%";
+  repoLoadProgressText.textContent = "Loading repository...";
 }
 
 /** @brief Render a name/count list inside a panel section. */
@@ -518,6 +607,104 @@ function shortLabel(id: string): string {
   return slash >= 0 ? id.slice(slash + 1) : id;
 }
 
+type ModuleCenter = { x: number; y: number; z: number };
+type ForceNodeMutable = ForceNode & { x?: number; y?: number; z?: number; vx?: number; vy?: number; vz?: number };
+type LogicalModuleEntry = { id: number; name: string; clusterId: number | null };
+
+/**
+ * @brief Assign unmatched nodes to logical modules using edge connectivity only.
+ *
+ * This avoids path/directory-driven pull: each unmatched file is assigned to
+ * the module it is most strongly connected to by graph edge weights.
+ *
+ * @param payload Graph payload used to compute adjacency.
+ * @param logicalModules Available logical module entries.
+ */
+function assignUnmappedNodesByConnectivity(payload: GraphResponse, logicalModules: LogicalModuleEntry[]): void {
+  const adjacency = new Map<string, Array<{ other: string; weight: number }>>();
+  for (const edge of payload.edges) {
+    const source = normalizePath(edge.source);
+    const target = normalizePath(edge.target);
+    const weight = Number(edge.weight || 1);
+    if (!adjacency.has(source)) adjacency.set(source, []);
+    if (!adjacency.has(target)) adjacency.set(target, []);
+    adjacency.get(source)!.push({ other: target, weight });
+    adjacency.get(target)!.push({ other: source, weight });
+  }
+
+  let unresolved = payload.nodes.map((n) => normalizePath(n.id)).filter((id) => !nodeToCluster.has(id));
+  let progress = true;
+  while (unresolved.length > 0 && progress) {
+    progress = false;
+    const nextUnresolved: string[] = [];
+    for (const nodePath of unresolved) {
+      const scores = new Map<number, number>();
+      for (const neighbor of adjacency.get(nodePath) || []) {
+        const moduleId = nodeToCluster.get(neighbor.other);
+        if (moduleId === undefined) continue;
+        scores.set(moduleId, (scores.get(moduleId) || 0) + neighbor.weight);
+      }
+      if (scores.size === 0) {
+        nextUnresolved.push(nodePath);
+        continue;
+      }
+      const best = Array.from(scores.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+      nodeToCluster.set(nodePath, best[0]);
+      progress = true;
+    }
+    unresolved = nextUnresolved;
+  }
+
+  const fallbackId = logicalModules.length ? logicalModules[0].id : null;
+  if (fallbackId === null) return;
+  for (const nodePath of unresolved) nodeToCluster.set(nodePath, fallbackId);
+}
+
+/**
+ * @brief Build deterministic centers in 3D space for logical-module groups.
+ * @returns Map of cluster id to center coordinate.
+ */
+function buildLogicalModuleCenters(): Map<number, ModuleCenter> {
+  const usedIds = Array.from(new Set(Array.from(nodeToCluster.values()))).sort((a, b) => a - b);
+  const centers = new Map<number, ModuleCenter>();
+  if (usedIds.length === 0) return centers;
+  const radius = Math.max(60, Math.sqrt(usedIds.length) * 35);
+  for (let i = 0; i < usedIds.length; i += 1) {
+    const angle = (2 * Math.PI * i) / usedIds.length;
+    centers.set(usedIds[i], {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      z: ((i % 5) - 2) * 12,
+    });
+  }
+  return centers;
+}
+
+/**
+ * @brief Force that pulls file nodes toward their logical-module center.
+ * @param centers Precomputed center coordinate per logical module.
+ * @returns D3-force compatible function with initialize hook.
+ */
+function createLogicalModuleForce(centers: Map<number, ModuleCenter>): any {
+  let nodes: ForceNodeMutable[] = [];
+  const force = ((alpha: number) => {
+    const k = 0.22 * alpha;
+    for (const node of nodes) {
+      const cid = nodeToCluster.get(normalizePath(node.id));
+      if (cid === undefined) continue;
+      const center = centers.get(cid);
+      if (!center) continue;
+      node.vx = (node.vx || 0) + (center.x - (node.x || 0)) * k;
+      node.vy = (node.vy || 0) + (center.y - (node.y || 0)) * k;
+      node.vz = (node.vz || 0) + (center.z - (node.z || 0)) * k;
+    }
+  }) as any;
+  force.initialize = (initializedNodes: ForceNodeMutable[]) => {
+    nodes = initializedNodes;
+  };
+  return force;
+}
+
 /**
  * @brief Render a color-swatch legend that maps each edge kind to its arrow
  *        colour, plus node/edge counts and a rotate hint.
@@ -563,9 +750,20 @@ function renderLegend(payload: GraphResponse): void {
       return '<span class="legend-item legend-item-static" title="' + esc(name) + '">'
         + '<span class="legend-dot" style="background:' + color + ';box-shadow:0 0 6px ' + color + '99;"></span>'
         + '<span class="legend-label">' + esc(name) + "</span>"
-        + '<span class="legend-count">' + n + "</span>"
-        + "</span>";
+      + '<span class="legend-count">' + n + "</span>"
+      + "</span>";
     }).join("");
+  let showModuleSwatches = true;
+  if (clusterCounts.size === 1) {
+    const [onlyClusterId, onlyCount] = Array.from(clusterCounts.entries())[0];
+    const onlyInfo = clusterInfo.get(onlyClusterId);
+    if (
+      onlyCount === payload.nodes.length
+      && (onlyInfo?.cluster_key === "logical:fallback" || onlyInfo?.name === "logical/repo")
+    ) {
+      showModuleSwatches = false;
+    }
+  }
 
   let cycleSwatch = "";
   if (cycleEdges.size > 0) {
@@ -581,9 +779,9 @@ function renderLegend(payload: GraphResponse): void {
     '<span class="pill">Nodes ' + visibleNodeCount + " / " + payload.nodes.length + "</span>",
     '<span class="pill">Edges ' + visibleEdgeCount + " / " + payload.edges.length + "</span>",
     "</span>",
-    '<span class="legend-section legend-folders">' + clusterSwatches + cycleSwatch + "</span>",
+    '<span class="legend-section legend-folders">' + (showModuleSwatches ? clusterSwatches : "") + cycleSwatch + "</span>",
     '<span class="legend-section">' + swatches + "</span>",
-    '<span class="legend-section legend-hint">Node colour = cluster. Click a kind to toggle its edges; click a node to mute it. Drag to rotate, scroll to zoom.</span>',
+    '<span class="legend-section legend-hint">Node colour = folder. Pull/grouping = logical module. Click a kind to toggle its edges; click a node to mute it. Drag to rotate, scroll to zoom.</span>',
   ].join("");
 }
 
@@ -612,7 +810,7 @@ function toggleNode(nodeId: string): void {
   else hiddenNodes.add(nodeId);
   if (lastGraphPayload) renderLegend(lastGraphPayload);
   if (graphInstance) {
-    graphInstance.nodeColor(colorForNode);
+    refreshNodePointColors();
     graphInstance.linkVisibility(isLinkVisible);
     graphInstance.refresh();
   }
@@ -655,33 +853,31 @@ function toNodes(payload: GraphResponse): ForceNode[] {
  */
 function renderGraph(payload: GraphResponse): void {
   buildFolderColors(payload);
-  const maxDegree = payload.nodes.reduce((acc, n) => Math.max(acc, n.degree), 1);
-  const nodeRadius = (n: ForceNode) => 1.2 + Math.min(8, (n.degree / maxDegree) * 7);
-
   const data = { nodes: toNodes(payload), links: toLinks(payload) };
 
   if (!graphInstance) {
     graphInstance = ForceGraph3D()(graphContainer)
       .backgroundColor(tokens.background)
       .showNavInfo(false)
-      .nodeRelSize(4)
-      .nodeOpacity(0.95)
       .linkOpacity(0.7)
       .linkDirectionalArrowLength(0)
       .linkCurvature(0)
-      .nodeColor(colorForNode)
+      .nodeThreeObject((n: ForceNode) => createNodePoint(n))
+      .nodeThreeObjectExtend(false)
       .nodeLabel((n: ForceNode) => `<span style="background:#fff;color:#0d1320;padding:2px 6px;border-radius:6px;border:1px solid #dbe1f1;font:600 11px Inter,sans-serif;">${esc(shortLabel(n.id))}</span>`)
-      .nodeVal(nodeRadius)
       .linkColor(colorForEdge)
       .linkMaterial(linkLineMaterial)
       .linkDirectionalArrowColor(colorForEdge)
       .linkWidth(0)
       .linkVisibility(isLinkVisible)
       .onNodeClick((n: ForceNode) => toggleNode(n.id));
-  } else {
-    graphInstance.nodeVal(nodeRadius);
   }
 
+  const moduleCenters = buildLogicalModuleCenters();
+  (graphInstance as any).d3Force(
+    "logicalModuleCluster",
+    moduleCenters.size ? createLogicalModuleForce(moduleCenters) : null,
+  );
   graphInstance.graphData(data);
   // Resize once on (re)mount so the renderer matches the container after
   // the layout has settled.
@@ -696,60 +892,150 @@ function renderGraph(payload: GraphResponse): void {
 /** @brief Load all data for a repo: stats, graph, modules. */
 async function loadRepo(repo: string): Promise<void> {
   updateStatus("Loading stats and graph for " + repo + "...");
-  renderIndexMgmt(repo);
-  const encodedRepo = encodeURIComponent(repo);
-  const [stats, graph, clustersResp, cyclesResp] = await Promise.all([
-    getJson<RepositoryStats>("/ui/api/repos/" + encodedRepo + "/stats"),
-    getJson<GraphResponse>("/ui/api/repos/" + encodedRepo + "/graph?limit=350"),
-    getJson<{ clusters: Cluster[] }>("/ui/api/repos/" + encodedRepo + "/clusters?granularity=file").catch(() => ({ clusters: [] })),
-    getJson<{ cycles: Cycle[] }>("/ui/api/repos/" + encodedRepo + "/cycles").catch(() => ({ cycles: [] })),
-  ]);
+  setRepoLoadProgress(2, "Starting repository load...");
+  try {
+    renderIndexMgmt(repo);
+    const encodedRepo = encodeURIComponent(repo);
 
-  const clusters = clustersResp.clusters || [];
-  clusterInfo.clear();
-  clusterColors.clear();
-  nodeToCluster.clear();
-  cycleEdges.clear();
+    let completedBaseFetches = 0;
+    const totalBaseFetches = 4;
+    const markBaseFetch = (message: string) => {
+      completedBaseFetches += 1;
+      const percent = 5 + Math.round((completedBaseFetches / totalBaseFetches) * 45);
+      setRepoLoadProgress(percent, message);
+    };
 
-  for (let i = 0; i < clusters.length; i++) {
-    const c = clusters[i];
-    clusterInfo.set(c.id, c);
-    clusterColors.set(c.id, tokens.folderPalette[i % tokens.folderPalette.length]);
-  }
+    const statsPromise = getJson<RepositoryStats>("/ui/api/repos/" + encodedRepo + "/stats")
+      .then((payload) => {
+        markBaseFetch("Loaded repository stats.");
+        return payload;
+      });
+    const graphPromise = getJson<GraphResponse>("/ui/api/repos/" + encodedRepo + "/graph?limit=" + GRAPH_EDGE_LIMIT)
+      .then((payload) => {
+        markBaseFetch("Loaded graph topology.");
+        return payload;
+      });
+    const logicalModulesPromise = getJson<{ modules: ModuleIntent[] }>("/ui/api/repos/" + encodedRepo + "/modules?kind=logical")
+      .then((payload) => {
+        markBaseFetch("Loaded logical modules.");
+        return payload;
+      })
+      .catch(() => {
+        markBaseFetch("Logical modules unavailable; using fallback.");
+        return { modules: [] as ModuleIntent[] };
+      });
+    const cyclesPromise = getJson<{ cycles: Cycle[] }>("/ui/api/repos/" + encodedRepo + "/cycles")
+      .then((payload) => {
+        markBaseFetch("Loaded dependency cycles.");
+        return payload;
+      })
+      .catch(() => {
+        markBaseFetch("Dependency cycles unavailable; continuing.");
+        return { cycles: [] as Cycle[] };
+      });
 
-  const memberPromises = clusters.map(c => 
-    getJson<{ members: ClusterMember[] }>("/ui/api/repos/" + encodedRepo + "/clusters/" + c.id + "/members?limit=1000").catch(() => ({ members: [] }))
-  );
-  const membersResults = await Promise.all(memberPromises);
+    const [stats, graph, logicalModulesResp, cyclesResp] = await Promise.all([
+      statsPromise,
+      graphPromise,
+      logicalModulesPromise,
+      cyclesPromise,
+    ]);
 
-  for (let i = 0; i < clusters.length; i++) {
-    const c = clusters[i];
-    const members = membersResults[i].members || [];
-    for (const m of members) {
-      if (m.file_path) nodeToCluster.set(normalizePath(m.file_path), c.id);
+    setRepoLoadProgress(55, "Preparing logical-module assignments...");
+
+    const logicalModules: LogicalModuleEntry[] = (logicalModulesResp.modules || [])
+      .filter((m) => Boolean(m.module_path))
+      .map((m) => ({
+        name: m.module_name || m.module_path,
+        clusterId: Number.isFinite(Number(m.cluster_id)) ? Number(m.cluster_id) : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((m, index) => ({ ...m, id: index + 1 }));
+
+    if (!logicalModules.length) {
+      logicalModules.push({ id: 1, name: "logical/repo", clusterId: null });
     }
-  }
 
-  const cycles = cyclesResp.cycles || [];
-  for (const cycle of cycles) {
-    const paths = new Set(cycle.member_paths || []);
-    // Note: This intersection highlights all edges whose endpoints both sit in the cycle's member paths.
-    // This heuristically includes non-cycle edges (like type references) between cycle members.
-    for (const e of graph.edges) {
-      if (paths.has(e.source) && paths.has(e.target)) {
-        cycleEdges.add(e.source + "|" + e.target);
+    clusterInfo.clear();
+    clusterColors.clear();
+    nodeToCluster.clear();
+    cycleEdges.clear();
+
+    for (let i = 0; i < logicalModules.length; i += 1) {
+      const moduleEntry = logicalModules[i];
+      clusterInfo.set(moduleEntry.id, {
+        id: moduleEntry.id,
+        cluster_key: moduleEntry.clusterId !== null ? "cluster:" + moduleEntry.clusterId : "logical:fallback",
+        name: moduleEntry.name,
+        summary: "",
+        modularity: 0,
+        granularity: "logical",
+        size: 0,
+      });
+      clusterColors.set(moduleEntry.id, tokens.folderPalette[i % tokens.folderPalette.length]);
+    }
+
+    const clusteredModules = logicalModules.filter((m) => m.clusterId !== null);
+    let completedMemberFetches = 0;
+    const totalMemberFetches = clusteredModules.length;
+    const memberPromises = logicalModules.map((m) => {
+      if (m.clusterId === null) return Promise.resolve({ members: [] as ClusterMember[] });
+      return getJson<{ members: ClusterMember[] }>(
+        "/ui/api/repos/" + encodedRepo + "/clusters/" + m.clusterId + "/members?limit=10000",
+      )
+        .catch(() => ({ members: [] }))
+        .then((payload) => {
+          completedMemberFetches += 1;
+          const progressRatio = totalMemberFetches > 0 ? completedMemberFetches / totalMemberFetches : 1;
+          const percent = 60 + Math.round(progressRatio * 25);
+          setRepoLoadProgress(
+            percent,
+            "Loading module memberships (" + completedMemberFetches + "/" + totalMemberFetches + ")...",
+          );
+          return payload;
+        });
+    });
+    const memberResults = await Promise.all(memberPromises);
+
+    for (let i = 0; i < logicalModules.length; i += 1) {
+      const moduleEntry = logicalModules[i];
+      const members = memberResults[i].members || [];
+      for (const member of members) {
+        if (!member.file_path) continue;
+        const normalized = normalizePath(member.file_path);
+        nodeToCluster.set(normalized, moduleEntry.id);
       }
     }
-  }
 
-  renderStats(stats);
-  hideAllEdgeKinds(graph);
-  hiddenNodes.clear();
-  lastGraphPayload = graph;
-  renderGraph(graph);
-  renderLegend(graph);
-  updateStatus("Showing " + repo + ".");
-  void loadModules(repo);
+    setRepoLoadProgress(90, "Assigning unclustered files by graph connectivity...");
+    assignUnmappedNodesByConnectivity(graph, logicalModules);
+
+    setRepoLoadProgress(94, "Finalizing cycle highlights...");
+    const cycles = cyclesResp.cycles || [];
+    for (const cycle of cycles) {
+      const paths = new Set(cycle.member_paths || []);
+      // Note: This intersection highlights all edges whose endpoints both sit in the cycle's member paths.
+      // This heuristically includes non-cycle edges (like type references) between cycle members.
+      for (const e of graph.edges) {
+        if (paths.has(e.source) && paths.has(e.target)) {
+          cycleEdges.add(e.source + "|" + e.target);
+        }
+      }
+    }
+
+    setRepoLoadProgress(97, "Rendering graph and panels...");
+    renderStats(stats);
+    hideAllEdgeKinds(graph);
+    hiddenNodes.clear();
+    lastGraphPayload = graph;
+    renderGraph(graph);
+    renderLegend(graph);
+    updateStatus("Showing " + repo + ".");
+    void loadModules(repo);
+    setRepoLoadProgress(100, "Repository loaded.");
+  } finally {
+    setTimeout(() => hideRepoLoadProgress(), 250);
+  }
 }
 
 /** @brief Reload the repo dropdown after deletion. */

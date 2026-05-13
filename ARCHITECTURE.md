@@ -184,8 +184,9 @@ records its source `cluster_id` so the two surfaces can be joined.
 Because ingestion already runs Leiden (with Louvain and connected-components fallbacks)
 on the resolved symbol-coupling graph, logical-module quality is improved transitively
 when clustering is improved. Tune Leiden resolution under `codebrain.toml`
-`[clustering] resolution` and re-ingest; synthesis itself has no community-detection
-knobs.
+`[clustering] resolution` and re-materialize clusters (for example,
+`python -m codebrain.recluster --repo-name <repo> --resolution-multiplier 2.0`)
+without full file re-ingestion; synthesis itself has no community-detection knobs.
 
 The `member_symbols` column stores the class/type names (or file basenames, in the
 file-cluster fallback) for each logical module so `get_module_map` can render them
