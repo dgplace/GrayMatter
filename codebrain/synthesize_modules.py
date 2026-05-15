@@ -9,7 +9,7 @@ logical modules with domain-specific narrative intents.
 Logical modules are derived from the repository's existing `clusters` /
 `cluster_members` rows (produced by the ingestion pipeline using Leiden with
 Louvain/connected-components fallback). Synthesis filters those clusters down to
-cross-directory, multi-file communities and overlays a narrative `dominant_intent`
+eligible communities and overlays a narrative `dominant_intent`
 via the LLM. There is no separate community-detection pass at synthesis time; the
 ingestion-built Leiden clustering is the single source of truth for coupling-based
 communities.
@@ -279,18 +279,6 @@ def _fetch_cluster_candidates(cur, repo: str) -> list[dict]:
     return clusters
 
 
-def _cluster_directories(members: list[dict]) -> set[str]:
-    """@brief Distinct parent directories spanned by a cluster's members.
-
-    @param members Cluster members (each with a `path`).
-    @return Set of parent directory paths (`.` for root-level files).
-    """
-    return {
-        m['path'].rsplit('/', 1)[0] if '/' in m['path'] else '.'
-        for m in members
-    }
-
-
 def _cluster_file_count(members: list[dict], granularity: str) -> int:
     """@brief Number of distinct files covered by a cluster's members.
 
@@ -364,8 +352,8 @@ def _build_logical_module_prompt(cluster: dict) -> str:
         )
 
     return f"""You are reading the source code of an application like reading chapters of a book.
-These {entity_label} were detected as one community by Leiden coupling analysis and span multiple
-directories. Your job is to describe the STORY — what is this code trying to accomplish? What
+These {entity_label} were detected as one community by Leiden coupling analysis. Your job is to
+describe the STORY — what is this code trying to accomplish? What
 problem is it solving? What is the narrative arc?
 {existing}
 {entity_label.capitalize()} in this module:
@@ -480,10 +468,10 @@ def _upsert_logical_module_intent(
 def synthesize_logical_modules(conn, repo: str, min_files: int,
                                classifier: IntentClassifier,
                                machine: bool = False):
-    """@brief Overlay narrative intents on cross-directory clusters.
+    """@brief Overlay narrative intents on ingestion-produced clusters.
 
     Reads existing `clusters` / `cluster_members` (produced by ingestion using
-    Leiden) and promotes the multi-file, multi-directory ones to logical
+    Leiden) and promotes the eligible ones to logical
     modules. There is no second clustering pass at synthesis time.
 
     @param conn Database connection.
@@ -510,8 +498,6 @@ def synthesize_logical_modules(conn, repo: str, min_files: int,
             continue
         file_count = _cluster_file_count(members, cluster['granularity'])
         if file_count < min_files:
-            continue
-        if len(_cluster_directories(members)) < 2:
             continue
         candidates.append((cluster, file_count))
 
@@ -570,7 +556,7 @@ def synthesize_logical_modules(conn, repo: str, min_files: int,
 @click.option("--repo", required=True, help="Repository name")
 @click.option("--mode", type=click.Choice(['directory', 'logical', 'all']),
               default='all', help="Synthesis mode")
-@click.option("--min-files", default=3, help="Minimum files per module")
+@click.option("--min-files", default=0, help="Minimum files per module")
 @click.option("--config", default="codebrain.toml", help="Config file path")
 @click.option("--machine", is_flag=True, default=False,
               help="Emit machine-readable progress lines (for desktop app)")

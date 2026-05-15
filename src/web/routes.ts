@@ -1,6 +1,6 @@
 /**
  * @file src/web/routes.ts
- * @brief HTTP routes for the embedded semantic graph browser UI and JSON APIs.
+ * @brief HTTP routes for the embedded repository index browser UI and JSON APIs.
  */
 
 import { readFile } from "node:fs/promises";
@@ -56,6 +56,9 @@ function resolveAssetPath(requestPath: string): string | null {
  */
 export function registerWebRoutes(app: any): void {
   app.get("/ui", (_req: any, res: any) => {
+    res.status(200).type("text/html; charset=utf-8").send(renderWebUi());
+  });
+  app.get("/ui/:repo", (_req: any, res: any) => {
     res.status(200).type("text/html; charset=utf-8").send(renderWebUi());
   });
 
@@ -159,7 +162,18 @@ export function registerWebRoutes(app: any): void {
       }
       const limit = Number(req.query.limit ?? 100);
       const offset = Number(req.query.offset ?? 0);
-      const page = await fetchBrowseTablePage(repo, spec, limit, offset);
+      const rawFilters: Record<string, string | string[] | undefined> = {};
+      for (const [queryKey, value] of Object.entries(req.query || {})) {
+        if (!queryKey.startsWith("filter_")) continue;
+        const filterKey = queryKey.slice("filter_".length).trim();
+        if (!filterKey) continue;
+        if (Array.isArray(value)) {
+          rawFilters[filterKey] = value.map((item) => String(item));
+          continue;
+        }
+        rawFilters[filterKey] = String(value ?? "");
+      }
+      const page = await fetchBrowseTablePage(repo, spec, limit, offset, rawFilters);
       res.status(200).json(page);
     } catch (error) {
       console.error("Failed to load table page:", error);

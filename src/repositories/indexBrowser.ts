@@ -45,10 +45,19 @@ export type BrowseTablePage = {
   name: string;
   label: string;
   columns: BrowseColumn[];
+  filter_options: BrowseTableFilterOption[];
+  active_filters: Record<string, string[]>;
   rows: Record<string, unknown>[];
   total: number;
   limit: number;
   offset: number;
+};
+
+/** @brief One categorical filter available for a browse table. */
+export type BrowseTableFilterOption = {
+  key: string;
+  label: string;
+  values: string[];
 };
 
 /**
@@ -440,6 +449,158 @@ export function getBrowseTableSpec(name: string): BrowseableTable | null {
   return TABLES.find((t) => t.name === name) ?? null;
 }
 
+const FILTER_VALUE_LIMIT = 40;
+const FILTER_VALUE_MAX_LENGTH = 80;
+const FILTER_KEY_HINT = /(kind|granularity|language|role|intent|container|status)/i;
+const NON_FILTER_KEY = /(^id$|_id$|_key$|^path$|_path$|^name$|_name$|^summary$|^details$|^content_preview$|^reason$|^module_path$|_hash$)/i;
+
+type SelectSqlParts = {
+  baseSql: string;
+  orderBySql: string;
+};
+
+/**
+ * @brief Extract the base SELECT and ORDER BY fragments from a table SQL spec.
+ * @param selectSql Parameterized table select SQL.
+ * @returns Parsed fragments, or null when the SQL shape is unexpected.
+ */
+function splitSelectSql(selectSql: string): SelectSqlParts | null {
+  const match = selectSql.match(/([\s\S]*?)\bORDER BY\b([\s\S]*?)\bLIMIT\s+\$2\s+OFFSET\s+\$3\s*$/i);
+  if (!match) return null;
+  return {
+    baseSql: match[1].trim(),
+    orderBySql: match[2].trim(),
+  };
+}
+
+/**
+ * @brief Quotes an identifier for SQL usage after strict validation.
+ * @param identifier Column key to quote.
+ * @returns Safe quoted identifier, or null when invalid.
+ */
+function quoteIdentifier(identifier: string): string | null {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(identifier)) return null;
+  return `"${identifier.replaceAll("\"", "\"\"")}"`;
+}
+
+/**
+ * @brief Normalize raw filter payload into non-empty string arrays.
+ * @param rawFilters Raw input object from route query parsing.
+ * @returns Normalized filter values by key.
+ */
+function normalizeFilters(rawFilters?: Record<string, string | string[] | undefined>): Record<string, string[]> {
+  if (!rawFilters) return {};
+  const out: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(rawFilters)) {
+    const values = (Array.isArray(raw) ? raw : [raw])
+      .map((value) => String(value ?? "").trim())
+      .filter((value) => value.length > 0);
+    if (values.length > 0) out[key] = values;
+  }
+  return out;
+}
+
+/**
+ * @brief Build a SQL WHERE fragment and params for table filters.
+ * @param candidateKeys Allowed column keys for filtering.
+ * @param filters Normalized requested filters.
+ * @param startParamIndex 1-based SQL parameter index to start from.
+ * @returns SQL fragment, params, and accepted filters.
+ */
+function buildFilterClause(
+  candidateKeys: Set<string>,
+  filters: Record<string, string[]>,
+  startParamIndex: number,
+): { sql: string; params: unknown[]; active: Record<string, string[]> } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  const active: Record<string, string[]> = {};
+
+  for (const key of Object.keys(filters).sort()) {
+    if (!candidateKeys.has(key)) continue;
+    const quoted = quoteIdentifier(key);
+    if (!quoted) continue;
+    const values = Array.from(new Set(filters[key]));
+    if (values.length === 0) continue;
+    const paramIndex = startParamIndex + params.length + 1;
+    clauses.push(`base.${quoted}::text = ANY($${paramIndex}::text[])`);
+    params.push(values);
+    active[key] = values;
+  }
+
+  if (clauses.length === 0) {
+    return { sql: "", params: [], active: {} };
+  }
+  return { sql: ` WHERE ${clauses.join(" AND ")}`, params, active };
+}
+
+/**
+ * @brief Build a deterministic outer ORDER BY over exposed output columns.
+ * @param spec Browse-table spec with ordered output columns.
+ * @returns SQL ORDER BY fragment safe for derived-table queries.
+ */
+function buildSafeOuterOrderBy(spec: BrowseableTable): string {
+  const sortable = spec.columns
+    .map((column) => quoteIdentifier(column.key))
+    .filter((quoted): quoted is string => Boolean(quoted));
+  if (!sortable.length) return "1";
+  return sortable.map((quoted) => `base.${quoted}`).join(", ");
+}
+
+/**
+ * @brief Returns true for columns that are likely categorical filter candidates.
+ * @param key Column key.
+ * @returns True when the key should be considered for categorical filters.
+ */
+function isCategoricalCandidateKey(key: string): boolean {
+  if (NON_FILTER_KEY.test(key)) return false;
+  if (key === "id" || key.endsWith("_id") || key.endsWith("_key")) return false;
+  return FILTER_KEY_HINT.test(key);
+}
+
+/**
+ * @brief Resolve categorical filter options by probing distinct values.
+ * @param repo Repository scope.
+ * @param spec Table specification.
+ * @param parts Parsed select SQL parts.
+ * @returns Available filter options for the table.
+ */
+async function resolveFilterOptions(repo: string, spec: BrowseableTable, parts: SelectSqlParts): Promise<BrowseTableFilterOption[]> {
+  const options: BrowseTableFilterOption[] = [];
+  for (const column of spec.columns) {
+    const key = column.key;
+    if (!isCategoricalCandidateKey(key)) continue;
+    const quoted = quoteIdentifier(key);
+    if (!quoted) continue;
+    try {
+      const distinctResult = await query(
+        `
+        SELECT DISTINCT base.${quoted}::text AS value
+        FROM (${parts.baseSql}) base
+        WHERE base.${quoted} IS NOT NULL
+          AND base.${quoted}::text <> ''
+          AND length(base.${quoted}::text) <= $2
+        ORDER BY value
+        LIMIT $3
+        `,
+        [repo, FILTER_VALUE_MAX_LENGTH, FILTER_VALUE_LIMIT + 1],
+      );
+      const values = distinctResult.rows
+        .map((row: Record<string, unknown>) => String(row.value ?? "").trim())
+        .filter((value) => value.length > 0);
+      if (values.length === 0 || values.length > FILTER_VALUE_LIMIT) continue;
+      options.push({
+        key,
+        label: column.label,
+        values,
+      });
+    } catch (error) {
+      console.warn(`Failed to build filter options for ${spec.name}.${key}:`, error);
+    }
+  }
+  return options;
+}
+
 /**
  * @brief Lists browseable tables for a repo with row counts. Tables that fail
  *        to count (e.g. missing optional table) are reported with row_count=0
@@ -477,18 +638,81 @@ export async function fetchBrowseTablePage(
   spec: BrowseableTable,
   limit: number,
   offset: number,
+  rawFilters?: Record<string, string | string[] | undefined>,
 ): Promise<BrowseTablePage> {
   const safeLimit = Math.max(1, Math.min(500, Number.isFinite(limit) ? Math.floor(limit) : 100));
   const safeOffset = Math.max(0, Number.isFinite(offset) ? Math.floor(offset) : 0);
+  const parts = splitSelectSql(spec.selectSql);
+  const filters = normalizeFilters(rawFilters);
 
-  const countResult = await query(spec.countSql, [repo]);
+  if (!parts) {
+    const countResult = await query(spec.countSql, [repo]);
+    const total = Number(countResult.rows[0]?.c ?? 0);
+    const rowsResult = await query(spec.selectSql, [repo, safeLimit, safeOffset]);
+    return {
+      name: spec.name,
+      label: spec.label,
+      columns: spec.columns,
+      filter_options: [],
+      active_filters: {},
+      rows: rowsResult.rows as Record<string, unknown>[],
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  }
+
+  const filterOptions = await resolveFilterOptions(repo, spec, parts);
+  const allowedKeys = new Set(filterOptions.map((option) => option.key));
+  const filterClause = buildFilterClause(allowedKeys, filters, 1);
+  const hasActiveFilters = Object.keys(filterClause.active).length > 0;
+
+  if (!hasActiveFilters) {
+    const countResult = await query(spec.countSql, [repo]);
+    const total = Number(countResult.rows[0]?.c ?? 0);
+    const rowsResult = await query(spec.selectSql, [repo, safeLimit, safeOffset]);
+    return {
+      name: spec.name,
+      label: spec.label,
+      columns: spec.columns,
+      filter_options: filterOptions,
+      active_filters: {},
+      rows: rowsResult.rows as Record<string, unknown>[],
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  }
+
+  const countResult = await query(
+    `
+    SELECT COUNT(*)::int AS c
+    FROM (${parts.baseSql}) base
+    ${filterClause.sql}
+    `,
+    [repo, ...filterClause.params],
+  );
   const total = Number(countResult.rows[0]?.c ?? 0);
 
-  const rowsResult = await query(spec.selectSql, [repo, safeLimit, safeOffset]);
+  const pageLimitParam = 1 + filterClause.params.length + 1;
+  const pageOffsetParam = 1 + filterClause.params.length + 2;
+  const safeOuterOrderBy = buildSafeOuterOrderBy(spec);
+  const rowsResult = await query(
+    `
+    SELECT *
+    FROM (${parts.baseSql}) base
+    ${filterClause.sql}
+    ORDER BY ${safeOuterOrderBy}
+    LIMIT $${pageLimitParam} OFFSET $${pageOffsetParam}
+    `,
+    [repo, ...filterClause.params, safeLimit, safeOffset],
+  );
   return {
     name: spec.name,
     label: spec.label,
     columns: spec.columns,
+    filter_options: filterOptions,
+    active_filters: filterClause.active,
     rows: rowsResult.rows as Record<string, unknown>[],
     total,
     limit: safeLimit,

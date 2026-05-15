@@ -131,6 +131,7 @@ def main(
     console.print(f"  Clusters materialized ({granularity}): {cluster_count}")
 
     if synthesize_logical:
+        console.print("  [dim]Refreshing logical modules...[/]")
         synth_conn = get_db(cfg)
         try:
             synthesize_logical_modules(

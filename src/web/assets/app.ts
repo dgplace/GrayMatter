@@ -2,20 +2,11 @@
  * @file src/web/assets/app.ts
  * @brief Browser entrypoint for the CodeBrain web UI. Owns operational panel
  *        rendering (Repository Stats, Module Intents, Index Management, MCP
- *        Tool Calls) and the 3D WebGL graph renderer (3d-force-graph + Three.js,
- *        rotate/zoom/pan via OrbitControls). Bundled to
- *        dist/src/web/assets/app.js by scripts/build-ui.mjs.
+ *        Tool Calls) and the inline raw index-table browser workspace.
  */
-
-import ForceGraph3D from "3d-force-graph";
-import * as THREE from "three";
 
 interface RepoListItem { repo: string; total_files: number }
 interface RepoListResponse { repositories: RepoListItem[] }
-
-interface GraphNode { id: string; degree: number }
-interface GraphEdge { source: string; target: string; kind: string; weight: number }
-interface GraphResponse { nodes: GraphNode[]; edges: GraphEdge[] }
 
 interface StatsSummary { repo: string; total_files: number; total_lines: number; total_chunks: number; total_symbols: number }
 interface CountedRow { count: number; [key: string]: any }
@@ -28,10 +19,13 @@ interface RepositoryStats {
 
 interface BrowseColumn { key: string; label: string }
 interface BrowseTableInfo { name: string; label: string; description: string; row_count: number }
+interface BrowseTableFilterOption { key: string; label: string; values: string[] }
 interface BrowseTablePage {
   name: string;
   label: string;
   columns: BrowseColumn[];
+  filter_options: BrowseTableFilterOption[];
+  active_filters: Record<string, string[]>;
   rows: Record<string, unknown>[];
   total: number;
   limit: number;
@@ -50,35 +44,10 @@ interface ModuleIntent {
   summary?: string;
 }
 
-interface ClusterMember {
-  file_path?: string;
-}
-
-interface Cluster {
-  id: number;
-  cluster_key: string;
-  name: string;
-  summary: string;
-  modularity: number;
-  granularity: string;
-  size: number;
-}
-
-interface Cycle {
-  cycle_hash: string;
-  cycle_size: number;
-  member_file_ids: number[];
-  member_paths: string[];
-}
-
 interface ToolCallSnapshot {
   total_calls: number;
   tool_calls: { name: string; count: number }[];
 }
-
-type ForceLink = { source: string; target: string; kind: string; weight: number };
-type ForceNode = { id: string; degree: number };
-type ForceGraphInstance = ReturnType<typeof ForceGraph3D> extends (el: HTMLElement) => infer R ? R : never;
 
 const repoSelect = document.getElementById("repoSelect") as HTMLSelectElement;
 const statsBody = document.getElementById("statsBody") as HTMLElement;
@@ -86,190 +55,15 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const toolCallBody = document.getElementById("toolCallBody") as HTMLElement;
 const indexMgmtBody = document.getElementById("indexMgmtBody") as HTMLElement;
 const modulesBody = document.getElementById("modulesBody") as HTMLElement;
-const graphContainer = document.getElementById("graph") as HTMLElement;
-const legend = document.getElementById("legend") as HTMLElement;
-const repoLoadProgress = document.getElementById("repoLoadProgress") as HTMLElement | null;
-const repoLoadProgressBar = document.getElementById("repoLoadProgressBar") as HTMLElement | null;
-const repoLoadProgressText = document.getElementById("repoLoadProgressText") as HTMLElement | null;
+const indexBrowserTitle = document.getElementById("indexBrowserTitle") as HTMLElement;
+const indexBrowserTabs = document.getElementById("indexBrowserTabs") as HTMLElement;
+const indexBrowserPane = document.getElementById("indexBrowserPane") as HTMLElement;
 
 let toolCallPollId: number | null = null;
-let graphInstance: ForceGraphInstance | null = null;
-let lastGraphPayload: GraphResponse | null = null;
-const hiddenKinds = new Set<string>();
-const hiddenNodes = new Set<string>();
-const GRAPH_EDGE_LIMIT = 10000;
-const NODE_POINT_SIZE = 6;
-
-const tokens = {
-  edgeDefault: "#000000",
-  edgeKindMap: {
-    call: "#000000",
-    member_call: "#000000",
-    instantiation: "#000000",
-    type_reference: "#000000",
-    depends_on: "#000000",
-    imports: "#000000",
-    extends: "#000000",
-    implements: "#000000",
-    returns: "#000000",
-    field_type: "#000000",
-  } as Record<string, string>,
-  nodeAccent: "#00b08c",
-  nodeAccentHover: "#00d3a7",
-  nodeMuted: "#b0b6c4",
-  background: "#f6f8ff",
-  cycleEdge: "#000000",
-  folderPalette: [
-    "#00b08c", "#2bb8ff", "#b269ff", "#ff6fbf",
-    "#ffb547", "#ff5f3a", "#7a8aff", "#3acb6c",
-    "#f25c7d", "#ffa726", "#26c6da", "#ab47bc",
-    "#9ccc65", "#ec407a",
-  ],
-};
-
-const clusterColors = new Map<number, string>();
-const nodeToCluster = new Map<string, number>();
-const clusterInfo = new Map<number, Cluster>();
-const cycleEdges = new Set<string>();
-const folderColors = new Map<string, string>();
-const linkLineMaterial = new THREE.LineBasicMaterial({ linewidth: 2, color: 0x000000 });
-const nodePointGeometry = new THREE.BufferGeometry();
-nodePointGeometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
-const nodePointMaterialBase = new THREE.PointsMaterial({
-  size: NODE_POINT_SIZE,
-  sizeAttenuation: false,
-  transparent: true,
-  opacity: 0.92,
-  alphaTest: 0.01,
-  depthWrite: false,
-  blending: THREE.NormalBlending,
-  map: createGlowTexture(),
-});
-
-/**
- * @brief Build a compact radial texture so each point gets a subtle glow.
- * @returns Texture used by node point materials.
- */
-function createGlowTexture(): THREE.Texture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    const texture = new THREE.Texture(canvas);
-    texture.needsUpdate = true;
-    return texture;
-  }
-  const gradient = ctx.createRadialGradient(32, 32, 6, 32, 32, 32);
-  gradient.addColorStop(0, "rgba(255,255,255,1)");
-  gradient.addColorStop(0.5, "rgba(255,255,255,0.55)");
-  gradient.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 64, 64);
-  const texture = new THREE.Texture(canvas);
-  texture.needsUpdate = true;
-  return texture;
-}
-
-/** @brief Normalize file paths for consistent map keys (strips leading ./). */
-function normalizePath(p: string): string {
-  return p.replace(/^\.\//, "");
-}
-
-/**
- * @brief Grouping key for the folder a node belongs to. Uses the first two
- *        path segments of the directory portion so that all files under, e.g.,
- *        `a/b/c/...` and `a/b/d/...` collapse onto the same `a/b` group.
- *        Top-level files map to `<root>`.
- */
-function folderKey(id: string): string {
-  const slash = id.lastIndexOf("/");
-  if (slash <= 0) return "<root>";
-  return id.slice(0, slash).split("/").slice(0, 2).join("/");
-}
-
-/**
- * @brief Assign a deterministic colour to each folder present in the payload
- *        so unclustered nodes still get a stable, distinguishable colour.
- */
-function buildFolderColors(payload: GraphResponse): void {
-  folderColors.clear();
-  const folders = Array.from(new Set(payload.nodes.map((n) => folderKey(n.id)))).sort();
-  for (let i = 0; i < folders.length; i += 1) {
-    folderColors.set(folders[i], tokens.folderPalette[i % tokens.folderPalette.length]);
-  }
-}
-
-/**
- * @brief Resolve a 3d-force-graph link endpoint to its node id. After the
- *        force simulation has run, source/target are upgraded from string
- *        ids to live node references.
- */
-function endpointId(endpoint: any): string {
-  const id = typeof endpoint === "object" && endpoint !== null ? String(endpoint.id) : String(endpoint);
-  return normalizePath(id);
-}
-
-/**
- * @brief Visibility predicate for a single link, accounting for both the
- *        kind-toggle filter and the per-node hide-on-click filter.
- */
-function isLinkVisible(l: ForceLink): boolean {
-  if (hiddenKinds.has(l.kind)) return false;
-  if (hiddenNodes.has(endpointId(l.source)) || hiddenNodes.has(endpointId(l.target))) return false;
-  return true;
-}
-
-/**
- * @brief Color accessor: muted grey for hidden nodes, otherwise deterministic
- *        per-folder colour.
- *
- * Layout attraction is module-based; color intentionally stays folder-based so
- * structural pull and filesystem grouping can be inspected independently.
- */
-function colorForNode(n: ForceNode): string {
-  if (hiddenNodes.has(n.id)) return tokens.nodeMuted;
-  return folderColors.get(folderKey(n.id)) || tokens.nodeAccent;
-}
-
-/**
- * @brief Build a fixed-size glowing point for a graph node.
- * @param node Graph node.
- * @returns Three.js points object with per-node color.
- */
-function createNodePoint(node: ForceNode): THREE.Points {
-  const material = nodePointMaterialBase.clone();
-  material.color.set(colorForNode(node));
-  return new THREE.Points(nodePointGeometry, material);
-}
-
-/**
- * @brief Refresh existing node point colors after node-visibility toggles.
- *        3d-force-graph stores each object's pointer on `__threeObj`.
- */
-function refreshNodePointColors(): void {
-  if (!graphInstance) return;
-  const liveData = (graphInstance as any).graphData?.();
-  const nodes = liveData?.nodes as Array<any> | undefined;
-  if (!nodes) return;
-  for (const node of nodes) {
-    const object = node.__threeObj as THREE.Points | undefined;
-    const material = object?.material as THREE.PointsMaterial | THREE.PointsMaterial[] | undefined;
-    if (!material || Array.isArray(material)) continue;
-    material.color.set(colorForNode(node as ForceNode));
-  }
-}
-
-/** @brief Check if an edge is part of a dependency cycle. */
-function isCycleEdge(l: ForceLink): boolean {
-  return cycleEdges.has(endpointId(l.source) + "|" + endpointId(l.target));
-}
-
-/** @brief Edge color accessor: red for cycles, otherwise by kind. */
-function colorForEdge(l: ForceLink): string {
-  if (isCycleEdge(l)) return tokens.cycleEdge;
-  return colorForEdgeKind(l.kind);
-}
+let activeRepo = "";
+let activeIndexTable = "";
+const tableFiltersByTable = new Map<string, Record<string, string>>();
+const UI_BASE_PATH = "/ui";
 
 /** @brief Escape a value for safe HTML interpolation. */
 function esc(value: unknown): string {
@@ -297,24 +91,56 @@ function updateStatus(message: string): void {
 }
 
 /**
- * @brief Update the repo-load progress bar and message.
- * @param percent Completion percentage in [0, 100].
- * @param message Human-readable phase text.
+ * @brief Returns the repository encoded in the current `/ui/:repo` path.
+ * @param pathname Absolute browser path.
+ * @returns Decoded repository name, or empty when absent/invalid.
  */
-function setRepoLoadProgress(percent: number, message: string): void {
-  if (!repoLoadProgress || !repoLoadProgressBar || !repoLoadProgressText) return;
-  const bounded = Math.max(0, Math.min(100, Math.round(percent)));
-  repoLoadProgress.hidden = false;
-  repoLoadProgressBar.style.width = bounded + "%";
-  repoLoadProgressText.textContent = message;
+function getRequestedRepoFromPath(pathname: string): string {
+  const prefix = UI_BASE_PATH + "/";
+  if (!pathname.startsWith(prefix)) return "";
+  const encodedRepo = pathname.slice(prefix.length).split("/")[0];
+  if (!encodedRepo) return "";
+  try {
+    return decodeURIComponent(encodedRepo);
+  } catch {
+    return "";
+  }
 }
 
-/** @brief Hide the repo-load progress UI. */
-function hideRepoLoadProgress(): void {
-  if (!repoLoadProgress || !repoLoadProgressBar || !repoLoadProgressText) return;
-  repoLoadProgress.hidden = true;
-  repoLoadProgressBar.style.width = "0%";
-  repoLoadProgressText.textContent = "Loading repository...";
+/**
+ * @brief Build the UI path for a repository selection.
+ * @param repo Repository name.
+ * @returns URL path under `/ui`.
+ */
+function getUiPathForRepo(repo: string): string {
+  return repo ? UI_BASE_PATH + "/" + encodeURIComponent(repo) : UI_BASE_PATH;
+}
+
+/**
+ * @brief Synchronize browser URL with the current repository selection.
+ * @param repo Repository name.
+ * @param mode History update strategy.
+ */
+function syncUrlForRepo(repo: string, mode: "push" | "replace"): void {
+  const nextPath = getUiPathForRepo(repo);
+  if (window.location.pathname === nextPath) return;
+  if (mode === "push") {
+    window.history.pushState(null, "", nextPath);
+    return;
+  }
+  window.history.replaceState(null, "", nextPath);
+}
+
+/**
+ * @brief Populate the repository dropdown options.
+ * @param repos Repository list response payload.
+ */
+function setRepoOptions(repos: RepoListItem[]): void {
+  repoSelect.innerHTML = repos.length
+    ? repos.map((r) => (
+      '<option value="' + esc(r.repo) + '">' + esc(r.repo) + " (" + Number(r.total_files).toLocaleString() + " files)</option>"
+    )).join("")
+    : '<option value="">No repositories</option>';
 }
 
 /** @brief Render a name/count list inside a panel section. */
@@ -370,17 +196,13 @@ async function refreshToolCalls(): Promise<void> {
 }
 
 /**
- * @brief Render the Index Management panel: two action buttons (View / Delete)
- *        scoped to the currently selected repository.
+ * @brief Render the Index Management panel with destructive operations only.
+ * @param repo Repository name.
  */
 function renderIndexMgmt(repo: string): void {
   indexMgmtBody.innerHTML = [
-    '<button id="viewIndexBtn" type="button">View Index</button>',
     '<button class="btn-danger" id="deleteIndexBtn" type="button">Delete Index</button>',
   ].join("");
-
-  const viewBtn = document.getElementById("viewIndexBtn") as HTMLButtonElement;
-  viewBtn.addEventListener("click", () => { void openIndexModal(repo); });
 
   const deleteBtn = document.getElementById("deleteIndexBtn") as HTMLButtonElement;
   deleteBtn.addEventListener("click", async () => {
@@ -403,120 +225,6 @@ function renderIndexMgmt(repo: string): void {
   });
 }
 
-/** @brief Lazily create the index-browser modal DOM and return its references. */
-function ensureIndexModal(): {
-  overlay: HTMLElement; titleEl: HTMLElement; tabs: HTMLElement; pane: HTMLElement;
-} {
-  let overlay = document.getElementById("indexModal") as HTMLElement | null;
-  if (overlay) {
-    return {
-      overlay,
-      titleEl: document.getElementById("indexModalTitle") as HTMLElement,
-      tabs: document.getElementById("indexModalTabs") as HTMLElement,
-      pane: document.getElementById("indexModalPane") as HTMLElement,
-    };
-  }
-  overlay = document.createElement("div");
-  overlay.id = "indexModal";
-  overlay.className = "modal-overlay";
-  overlay.hidden = true;
-  overlay.innerHTML = [
-    '<div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="indexModalTitle">',
-    '  <header class="modal-header">',
-    '    <h2 id="indexModalTitle">Index</h2>',
-    '    <button class="modal-close" id="indexModalClose" type="button" aria-label="Close">&times;</button>',
-    '  </header>',
-    '  <nav class="modal-tabs" id="indexModalTabs"></nav>',
-    '  <div class="modal-pane" id="indexModalPane"><p class="warn">Loading...</p></div>',
-    '</div>',
-  ].join("");
-  document.body.appendChild(overlay);
-
-  const close = () => closeIndexModal();
-  (document.getElementById("indexModalClose") as HTMLButtonElement).addEventListener("click", close);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && overlay && !overlay.hidden) close();
-  });
-
-  return {
-    overlay,
-    titleEl: document.getElementById("indexModalTitle") as HTMLElement,
-    tabs: document.getElementById("indexModalTabs") as HTMLElement,
-    pane: document.getElementById("indexModalPane") as HTMLElement,
-  };
-}
-
-/** @brief Hide the index-browser modal. */
-function closeIndexModal(): void {
-  const overlay = document.getElementById("indexModal");
-  if (overlay) overlay.hidden = true;
-}
-
-/**
- * @brief Open the View Index modal for a repo: fetch the table list, render
- *        a tab per table, and show the first tab.
- */
-async function openIndexModal(repo: string): Promise<void> {
-  const refs = ensureIndexModal();
-  refs.titleEl.textContent = 'Index — ' + repo;
-  refs.tabs.innerHTML = "";
-  refs.pane.innerHTML = '<p class="warn">Loading tables...</p>';
-  refs.overlay.hidden = false;
-
-  try {
-    const data = await getJson<{ tables: BrowseTableInfo[] }>(
-      "/ui/api/repos/" + encodeURIComponent(repo) + "/tables",
-    );
-    const tables = data.tables || [];
-    if (!tables.length) {
-      refs.pane.innerHTML = '<p class="warn">No browseable tables for this repository.</p>';
-      return;
-    }
-    refs.tabs.innerHTML = tables
-      .map((t) => (
-        '<button class="modal-tab" type="button" data-table="' + esc(t.name) + '" title="' + esc(t.description) + '">'
-        + esc(t.label) + ' <span class="modal-tab-count">' + Number(t.row_count).toLocaleString() + '</span>'
-        + '</button>'
-      ))
-      .join("");
-    refs.tabs.querySelectorAll<HTMLButtonElement>("button.modal-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        refs.tabs.querySelectorAll(".modal-tab").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        void loadIndexTablePage(repo, btn.dataset.table || "", 0);
-      });
-    });
-    const first = refs.tabs.querySelector<HTMLButtonElement>("button.modal-tab");
-    if (first) {
-      first.classList.add("active");
-      void loadIndexTablePage(repo, first.dataset.table || "", 0);
-    }
-  } catch (e: any) {
-    refs.pane.innerHTML = '<p class="warn">Failed to load tables: ' + esc(e?.message || String(e)) + "</p>";
-  }
-}
-
-/**
- * @brief Fetch one page of a table and render it into the modal pane with
- *        Prev/Next pagination controls.
- */
-async function loadIndexTablePage(repo: string, table: string, offset: number): Promise<void> {
-  const refs = ensureIndexModal();
-  refs.pane.innerHTML = '<p class="warn">Loading ' + esc(table) + '...</p>';
-  const limit = 100;
-  try {
-    const url = "/ui/api/repos/" + encodeURIComponent(repo)
-      + "/tables/" + encodeURIComponent(table)
-      + "?limit=" + limit + "&offset=" + Math.max(0, offset);
-    const page = await getJson<BrowseTablePage>(url);
-    refs.pane.innerHTML = renderTablePageHtml(page);
-    wireTablePageControls(refs.pane, repo, page);
-  } catch (e: any) {
-    refs.pane.innerHTML = '<p class="warn">Failed to load ' + esc(table) + ': ' + esc(e?.message || String(e)) + "</p>";
-  }
-}
-
 /** @brief Format any cell value into a compact HTML-safe string. */
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return '<span class="cell-null">null</span>';
@@ -524,50 +232,212 @@ function formatCell(value: unknown): string {
   if (Array.isArray(value)) return esc("[" + value.map((v) => String(v)).join(", ") + "]");
   if (typeof value === "object") return esc(JSON.stringify(value));
   const str = String(value);
-  if (str.length > 240) return esc(str.slice(0, 240)) + '<span class="cell-trunc">…</span>';
+  if (str.length > 240) return esc(str.slice(0, 240)) + '<span class="cell-trunc">...</span>';
   return esc(str);
+}
+
+/**
+ * @brief Return persisted filters for a table key.
+ * @param table Table key.
+ * @returns Mutable key->value filter map for that table.
+ */
+function getTableFilters(table: string): Record<string, string> {
+  return tableFiltersByTable.get(table) || {};
+}
+
+/**
+ * @brief Persist active table filters from server-normalized payload.
+ * @param table Table key.
+ * @param activeFilters Active filters keyed by column.
+ */
+function setTableFiltersFromActive(table: string, activeFilters?: Record<string, string[]>): void {
+  const next: Record<string, string> = {};
+  for (const [key, values] of Object.entries(activeFilters || {})) {
+    if (!values || values.length === 0) continue;
+    next[key] = String(values[0]);
+  }
+  tableFiltersByTable.set(table, next);
+}
+
+/**
+ * @brief Build URL query suffix for a table's current filters.
+ * @param table Table key.
+ * @returns Serialized query-string segment, including leading `&` when needed.
+ */
+function buildTableFilterQuery(table: string): string {
+  const filters = getTableFilters(table);
+  const parts: string[] = [];
+  for (const key of Object.keys(filters).sort()) {
+    const value = String(filters[key] || "").trim();
+    if (!value) continue;
+    parts.push("filter_" + encodeURIComponent(key) + "=" + encodeURIComponent(value));
+  }
+  if (!parts.length) return "";
+  return "&" + parts.join("&");
+}
+
+/** @brief Render the categorical-filter controls for a table page. */
+function renderTableFiltersHtml(page: BrowseTablePage): string {
+  const options = page.filter_options || [];
+  if (!options.length) return "";
+  const active = getTableFilters(page.name);
+  const hasActiveFilters = Object.keys(active).some((key) => String(active[key] || "").trim().length > 0);
+  return [
+    '<div class="table-filters">',
+    ...options.map((option) => (
+      '<label class="table-filter" for="filter-' + esc(option.key) + '">'
+      + '<span>' + esc(option.label) + "</span>"
+      + '<select id="filter-' + esc(option.key) + '" data-filter-key="' + esc(option.key) + '">'
+      + '<option value="">All</option>'
+      + option.values.map((value) => (
+        '<option value="' + esc(value) + '"' + (active[option.key] === value ? " selected" : "") + ">"
+        + esc(value)
+        + "</option>"
+      )).join("")
+      + "</select>"
+      + "</label>"
+    )),
+    '<button type="button" class="table-filter-clear" data-action="clear-filters"' + (hasActiveFilters ? "" : " disabled") + '>Clear</button>',
+    "</div>",
+  ].join("");
 }
 
 /** @brief Build the HTML for a single table page (header bar + table + pager). */
 function renderTablePageHtml(page: BrowseTablePage): string {
   const start = page.total === 0 ? 0 : page.offset + 1;
   const end = Math.min(page.total, page.offset + page.rows.length);
-  const headerCells = page.columns.map((c) => '<th>' + esc(c.label) + '</th>').join("");
+  const headerCells = page.columns.map((c) => '<th>' + esc(c.label) + "</th>").join("");
   const bodyRows = page.rows.length
     ? page.rows.map((row) => (
-        '<tr>' + page.columns.map((c) => '<td>' + formatCell(row[c.key]) + '</td>').join("") + '</tr>'
-      )).join("")
+      "<tr>" + page.columns.map((c) => "<td>" + formatCell(row[c.key]) + "</td>").join("") + "</tr>"
+    )).join("")
     : '<tr><td class="cell-empty" colspan="' + page.columns.length + '">No rows.</td></tr>';
-  const prevDisabled = page.offset <= 0 ? ' disabled' : '';
-  const nextDisabled = end >= page.total ? ' disabled' : '';
+  const prevDisabled = page.offset <= 0 ? " disabled" : "";
+  const nextDisabled = end >= page.total ? " disabled" : "";
   return [
+    renderTableFiltersHtml(page),
     '<div class="modal-pager">',
     '  <span class="modal-pager-info">',
-    esc(page.label) + ' &middot; ' + start.toLocaleString() + '–' + end.toLocaleString()
-      + ' of ' + Number(page.total).toLocaleString(),
-    '  </span>',
+    esc(page.label) + " &middot; " + start.toLocaleString() + "-" + end.toLocaleString()
+    + " of " + Number(page.total).toLocaleString(),
+    "  </span>",
     '  <span class="modal-pager-buttons">',
-    '    <button type="button" data-page="prev"' + prevDisabled + '>Prev</button>',
-    '    <button type="button" data-page="next"' + nextDisabled + '>Next</button>',
-    '  </span>',
-    '</div>',
+    '    <button type="button" data-page="prev"' + prevDisabled + ">Prev</button>",
+    '    <button type="button" data-page="next"' + nextDisabled + ">Next</button>",
+    "  </span>",
+    "</div>",
     '<div class="modal-table-wrap">',
-    '  <table class="modal-table"><thead><tr>' + headerCells + '</tr></thead>',
-    '  <tbody>' + bodyRows + '</tbody></table>',
-    '</div>',
+    '  <table class="modal-table"><thead><tr>' + headerCells + "</tr></thead>",
+    "  <tbody>" + bodyRows + "</tbody></table>",
+    "</div>",
   ].join("");
 }
 
-/** @brief Wire up Prev/Next buttons to fetch adjacent pages of the same table. */
-function wireTablePageControls(pane: HTMLElement, repo: string, page: BrowseTablePage): void {
-  const prev = pane.querySelector<HTMLButtonElement>('button[data-page="prev"]');
-  const next = pane.querySelector<HTMLButtonElement>('button[data-page="next"]');
+/**
+ * @brief Fetch one page of a table and render it in the inline browser pane.
+ * @param repo Repository name.
+ * @param table Table key.
+ * @param offset Page offset.
+ */
+async function loadIndexTablePage(repo: string, table: string, offset: number): Promise<void> {
+  if (!table) return;
+  activeIndexTable = table;
+  indexBrowserPane.innerHTML = '<p class="warn">Loading ' + esc(table) + "...</p>";
+  const limit = 100;
+  try {
+    const filterQuery = buildTableFilterQuery(table);
+    const url = "/ui/api/repos/" + encodeURIComponent(repo)
+      + "/tables/" + encodeURIComponent(table)
+      + "?limit=" + limit + "&offset=" + Math.max(0, offset) + filterQuery;
+    const page = await getJson<BrowseTablePage>(url);
+    if (repo !== activeRepo) return;
+    if (table !== activeIndexTable) return;
+    setTableFiltersFromActive(table, page.active_filters || {});
+    indexBrowserPane.innerHTML = renderTablePageHtml(page);
+    wireTablePageControls(repo, page);
+  } catch (e: any) {
+    indexBrowserPane.innerHTML = '<p class="warn">Failed to load ' + esc(table) + ": " + esc(e?.message || String(e)) + "</p>";
+  }
+}
+
+/**
+ * @brief Wire up Prev/Next buttons to fetch adjacent pages of the same table.
+ * @param repo Repository name.
+ * @param page Current table page.
+ */
+function wireTablePageControls(repo: string, page: BrowseTablePage): void {
+  const prev = indexBrowserPane.querySelector<HTMLButtonElement>('button[data-page="prev"]');
+  const next = indexBrowserPane.querySelector<HTMLButtonElement>('button[data-page="next"]');
+  const clearFilters = indexBrowserPane.querySelector<HTMLButtonElement>('button[data-action="clear-filters"]');
+  const filterSelects = indexBrowserPane.querySelectorAll<HTMLSelectElement>("select[data-filter-key]");
+
   if (prev) prev.addEventListener("click", () => {
     void loadIndexTablePage(repo, page.name, Math.max(0, page.offset - page.limit));
   });
   if (next) next.addEventListener("click", () => {
     void loadIndexTablePage(repo, page.name, page.offset + page.limit);
   });
+  filterSelects.forEach((select) => {
+    select.addEventListener("change", () => {
+      const key = String(select.dataset.filterKey || "").trim();
+      if (!key) return;
+      const value = String(select.value || "").trim();
+      const filters = { ...getTableFilters(page.name) };
+      if (value) {
+        filters[key] = value;
+      } else {
+        delete filters[key];
+      }
+      tableFiltersByTable.set(page.name, filters);
+      void loadIndexTablePage(repo, page.name, 0);
+    });
+  });
+  if (clearFilters) clearFilters.addEventListener("click", () => {
+    tableFiltersByTable.set(page.name, {});
+    void loadIndexTablePage(repo, page.name, 0);
+  });
+}
+
+/**
+ * @brief Load table metadata and initialize the inline raw index browser tabs.
+ * @param repo Repository name.
+ */
+async function loadIndexBrowser(repo: string): Promise<void> {
+  indexBrowserTitle.textContent = "Raw Index - " + repo;
+  indexBrowserTabs.innerHTML = "";
+  indexBrowserPane.innerHTML = '<p class="warn">Loading tables...</p>';
+  try {
+    const data = await getJson<{ tables: BrowseTableInfo[] }>(
+      "/ui/api/repos/" + encodeURIComponent(repo) + "/tables",
+    );
+    if (repo !== activeRepo) return;
+    const tables = data.tables || [];
+    if (!tables.length) {
+      indexBrowserPane.innerHTML = '<p class="warn">No browseable tables for this repository.</p>';
+      return;
+    }
+    indexBrowserTabs.innerHTML = tables
+      .map((t) => (
+        '<button class="modal-tab" type="button" data-table="' + esc(t.name) + '" title="' + esc(t.description) + '">'
+        + esc(t.label) + ' <span class="modal-tab-count">' + Number(t.row_count).toLocaleString() + "</span>"
+        + "</button>"
+      ))
+      .join("");
+    indexBrowserTabs.querySelectorAll<HTMLButtonElement>("button.modal-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        indexBrowserTabs.querySelectorAll(".modal-tab").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        void loadIndexTablePage(repo, btn.dataset.table || "", 0);
+      });
+    });
+    const first = indexBrowserTabs.querySelector<HTMLButtonElement>("button.modal-tab");
+    if (first) {
+      first.classList.add("active");
+      await loadIndexTablePage(repo, first.dataset.table || "", 0);
+    }
+  } catch (e: any) {
+    indexBrowserPane.innerHTML = '<p class="warn">Failed to load tables: ' + esc(e?.message || String(e)) + "</p>";
+  }
 }
 
 /** @brief Render the Module Intents panel from a list of modules. */
@@ -586,456 +456,34 @@ function renderModules(modules: ModuleIntent[]): void {
   )).join("");
 }
 
-/** @brief Fetch and render module intents for a repo. */
-async function loadModules(repo: string): Promise<void> {
-  try {
-    const data = await getJson<{ modules: ModuleIntent[] }>("/ui/api/repos/" + encodeURIComponent(repo) + "/modules");
-    renderModules(data.modules || []);
-  } catch (e: any) {
-    modulesBody.innerHTML = '<p class="warn">Failed to load modules: ' + esc(e?.message || String(e)) + "</p>";
-  }
-}
-
-/** @brief Pick the neon color for an edge given its kind. */
-function colorForEdgeKind(kind: string): string {
-  return tokens.edgeKindMap[kind] || tokens.edgeDefault;
-}
-
-/** @brief Display label for a node id (basename of path-like ids). */
-function shortLabel(id: string): string {
-  const slash = id.lastIndexOf("/");
-  return slash >= 0 ? id.slice(slash + 1) : id;
-}
-
-type ModuleCenter = { x: number; y: number; z: number };
-type ForceNodeMutable = ForceNode & { x?: number; y?: number; z?: number; vx?: number; vy?: number; vz?: number };
-type LogicalModuleEntry = { id: number; name: string; clusterId: number | null };
-
 /**
- * @brief Assign unmatched nodes to logical modules using edge connectivity only.
- *
- * This avoids path/directory-driven pull: each unmatched file is assigned to
- * the module it is most strongly connected to by graph edge weights.
- *
- * @param payload Graph payload used to compute adjacency.
- * @param logicalModules Available logical module entries.
+ * @brief Load all data for a repo: stats, modules, and raw table browser.
+ * @param repo Repository name.
+ * @param urlMode Whether to sync browser history with the selection.
  */
-function assignUnmappedNodesByConnectivity(payload: GraphResponse, logicalModules: LogicalModuleEntry[]): void {
-  const adjacency = new Map<string, Array<{ other: string; weight: number }>>();
-  for (const edge of payload.edges) {
-    const source = normalizePath(edge.source);
-    const target = normalizePath(edge.target);
-    const weight = Number(edge.weight || 1);
-    if (!adjacency.has(source)) adjacency.set(source, []);
-    if (!adjacency.has(target)) adjacency.set(target, []);
-    adjacency.get(source)!.push({ other: target, weight });
-    adjacency.get(target)!.push({ other: source, weight });
+async function loadRepo(repo: string, urlMode: "none" | "push" | "replace" = "none"): Promise<void> {
+  activeRepo = repo;
+  activeIndexTable = "";
+  tableFiltersByTable.clear();
+  if (urlMode !== "none") {
+    syncUrlForRepo(repo, urlMode);
   }
+  updateStatus("Loading repository data for " + repo + "...");
+  indexBrowserTitle.textContent = "Raw Index - " + repo;
+  indexBrowserTabs.innerHTML = "";
+  indexBrowserPane.innerHTML = '<p class="warn">Loading repository tables...</p>';
+  renderIndexMgmt(repo);
 
-  let unresolved = payload.nodes.map((n) => normalizePath(n.id)).filter((id) => !nodeToCluster.has(id));
-  let progress = true;
-  while (unresolved.length > 0 && progress) {
-    progress = false;
-    const nextUnresolved: string[] = [];
-    for (const nodePath of unresolved) {
-      const scores = new Map<number, number>();
-      for (const neighbor of adjacency.get(nodePath) || []) {
-        const moduleId = nodeToCluster.get(neighbor.other);
-        if (moduleId === undefined) continue;
-        scores.set(moduleId, (scores.get(moduleId) || 0) + neighbor.weight);
-      }
-      if (scores.size === 0) {
-        nextUnresolved.push(nodePath);
-        continue;
-      }
-      const best = Array.from(scores.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
-      nodeToCluster.set(nodePath, best[0]);
-      progress = true;
-    }
-    unresolved = nextUnresolved;
-  }
+  const statsPromise = getJson<RepositoryStats>("/ui/api/repos/" + encodeURIComponent(repo) + "/stats");
+  const modulesPromise = getJson<{ modules: ModuleIntent[] }>("/ui/api/repos/" + encodeURIComponent(repo) + "/modules")
+    .catch(() => ({ modules: [] as ModuleIntent[] }));
 
-  const fallbackId = logicalModules.length ? logicalModules[0].id : null;
-  if (fallbackId === null) return;
-  for (const nodePath of unresolved) nodeToCluster.set(nodePath, fallbackId);
-}
-
-/**
- * @brief Build deterministic centers in 3D space for logical-module groups.
- * @returns Map of cluster id to center coordinate.
- */
-function buildLogicalModuleCenters(): Map<number, ModuleCenter> {
-  const usedIds = Array.from(new Set(Array.from(nodeToCluster.values()))).sort((a, b) => a - b);
-  const centers = new Map<number, ModuleCenter>();
-  if (usedIds.length === 0) return centers;
-  const radius = Math.max(60, Math.sqrt(usedIds.length) * 35);
-  for (let i = 0; i < usedIds.length; i += 1) {
-    const angle = (2 * Math.PI * i) / usedIds.length;
-    centers.set(usedIds[i], {
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-      z: ((i % 5) - 2) * 12,
-    });
-  }
-  return centers;
-}
-
-/**
- * @brief Force that pulls file nodes toward their logical-module center.
- * @param centers Precomputed center coordinate per logical module.
- * @returns D3-force compatible function with initialize hook.
- */
-function createLogicalModuleForce(centers: Map<number, ModuleCenter>): any {
-  let nodes: ForceNodeMutable[] = [];
-  const force = ((alpha: number) => {
-    const k = 0.22 * alpha;
-    for (const node of nodes) {
-      const cid = nodeToCluster.get(normalizePath(node.id));
-      if (cid === undefined) continue;
-      const center = centers.get(cid);
-      if (!center) continue;
-      node.vx = (node.vx || 0) + (center.x - (node.x || 0)) * k;
-      node.vy = (node.vy || 0) + (center.y - (node.y || 0)) * k;
-      node.vz = (node.vz || 0) + (center.z - (node.z || 0)) * k;
-    }
-  }) as any;
-  force.initialize = (initializedNodes: ForceNodeMutable[]) => {
-    nodes = initializedNodes;
-  };
-  return force;
-}
-
-/**
- * @brief Render a color-swatch legend that maps each edge kind to its arrow
- *        colour, plus node/edge counts and a rotate hint.
- */
-function renderLegend(payload: GraphResponse): void {
-  const counts = new Map<string, number>();
-  for (const e of payload.edges) counts.set(e.kind, (counts.get(e.kind) || 0) + 1);
-
-  const visibleEdgeCount = payload.edges.filter((e) => (
-    !hiddenKinds.has(e.kind)
-    && !hiddenNodes.has(e.source)
-    && !hiddenNodes.has(e.target)
-  )).length;
-  const visibleNodeCount = payload.nodes.length - hiddenNodes.size;
-
-  const swatches = Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([kind, n]) => {
-      const color = colorForEdgeKind(kind);
-      const hidden = hiddenKinds.has(kind);
-      const cls = "legend-item" + (hidden ? " legend-item-hidden" : "");
-      const title = hidden ? "Show " + kind + " edges" : "Hide " + kind + " edges";
-      return '<button type="button" class="' + cls + '" data-kind="' + esc(kind) + '" title="' + esc(title) + '" aria-pressed="' + (hidden ? "false" : "true") + '">'
-        + '<span class="legend-arrow" style="background:' + color + ';color:' + color + ';box-shadow:0 0 6px ' + color + '99;"></span>'
-        + '<span class="legend-label">' + esc(kind) + "</span>"
-        + '<span class="legend-count">' + n + "</span>"
-        + "</button>";
-    }).join("");
-
-  const clusterCounts = new Map<number, number>();
-  for (const n of payload.nodes) {
-    const cid = nodeToCluster.get(normalizePath(n.id));
-    if (cid !== undefined) {
-      clusterCounts.set(cid, (clusterCounts.get(cid) || 0) + 1);
-    }
-  }
-  const clusterSwatches = Array.from(clusterCounts.entries())
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .map(([cid, n]) => {
-      const color = clusterColors.get(cid) || tokens.nodeAccent;
-      const cinfo = clusterInfo.get(cid);
-      const name = cinfo ? cinfo.name : "Cluster " + cid;
-      return '<span class="legend-item legend-item-static" title="' + esc(name) + '">'
-        + '<span class="legend-dot" style="background:' + color + ';box-shadow:0 0 6px ' + color + '99;"></span>'
-        + '<span class="legend-label">' + esc(name) + "</span>"
-      + '<span class="legend-count">' + n + "</span>"
-      + "</span>";
-    }).join("");
-  let showModuleSwatches = true;
-  if (clusterCounts.size === 1) {
-    const [onlyClusterId, onlyCount] = Array.from(clusterCounts.entries())[0];
-    const onlyInfo = clusterInfo.get(onlyClusterId);
-    if (
-      onlyCount === payload.nodes.length
-      && (onlyInfo?.cluster_key === "logical:fallback" || onlyInfo?.name === "logical/repo")
-    ) {
-      showModuleSwatches = false;
-    }
-  }
-
-  let cycleSwatch = "";
-  if (cycleEdges.size > 0) {
-    cycleSwatch = '<span class="legend-item legend-item-static" title="Dependency Cycle">'
-      + '<span class="legend-arrow" style="background:' + tokens.cycleEdge + ';color:' + tokens.cycleEdge + ';box-shadow:0 0 8px ' + tokens.cycleEdge + ';"></span>'
-      + '<span class="legend-label">Cycle</span>'
-      + '<span class="legend-count">' + cycleEdges.size + "</span>"
-      + "</span>";
-  }
-
-  legend.innerHTML = [
-    '<span class="legend-section legend-counts">',
-    '<span class="pill">Nodes ' + visibleNodeCount + " / " + payload.nodes.length + "</span>",
-    '<span class="pill">Edges ' + visibleEdgeCount + " / " + payload.edges.length + "</span>",
-    "</span>",
-    '<span class="legend-section legend-folders">' + (showModuleSwatches ? clusterSwatches : "") + cycleSwatch + "</span>",
-    '<span class="legend-section">' + swatches + "</span>",
-    '<span class="legend-section legend-hint">Node colour = folder. Pull/grouping = logical module. Click a kind to toggle its edges; click a node to mute it. Drag to rotate, scroll to zoom.</span>',
-  ].join("");
-}
-
-/**
- * @brief Toggle visibility for an edge kind and refresh the graph + legend.
- *        Re-renders the legend to update the dimmed state and visible-edge
- *        count, and nudges 3d-force-graph to re-evaluate `linkVisibility`.
- */
-function toggleKind(kind: string): void {
-  if (hiddenKinds.has(kind)) hiddenKinds.delete(kind);
-  else hiddenKinds.add(kind);
-  if (lastGraphPayload) renderLegend(lastGraphPayload);
-  if (graphInstance) {
-    graphInstance.linkVisibility(isLinkVisible);
-    graphInstance.refresh();
-  }
-}
-
-/**
- * @brief Toggle visibility of a single node and all its incident edges.
- *        Hidden nodes render in a muted grey; their links are hidden via the
- *        shared `isLinkVisible` predicate.
- */
-function toggleNode(nodeId: string): void {
-  if (hiddenNodes.has(nodeId)) hiddenNodes.delete(nodeId);
-  else hiddenNodes.add(nodeId);
-  if (lastGraphPayload) renderLegend(lastGraphPayload);
-  if (graphInstance) {
-    refreshNodePointColors();
-    graphInstance.linkVisibility(isLinkVisible);
-    graphInstance.refresh();
-  }
-}
-
-/**
- * @brief Hide every edge kind present in a graph payload so users can opt-in
- *        to the kinds they want to inspect.
- */
-function hideAllEdgeKinds(payload: GraphResponse): void {
-  hiddenKinds.clear();
-  for (const edge of payload.edges) hiddenKinds.add(edge.kind);
-}
-
-legend.addEventListener("click", (ev) => {
-  const target = ev.target as HTMLElement | null;
-  const item = target?.closest(".legend-item") as HTMLElement | null;
-  if (!item) return;
-  const kind = item.getAttribute("data-kind");
-  if (kind) toggleKind(kind);
-});
-
-/** @brief Convert API edges to 3d-force-graph link objects. */
-function toLinks(payload: GraphResponse): ForceLink[] {
-  const ids = new Set(payload.nodes.map((n) => n.id));
-  return payload.edges
-    .filter((e) => ids.has(e.source) && ids.has(e.target))
-    .map((e) => ({ source: e.source, target: e.target, kind: e.kind, weight: e.weight }));
-}
-
-/** @brief Convert API nodes to 3d-force-graph node objects. */
-function toNodes(payload: GraphResponse): ForceNode[] {
-  return payload.nodes.map((n) => ({ id: n.id, degree: n.degree }));
-}
-
-/**
- * @brief Build (or refresh) the 3D force-directed graph with the given payload.
- *        Uses the existing instance if one is mounted to avoid recreating the
- *        WebGL context.
- */
-function renderGraph(payload: GraphResponse): void {
-  buildFolderColors(payload);
-  const data = { nodes: toNodes(payload), links: toLinks(payload) };
-
-  if (!graphInstance) {
-    graphInstance = ForceGraph3D()(graphContainer)
-      .backgroundColor(tokens.background)
-      .showNavInfo(false)
-      .linkOpacity(0.7)
-      .linkDirectionalArrowLength(0)
-      .linkCurvature(0)
-      .nodeThreeObject((n: ForceNode) => createNodePoint(n))
-      .nodeThreeObjectExtend(false)
-      .nodeLabel((n: ForceNode) => `<span style="background:#fff;color:#0d1320;padding:2px 6px;border-radius:6px;border:1px solid #dbe1f1;font:600 11px Inter,sans-serif;">${esc(shortLabel(n.id))}</span>`)
-      .linkColor(colorForEdge)
-      .linkMaterial(linkLineMaterial)
-      .linkDirectionalArrowColor(colorForEdge)
-      .linkWidth(0)
-      .linkVisibility(isLinkVisible)
-      .onNodeClick((n: ForceNode) => toggleNode(n.id));
-  }
-
-  const moduleCenters = buildLogicalModuleCenters();
-  (graphInstance as any).d3Force(
-    "logicalModuleCluster",
-    moduleCenters.size ? createLogicalModuleForce(moduleCenters) : null,
-  );
-  graphInstance.graphData(data);
-  // Resize once on (re)mount so the renderer matches the container after
-  // the layout has settled.
-  requestAnimationFrame(() => {
-    if (graphInstance) {
-      graphInstance.width(graphContainer.clientWidth);
-      graphInstance.height(graphContainer.clientHeight);
-    }
-  });
-}
-
-/** @brief Load all data for a repo: stats, graph, modules. */
-async function loadRepo(repo: string): Promise<void> {
-  updateStatus("Loading stats and graph for " + repo + "...");
-  setRepoLoadProgress(2, "Starting repository load...");
-  try {
-    renderIndexMgmt(repo);
-    const encodedRepo = encodeURIComponent(repo);
-
-    let completedBaseFetches = 0;
-    const totalBaseFetches = 4;
-    const markBaseFetch = (message: string) => {
-      completedBaseFetches += 1;
-      const percent = 5 + Math.round((completedBaseFetches / totalBaseFetches) * 45);
-      setRepoLoadProgress(percent, message);
-    };
-
-    const statsPromise = getJson<RepositoryStats>("/ui/api/repos/" + encodedRepo + "/stats")
-      .then((payload) => {
-        markBaseFetch("Loaded repository stats.");
-        return payload;
-      });
-    const graphPromise = getJson<GraphResponse>("/ui/api/repos/" + encodedRepo + "/graph?limit=" + GRAPH_EDGE_LIMIT)
-      .then((payload) => {
-        markBaseFetch("Loaded graph topology.");
-        return payload;
-      });
-    const logicalModulesPromise = getJson<{ modules: ModuleIntent[] }>("/ui/api/repos/" + encodedRepo + "/modules?kind=logical")
-      .then((payload) => {
-        markBaseFetch("Loaded logical modules.");
-        return payload;
-      })
-      .catch(() => {
-        markBaseFetch("Logical modules unavailable; using fallback.");
-        return { modules: [] as ModuleIntent[] };
-      });
-    const cyclesPromise = getJson<{ cycles: Cycle[] }>("/ui/api/repos/" + encodedRepo + "/cycles")
-      .then((payload) => {
-        markBaseFetch("Loaded dependency cycles.");
-        return payload;
-      })
-      .catch(() => {
-        markBaseFetch("Dependency cycles unavailable; continuing.");
-        return { cycles: [] as Cycle[] };
-      });
-
-    const [stats, graph, logicalModulesResp, cyclesResp] = await Promise.all([
-      statsPromise,
-      graphPromise,
-      logicalModulesPromise,
-      cyclesPromise,
-    ]);
-
-    setRepoLoadProgress(55, "Preparing logical-module assignments...");
-
-    const logicalModules: LogicalModuleEntry[] = (logicalModulesResp.modules || [])
-      .filter((m) => Boolean(m.module_path))
-      .map((m) => ({
-        name: m.module_name || m.module_path,
-        clusterId: Number.isFinite(Number(m.cluster_id)) ? Number(m.cluster_id) : null,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((m, index) => ({ ...m, id: index + 1 }));
-
-    if (!logicalModules.length) {
-      logicalModules.push({ id: 1, name: "logical/repo", clusterId: null });
-    }
-
-    clusterInfo.clear();
-    clusterColors.clear();
-    nodeToCluster.clear();
-    cycleEdges.clear();
-
-    for (let i = 0; i < logicalModules.length; i += 1) {
-      const moduleEntry = logicalModules[i];
-      clusterInfo.set(moduleEntry.id, {
-        id: moduleEntry.id,
-        cluster_key: moduleEntry.clusterId !== null ? "cluster:" + moduleEntry.clusterId : "logical:fallback",
-        name: moduleEntry.name,
-        summary: "",
-        modularity: 0,
-        granularity: "logical",
-        size: 0,
-      });
-      clusterColors.set(moduleEntry.id, tokens.folderPalette[i % tokens.folderPalette.length]);
-    }
-
-    const clusteredModules = logicalModules.filter((m) => m.clusterId !== null);
-    let completedMemberFetches = 0;
-    const totalMemberFetches = clusteredModules.length;
-    const memberPromises = logicalModules.map((m) => {
-      if (m.clusterId === null) return Promise.resolve({ members: [] as ClusterMember[] });
-      return getJson<{ members: ClusterMember[] }>(
-        "/ui/api/repos/" + encodedRepo + "/clusters/" + m.clusterId + "/members?limit=10000",
-      )
-        .catch(() => ({ members: [] }))
-        .then((payload) => {
-          completedMemberFetches += 1;
-          const progressRatio = totalMemberFetches > 0 ? completedMemberFetches / totalMemberFetches : 1;
-          const percent = 60 + Math.round(progressRatio * 25);
-          setRepoLoadProgress(
-            percent,
-            "Loading module memberships (" + completedMemberFetches + "/" + totalMemberFetches + ")...",
-          );
-          return payload;
-        });
-    });
-    const memberResults = await Promise.all(memberPromises);
-
-    for (let i = 0; i < logicalModules.length; i += 1) {
-      const moduleEntry = logicalModules[i];
-      const members = memberResults[i].members || [];
-      for (const member of members) {
-        if (!member.file_path) continue;
-        const normalized = normalizePath(member.file_path);
-        nodeToCluster.set(normalized, moduleEntry.id);
-      }
-    }
-
-    setRepoLoadProgress(90, "Assigning unclustered files by graph connectivity...");
-    assignUnmappedNodesByConnectivity(graph, logicalModules);
-
-    setRepoLoadProgress(94, "Finalizing cycle highlights...");
-    const cycles = cyclesResp.cycles || [];
-    for (const cycle of cycles) {
-      const paths = new Set(cycle.member_paths || []);
-      // Note: This intersection highlights all edges whose endpoints both sit in the cycle's member paths.
-      // This heuristically includes non-cycle edges (like type references) between cycle members.
-      for (const e of graph.edges) {
-        if (paths.has(e.source) && paths.has(e.target)) {
-          cycleEdges.add(e.source + "|" + e.target);
-        }
-      }
-    }
-
-    setRepoLoadProgress(97, "Rendering graph and panels...");
-    renderStats(stats);
-    hideAllEdgeKinds(graph);
-    hiddenNodes.clear();
-    lastGraphPayload = graph;
-    renderGraph(graph);
-    renderLegend(graph);
-    updateStatus("Showing " + repo + ".");
-    void loadModules(repo);
-    setRepoLoadProgress(100, "Repository loaded.");
-  } finally {
-    setTimeout(() => hideRepoLoadProgress(), 250);
-  }
+  const [stats, modules] = await Promise.all([statsPromise, modulesPromise]);
+  if (repo !== activeRepo) return;
+  renderStats(stats);
+  renderModules(modules.modules || []);
+  await loadIndexBrowser(repo);
+  updateStatus("Showing " + repo + ".");
 }
 
 /** @brief Reload the repo dropdown after deletion. */
@@ -1043,14 +491,24 @@ async function reloadRepoList(): Promise<void> {
   try {
     const reposData = await getJson<RepoListResponse>("/ui/api/repos");
     const repos = reposData.repositories || [];
-    repoSelect.innerHTML = repos.length
-      ? repos.map((r) => '<option value="' + esc(r.repo) + '">' + esc(r.repo) + " (" + Number(r.total_files).toLocaleString() + " files)</option>").join("")
-      : '<option value="">No repositories</option>';
+    setRepoOptions(repos);
     if (repos.length) {
-      await loadRepo(repoSelect.value);
+      const requestedRepo = getRequestedRepoFromPath(window.location.pathname);
+      const fallbackRepo = activeRepo || repos[0].repo;
+      const targetRepo = repos.some((r) => r.repo === requestedRepo)
+        ? requestedRepo
+        : (repos.some((r) => r.repo === fallbackRepo) ? fallbackRepo : repos[0].repo);
+      repoSelect.value = targetRepo;
+      await loadRepo(targetRepo, "replace");
     } else {
+      activeRepo = "";
+      syncUrlForRepo("", "replace");
       statsBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
+      modulesBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
       indexMgmtBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
+      indexBrowserTitle.textContent = "Raw Index";
+      indexBrowserTabs.innerHTML = "";
+      indexBrowserPane.innerHTML = '<p class="warn">No indexed repositories.</p>';
     }
   } catch (e: any) {
     updateStatus("Reload failed: " + (e?.message || String(e)));
@@ -1067,13 +525,20 @@ async function boot(): Promise<void> {
     const repos = data.repositories || [];
     if (!repos.length) {
       updateStatus("No indexed repositories found. Run ingestion first.");
-      repoSelect.innerHTML = '<option value="">No repositories</option>';
+      setRepoOptions([]);
+      syncUrlForRepo("", "replace");
+      indexBrowserTitle.textContent = "Raw Index";
+      indexBrowserTabs.innerHTML = "";
+      indexBrowserPane.innerHTML = '<p class="warn">No indexed repositories.</p>';
       return;
     }
-    repoSelect.innerHTML = repos.map((r) => (
-      '<option value="' + esc(r.repo) + '">' + esc(r.repo) + " (" + Number(r.total_files).toLocaleString() + " files)</option>"
-    )).join("");
-    await loadRepo(repoSelect.value);
+    setRepoOptions(repos);
+    const requestedRepo = getRequestedRepoFromPath(window.location.pathname);
+    const selectedRepo = repos.some((r) => r.repo === requestedRepo)
+      ? requestedRepo
+      : repos[0].repo;
+    repoSelect.value = selectedRepo;
+    await loadRepo(selectedRepo, "replace");
   } catch (error: any) {
     updateStatus("Failed to load repositories: " + (error?.message || String(error)));
   }
@@ -1083,20 +548,24 @@ window.addEventListener("beforeunload", () => {
   if (toolCallPollId !== null) window.clearInterval(toolCallPollId);
 });
 
-window.addEventListener("resize", () => {
-  if (graphInstance) {
-    graphInstance.width(graphContainer.clientWidth);
-    graphInstance.height(graphContainer.clientHeight);
-  }
-});
-
 repoSelect.addEventListener("change", async () => {
   if (!repoSelect.value) return;
   try {
-    await loadRepo(repoSelect.value);
+    await loadRepo(repoSelect.value, "push");
   } catch (error: any) {
     updateStatus("Failed to load repo data: " + (error?.message || String(error)));
   }
+});
+
+window.addEventListener("popstate", () => {
+  if (!repoSelect.options.length) return;
+  const requestedRepo = getRequestedRepoFromPath(window.location.pathname);
+  const selectedRepo = requestedRepo && Array.from(repoSelect.options).some((option) => option.value === requestedRepo)
+    ? requestedRepo
+    : repoSelect.value;
+  if (!selectedRepo || selectedRepo === activeRepo) return;
+  repoSelect.value = selectedRepo;
+  void loadRepo(selectedRepo);
 });
 
 void boot();

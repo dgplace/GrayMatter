@@ -47,7 +47,7 @@ Core modules:
 - `src/mcp/*` (tool/resource/logging/search formatting/graph algorithms)
 - `src/repositories/store.ts` (repo-scoped read model queries)
 - `src/web/routes.ts` + `src/web/ui.ts` (HTTP route registration and HTML shell for `/ui`)
-- `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and the 3D WebGL graph renderer based on `3d-force-graph` + Three.js with directional arrows and rotate/zoom/pan; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild (minified) and served from `/ui/assets/*`)
+- `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and inline raw index-table browser + panel logic; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild (minified) and served from `/ui/assets/*`)
 
 Responsibilities:
 - expose MCP resources and tools
@@ -61,7 +61,7 @@ Responsibilities:
 - provide node-level prose context via `describe_node(kind,id)` over linked `doc_links`
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
 - provide refactoring analysis: coupling metrics, module interface extraction, cycle detection, and modularization seam planning
-- host `/ui` for semantic graph browsing and per-repo stats
+- host `/ui` for raw index-table browsing and per-repo stats
 
 Design pattern:
 - transport layer (`src/server.ts`) delegates to tool and route modules
@@ -131,11 +131,11 @@ Design pattern:
 
 ### UI flow
 
-1. Browser opens `/ui` and loads `/ui/assets/styles.css` (design tokens) plus `/ui/assets/app.js` (3D WebGL renderer + panel logic, bundled by esbuild).
+1. Browser opens `/ui` and loads `/ui/assets/styles.css` (design tokens) plus `/ui/assets/app.js` (raw table browser + panel logic, bundled by esbuild).
 2. UI fetches `/ui/api/repos` to populate the repo selector.
 3. UI polls `/ui/api/tool-calls` for live MCP tool invocation counters.
-4. UI fetches `/ui/api/repos/:repo/stats`, `/ui/api/repos/:repo/graph`, `/ui/api/repos/:repo/modules`, and `/ui/api/repos/:repo/size`.
-5. Client feeds the graph payload to `3d-force-graph` (Three.js) and renders nodes + directional arrow links coloured by `reference_kind`/`dependency_kind`; rotate, zoom, pan, and a floating colour-swatch legend are wired client-side.
+4. UI fetches `/ui/api/repos/:repo/stats`, `/ui/api/repos/:repo/modules`, `/ui/api/repos/:repo/tables`, and `/ui/api/repos/:repo/tables/:table`.
+5. Client renders tabbed table metadata and paginated raw table rows inline in the workspace.
 
 ## Core Design Patterns
 
@@ -172,11 +172,11 @@ narratives without re-ingesting. Two module kinds are produced:
 receives file summaries and chunk-level `intent_detail` to produce a narrative intent
 describing what the directory accomplishes in the application.
 
-**Logical modules** (`kind='logical'`): cross-directory communities sourced from the
+**Logical modules** (`kind='logical'`): coupling communities sourced from the
 `clusters` / `cluster_members` rows produced during ingestion (see *Cluster
 materialization* in this document). Synthesis does not run a second clustering pass — it
-filters existing symbol-granularity clusters down to those that span ≥2 directories and
-cover at least `--min-files` distinct files, then asks the LLM to author a narrative
+filters existing symbol-granularity clusters down to those that cover at least
+`--min-files` distinct files, then asks the LLM to author a narrative
 `module_name`, `summary`, and `dominant_intent` for each survivor. When a repository has
 no symbol clusters, file-granularity clusters are used instead. Each `module_intents` row
 records its source `cluster_id` so the two surfaces can be joined.

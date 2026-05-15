@@ -3,7 +3,7 @@
 CodeBrain is a codebase indexing and MCP query system:
 - a Python ingestion pipeline indexes repositories into PostgreSQL + pgvector
 - a TypeScript MCP server exposes repo-scoped semantic search, symbol lookup, references, and dependency tracing
-- an embedded HTTP UI lets users browse per-repo stats and semantic graph edges
+- an embedded HTTP UI lets users browse per-repo stats and raw index tables
 
 ## Prerequisites
 
@@ -144,7 +144,7 @@ Options for the standalone command:
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--mode` | `all` | `directory`, `logical`, or `all` |
-| `--min-files` | `3` | Minimum distinct files for a module to be created |
+| `--min-files` | `0` | Minimum distinct files for a module to be created |
 
 Logical modules are not re-clustered at synthesis time — they are sourced directly from
 the `clusters` and `cluster_members` rows produced during ingestion (Leiden, with Louvain
@@ -227,7 +227,7 @@ npm test
 3. Start the MCP server.
 4. Use `list_repositories` to discover indexed repo names.
 5. Query tools with an explicit `repo` argument.
-6. Open `/ui` to browse per-repo stats and semantic graph edges.
+6. Open `/ui` to browse per-repo stats and raw index tables.
 
 ## Notes
 

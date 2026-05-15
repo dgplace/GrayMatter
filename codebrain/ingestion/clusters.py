@@ -7,6 +7,7 @@ import re
 
 import networkx as nx
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, track
 
 from codebrain.classifier import IntentClassifier
 from codebrain.embedder import EmbeddingClient
@@ -473,13 +474,20 @@ def materialize_clusters(
     @return Tuple of `(cluster_count, granularity)`.
     """
     cur = conn.cursor()
-    symbol_graph, symbol_meta = _build_symbol_cluster_graph(cur, repo_name)
-    use_symbol_clusters = symbol_graph.number_of_nodes() >= MIN_SYMBOL_CLUSTER_NODES and symbol_graph.number_of_edges() > 0
-    graph, node_meta, granularity = (
-        (symbol_graph, symbol_meta, "symbol")
-        if use_symbol_clusters
-        else (*_build_file_cluster_graph(cur, repo_name), "file")
-    )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as stage_progress:
+        stage_progress.add_task("Building cluster graph...", total=None)
+        symbol_graph, symbol_meta = _build_symbol_cluster_graph(cur, repo_name)
+        use_symbol_clusters = symbol_graph.number_of_nodes() >= MIN_SYMBOL_CLUSTER_NODES and symbol_graph.number_of_edges() > 0
+        graph, node_meta, granularity = (
+            (symbol_graph, symbol_meta, "symbol")
+            if use_symbol_clusters
+            else (*_build_file_cluster_graph(cur, repo_name), "file")
+        )
 
     cur.execute("DELETE FROM doc_links WHERE repo = %s AND target_kind = 'cluster'", (repo_name,))
     cur.execute("DELETE FROM clusters WHERE repo = %s", (repo_name,))
@@ -487,15 +495,26 @@ def materialize_clusters(
         conn.commit()
         return 0, granularity
 
-    communities, community_algorithm = _detect_communities(graph, resolution)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as stage_progress:
+        stage_progress.add_task("Detecting communities...", total=None)
+        communities, community_algorithm = _detect_communities(graph, resolution)
     if not community_algorithm.startswith("leiden"):
         console.print(
             f"  [yellow]![/] [dim]Leiden unavailable; using {community_algorithm} communities fallback.[/]"
         )
     communities.sort(key=lambda community: sorted(node_meta[node]["label"] for node in community)[0])
+    console.print(f"  [dim]Persisting {len(communities)} clusters...[/]")
 
     cluster_count = 0
-    for index, community in enumerate(communities, 1):
+    for index, community in enumerate(
+        track(communities, total=len(communities), description="Persisting clusters..."),
+        1,
+    ):
         cluster_key = f"{granularity}:{index:04d}"
         member_labels = sorted(node_meta[node]["label"] for node in community)
         context_rows = [
