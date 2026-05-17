@@ -144,7 +144,7 @@ Options for the standalone command:
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--mode` | `all` | `directory`, `logical`, or `all` |
-| `--min-files` | `0` | Minimum distinct files for a module to be created |
+| `--min-files` | `1` | Minimum distinct files for a module to be created |
 
 Logical modules are not re-clustered at synthesis time — they are sourced directly from
 the `clusters` and `cluster_members` rows produced during ingestion (Leiden, with Louvain
@@ -173,6 +173,16 @@ http://127.0.0.1:3001/mcp
 http://127.0.0.1:3001/ui
 http://127.0.0.1:3001/healthz
 ```
+
+The `/ui` Index management panel can start an index run for the selected
+repository. Enter the absolute local repository path, optionally choose the
+folder for client-side name validation, and the server launches the equivalent
+indexer container run with `--workers 2` while streaming terminal output in the
+dialog. In Docker mode, the `mcp` service uses the host Docker socket and a
+read-only CodeBrain source mount so host paths such as `/Users/.../Repo` can be
+mounted into the sibling `indexer` run. Rebuild through `scripts/build.sh` or
+`scripts\build.bat` so the embedding/classifier proxy sidecars are recreated
+with the endpoints from `.env/codebrain.toml`.
 
 Legacy stdio mode:
 

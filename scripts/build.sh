@@ -76,6 +76,12 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 compose_file="$repo_root/docker/docker-compose.yml"
 
+translated_endpoints="$(python3 "$script_dir/resolve-container-endpoints.py" "$repo_root")"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  export "$line"
+done <<< "$translated_endpoints"
+
 if [[ "$mode" == "wipe" ]]; then
   if [[ "$assume_yes" != true ]]; then
     cat <<EOF
@@ -97,7 +103,7 @@ EOF
     -f "$compose_file" \
     --profile indexer \
     --profile tools \
-    rm -sf postgres mcp mcp_frontdoor
+    rm -sf postgres embed_proxy classifier_proxy mcp mcp_frontdoor
 
   echo "Removing volume ${POSTGRES_VOLUME}..."
   if docker volume inspect "$POSTGRES_VOLUME" >/dev/null 2>&1; then
@@ -115,10 +121,10 @@ docker compose \
 
 case "$mode" in
   reset|wipe)
-    recreate_targets=(postgres mcp mcp_frontdoor)
+    recreate_targets=(postgres embed_proxy classifier_proxy mcp mcp_frontdoor)
     ;;
   *)
-    recreate_targets=(mcp mcp_frontdoor)
+    recreate_targets=(embed_proxy classifier_proxy mcp mcp_frontdoor)
     ;;
 esac
 

@@ -1,8 +1,8 @@
 /**
  * @file src/web/assets/app.ts
  * @brief Browser entrypoint for the CodeBrain web UI. Owns operational panel
- *        rendering (Repository Stats, Module Intents, Index Management, MCP
- *        Tool Calls) and the inline raw index-table browser workspace.
+ *        rendering (Repository Stats, Index Management, MCP Tool Calls) and
+ *        the inline raw index-table browser workspace.
  */
 
 interface RepoListItem { repo: string; total_files: number }
@@ -32,21 +32,24 @@ interface BrowseTablePage {
   offset: number;
 }
 
-interface ModuleIntent {
-  module_name?: string;
-  module_path: string;
-  kind: string;
-  cluster_id?: number | null;
-  role?: string;
-  dominant_intent?: string;
-  file_count: number;
-  chunk_count: number;
-  summary?: string;
-}
-
 interface ToolCallSnapshot {
   total_calls: number;
   tool_calls: { name: string; count: number }[];
+}
+
+interface IndexJobSnapshot {
+  id: string;
+  repo: string;
+  repo_path: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  started_at: string;
+  finished_at: string | null;
+  exit_code: number | null;
+  logs: string[];
+}
+
+interface IndexJobResponse {
+  job: IndexJobSnapshot;
 }
 
 const repoSelect = document.getElementById("repoSelect") as HTMLSelectElement;
@@ -54,12 +57,12 @@ const statsBody = document.getElementById("statsBody") as HTMLElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 const toolCallBody = document.getElementById("toolCallBody") as HTMLElement;
 const indexMgmtBody = document.getElementById("indexMgmtBody") as HTMLElement;
-const modulesBody = document.getElementById("modulesBody") as HTMLElement;
 const indexBrowserTitle = document.getElementById("indexBrowserTitle") as HTMLElement;
 const indexBrowserTabs = document.getElementById("indexBrowserTabs") as HTMLElement;
 const indexBrowserPane = document.getElementById("indexBrowserPane") as HTMLElement;
 
 let toolCallPollId: number | null = null;
+let indexJobPollId: number | null = null;
 let activeRepo = "";
 let activeIndexTable = "";
 const tableFiltersByTable = new Map<string, Record<string, string>>();
@@ -88,6 +91,21 @@ async function getJson<T>(url: string): Promise<T> {
 /** @brief Set the loading-status message in the stats panel. */
 function updateStatus(message: string): void {
   statusEl.textContent = message;
+}
+
+/** @brief Return the final folder name from a local path string. */
+function basenameFromPath(path: string): string {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  const parts = trimmed.split(/[\\/]+/);
+  return parts[parts.length - 1] || "";
+}
+
+/** @brief Clear active polling for an index job dialog. */
+function clearIndexJobPolling(): void {
+  if (indexJobPollId !== null) {
+    window.clearInterval(indexJobPollId);
+    indexJobPollId = null;
+  }
 }
 
 /**
@@ -185,6 +203,193 @@ function renderToolCalls(snapshot: ToolCallSnapshot): void {
   ].join("");
 }
 
+/**
+ * @brief Render terminal output for an indexing job inside the modal.
+ * @param job Index job snapshot from the server.
+ */
+function renderIndexTerminal(job: IndexJobSnapshot): void {
+  const terminal = document.getElementById("indexTerminal") as HTMLElement | null;
+  const status = document.getElementById("indexDialogStatus") as HTMLElement | null;
+  if (!terminal || !status) return;
+  const lines = [
+    "Status: " + job.status,
+    "Repo: " + job.repo,
+    "Path: " + job.repo_path,
+    job.exit_code === null ? "" : "Exit code: " + job.exit_code,
+    "",
+    ...job.logs,
+  ].filter((line) => line !== "");
+  terminal.textContent = lines.join("\n");
+  terminal.scrollTop = terminal.scrollHeight;
+  status.textContent = job.status === "running" ? "Indexing..." : "Index " + job.status + ".";
+}
+
+/**
+ * @brief Fetch and render the latest state for an index job.
+ * @param jobId Index job identifier.
+ * @returns Promise resolved after the dialog is updated.
+ */
+async function refreshIndexJob(jobId: string): Promise<void> {
+  try {
+    const data = await getJson<IndexJobResponse>("/ui/api/index-jobs/" + encodeURIComponent(jobId));
+    renderIndexTerminal(data.job);
+    if (data.job.status !== "running") {
+      clearIndexJobPolling();
+      if (data.job.status === "completed" && data.job.repo === activeRepo) {
+        await loadRepo(activeRepo, "replace");
+      }
+    }
+  } catch (error: any) {
+    clearIndexJobPolling();
+    const terminal = document.getElementById("indexTerminal") as HTMLElement | null;
+    if (terminal) {
+      terminal.textContent = "Failed to load index job: " + (error?.message || String(error));
+    }
+  }
+}
+
+/**
+ * @brief Start polling a running index job.
+ * @param jobId Index job identifier.
+ */
+function pollIndexJob(jobId: string): void {
+  clearIndexJobPolling();
+  void refreshIndexJob(jobId);
+  indexJobPollId = window.setInterval(() => { void refreshIndexJob(jobId); }, 1000);
+}
+
+/**
+ * @brief Close and remove the index dialog.
+ */
+function closeIndexDialog(): void {
+  clearIndexJobPolling();
+  document.getElementById("indexDialogRoot")?.remove();
+}
+
+/**
+ * @brief Return the chosen folder name from a directory input when available.
+ * @param input Directory input element.
+ * @returns Selected top-level folder name, or an empty string.
+ */
+function getSelectedDirectoryName(input: HTMLInputElement): string {
+  const firstFile = input.files?.item(0);
+  if (!firstFile) return "";
+  const relativePath = String((firstFile as any).webkitRelativePath || "");
+  if (relativePath) {
+    return relativePath.split("/")[0] || "";
+  }
+  return firstFile.name || "";
+}
+
+/**
+ * @brief Start an index job from the modal form.
+ * @param repo Repository name selected in the UI.
+ */
+async function startIndexFromDialog(repo: string): Promise<void> {
+  const pathInput = document.getElementById("indexPathInput") as HTMLInputElement | null;
+  const folderInput = document.getElementById("indexFolderInput") as HTMLInputElement | null;
+  const startBtn = document.getElementById("indexStartBtn") as HTMLButtonElement | null;
+  const terminal = document.getElementById("indexTerminal") as HTMLElement | null;
+  const repoPath = String(pathInput?.value || "").trim();
+  const selectedFolderName = folderInput ? getSelectedDirectoryName(folderInput) : "";
+
+  if (selectedFolderName && selectedFolderName !== repo) {
+    if (terminal) terminal.textContent = 'Selected folder "' + selectedFolderName + '" does not match repository "' + repo + '".';
+    return;
+  }
+  const pathFolderName = basenameFromPath(repoPath);
+  if (pathFolderName && pathFolderName !== repo) {
+    if (terminal) terminal.textContent = 'Repository path folder "' + pathFolderName + '" does not match repository "' + repo + '".';
+    return;
+  }
+  if (startBtn) startBtn.disabled = true;
+  if (terminal) terminal.textContent = "Starting index job...";
+
+  try {
+    const response = await fetch("/ui/api/repos/" + encodeURIComponent(repo) + "/index-jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo_path: repoPath, workers: 2 }),
+    });
+    const data: any = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || ("HTTP " + response.status));
+    }
+    const root = document.getElementById("indexDialogRoot") as HTMLElement | null;
+    if (root) root.dataset.jobId = data.job.id;
+    pollIndexJob(data.job.id);
+  } catch (error: any) {
+    if (startBtn) startBtn.disabled = false;
+    if (terminal) terminal.textContent = "Start failed: " + (error?.message || String(error));
+  }
+}
+
+/**
+ * @brief Cancel the currently displayed index job.
+ */
+async function cancelDisplayedIndexJob(): Promise<void> {
+  const jobId = String(document.getElementById("indexDialogRoot")?.dataset.jobId || "");
+  if (!jobId) {
+    closeIndexDialog();
+    return;
+  }
+  try {
+    await fetch("/ui/api/index-jobs/" + encodeURIComponent(jobId), { method: "DELETE" });
+  } finally {
+    await refreshIndexJob(jobId);
+  }
+}
+
+/**
+ * @brief Open the centered index dialog for a repository.
+ * @param repo Repository name selected in the UI.
+ */
+function showIndexDialog(repo: string): void {
+  closeIndexDialog();
+  document.body.insertAdjacentHTML("beforeend", [
+    '<div id="indexDialogRoot" class="index-dialog-root">',
+    '  <div class="index-dialog-backdrop"></div>',
+    '  <section class="index-dialog" role="dialog" aria-modal="true" aria-labelledby="indexDialogTitle">',
+    '    <div class="index-dialog-header">',
+    '      <h2 id="indexDialogTitle">Index ' + esc(repo) + "</h2>",
+    '      <button id="indexCloseBtn" class="btn-secondary" type="button">Close</button>',
+    "    </div>",
+    '    <div class="index-dialog-body">',
+    '      <div class="index-path-controls">',
+    '        <input id="indexPathInput" type="text" placeholder="/absolute/path/to/' + esc(repo) + '" autocomplete="off">',
+    '        <button id="indexChooseBtn" class="btn-secondary" type="button">Choose Folder</button>',
+    '        <input id="indexFolderInput" type="file" webkitdirectory directory multiple hidden>',
+    "      </div>",
+    '      <p id="indexDialogStatus" class="size-note">Ready.</p>',
+    '      <pre id="indexTerminal" class="index-terminal">Waiting for repository path...</pre>',
+    "    </div>",
+    '    <div class="index-dialog-footer">',
+    '      <button id="indexCancelBtn" class="btn-secondary" type="button">Cancel</button>',
+    '      <button id="indexStartBtn" type="button">Index</button>',
+    "    </div>",
+    "  </section>",
+    "</div>",
+  ].join(""));
+
+  const chooseBtn = document.getElementById("indexChooseBtn") as HTMLButtonElement;
+  const folderInput = document.getElementById("indexFolderInput") as HTMLInputElement;
+  const closeBtn = document.getElementById("indexCloseBtn") as HTMLButtonElement;
+  const startBtn = document.getElementById("indexStartBtn") as HTMLButtonElement;
+  const cancelBtn = document.getElementById("indexCancelBtn") as HTMLButtonElement;
+  const status = document.getElementById("indexDialogStatus") as HTMLElement;
+
+  chooseBtn.addEventListener("click", () => folderInput.click());
+  folderInput.addEventListener("change", () => {
+    const selectedFolderName = getSelectedDirectoryName(folderInput);
+    status.textContent = selectedFolderName
+      ? "Selected folder: " + selectedFolderName
+      : "Folder selected.";
+  });
+  closeBtn.addEventListener("click", closeIndexDialog);
+  startBtn.addEventListener("click", () => { void startIndexFromDialog(repo); });
+  cancelBtn.addEventListener("click", () => { void cancelDisplayedIndexJob(); });
+}
+
 /** @brief Poll the tool-call snapshot endpoint and re-render the panel. */
 async function refreshToolCalls(): Promise<void> {
   try {
@@ -201,10 +406,18 @@ async function refreshToolCalls(): Promise<void> {
  */
 function renderIndexMgmt(repo: string): void {
   indexMgmtBody.innerHTML = [
+    '<div class="index-actions">',
+    '<button id="indexRepoBtn" type="button">Index</button>',
     '<button class="btn-danger" id="deleteIndexBtn" type="button">Delete Index</button>',
+    "</div>",
   ].join("");
 
+  const indexBtn = document.getElementById("indexRepoBtn") as HTMLButtonElement;
   const deleteBtn = document.getElementById("deleteIndexBtn") as HTMLButtonElement;
+  indexBtn.addEventListener("click", () => {
+    if (!repo) return;
+    showIndexDialog(repo);
+  });
   deleteBtn.addEventListener("click", async () => {
     if (!repo) return;
     if (!confirm('Permanently delete the index for "' + repo + '"? This cannot be undone.')) return;
@@ -440,24 +653,8 @@ async function loadIndexBrowser(repo: string): Promise<void> {
   }
 }
 
-/** @brief Render the Module Intents panel from a list of modules. */
-function renderModules(modules: ModuleIntent[]): void {
-  if (!modules.length) {
-    modulesBody.innerHTML = '<p class="warn">No modules found. Run module synthesis from the Desktop application or CLI.</p>';
-    return;
-  }
-  modulesBody.innerHTML = modules.map((m) => (
-    '<div style="margin-bottom:1rem; border-bottom:1px solid var(--line); padding-bottom:0.5rem;">'
-    + '<div class="metric"><span style="font-weight:bold;">' + esc(m.module_name || m.module_path) + '</span><span class="pill">' + esc(m.kind) + "</span></div>"
-    + '<div style="font-size:0.83rem; color:var(--muted); margin:0.3rem 0;">' + esc(m.role || "unknown") + " &bull; " + esc(m.dominant_intent || "unknown") + "</div>"
-    + '<div style="font-size:0.8rem; margin-bottom:0.3rem;">' + Number(m.file_count) + " files, " + Number(m.chunk_count) + " chunks</div>"
-    + '<div style="font-size:0.87rem;">' + esc(m.summary || "") + "</div>"
-    + "</div>"
-  )).join("");
-}
-
 /**
- * @brief Load all data for a repo: stats, modules, and raw table browser.
+ * @brief Load all data for a repo: stats, management controls, and raw table browser.
  * @param repo Repository name.
  * @param urlMode Whether to sync browser history with the selection.
  */
@@ -475,13 +672,10 @@ async function loadRepo(repo: string, urlMode: "none" | "push" | "replace" = "no
   renderIndexMgmt(repo);
 
   const statsPromise = getJson<RepositoryStats>("/ui/api/repos/" + encodeURIComponent(repo) + "/stats");
-  const modulesPromise = getJson<{ modules: ModuleIntent[] }>("/ui/api/repos/" + encodeURIComponent(repo) + "/modules")
-    .catch(() => ({ modules: [] as ModuleIntent[] }));
 
-  const [stats, modules] = await Promise.all([statsPromise, modulesPromise]);
+  const stats = await statsPromise;
   if (repo !== activeRepo) return;
   renderStats(stats);
-  renderModules(modules.modules || []);
   await loadIndexBrowser(repo);
   updateStatus("Showing " + repo + ".");
 }
@@ -504,7 +698,6 @@ async function reloadRepoList(): Promise<void> {
       activeRepo = "";
       syncUrlForRepo("", "replace");
       statsBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
-      modulesBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
       indexMgmtBody.innerHTML = '<p class="warn">No indexed repositories.</p>';
       indexBrowserTitle.textContent = "Raw Index";
       indexBrowserTabs.innerHTML = "";
@@ -546,6 +739,7 @@ async function boot(): Promise<void> {
 
 window.addEventListener("beforeunload", () => {
   if (toolCallPollId !== null) window.clearInterval(toolCallPollId);
+  clearIndexJobPolling();
 });
 
 repoSelect.addEventListener("change", async () => {

@@ -3,8 +3,9 @@
  * @brief HTTP routes for the embedded repository index browser UI and JSON APIs.
  */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join, normalize } from "node:path";
+import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -25,9 +26,14 @@ import {
   listBrowseTables,
 } from "../repositories/indexBrowser.js";
 import { getToolCallSnapshot } from "../mcp/toolCallStats.js";
+import { cancelIndexJob, getIndexJobSnapshot, startIndexJob } from "./indexJobs.js";
 import { renderWebUi } from "./ui.js";
 
-const ASSETS_DIR = join(dirname(fileURLToPath(import.meta.url)), "assets");
+const WEB_MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const ASSET_DIR_CANDIDATES = [
+  join(WEB_MODULE_DIR, "assets"),
+  join(WEB_MODULE_DIR, "..", "..", "dist", "src", "web", "assets"),
+];
 
 const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".js": "application/javascript; charset=utf-8",
@@ -42,11 +48,39 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
  * @returns Absolute on-disk path inside the assets dir, or null if invalid.
  */
 function resolveAssetPath(requestPath: string): string | null {
-  const candidate = normalize(join(ASSETS_DIR, requestPath));
-  if (!candidate.startsWith(ASSETS_DIR + "/") && candidate !== ASSETS_DIR) {
-    return null;
+  let missingCandidate: string | null = null;
+  for (const assetsDir of ASSET_DIR_CANDIDATES) {
+    const normalizedAssetsDir = normalize(assetsDir);
+    const candidate = normalize(join(normalizedAssetsDir, requestPath));
+    if (!candidate.startsWith(normalizedAssetsDir + sep) && candidate !== normalizedAssetsDir) {
+      continue;
+    }
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    missingCandidate ||= candidate;
   }
-  return candidate;
+  return missingCandidate;
+}
+
+/**
+ * @brief Read a JSON request body from Express or a raw Node request stream.
+ * @param req Express-compatible request object.
+ * @returns Parsed JSON object, or an empty object for an empty body.
+ */
+async function readJsonBody(req: any): Promise<Record<string, unknown>> {
+  if (req.body && typeof req.body === "object") {
+    return req.body as Record<string, unknown>;
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  if (!chunks.length) {
+    return {};
+  }
+  const body = Buffer.concat(chunks).toString("utf8").trim();
+  return body ? JSON.parse(body) as Record<string, unknown> : {};
 }
 
 /**
@@ -130,6 +164,44 @@ export function registerWebRoutes(app: any): void {
       console.error("Failed to delete repository:", error);
       res.status(500).json({ error: "Failed to delete repository index." });
     }
+  });
+
+  app.post("/ui/api/repos/:repo/index-jobs", async (req: any, res: any) => {
+    try {
+      const repo = decodeURIComponent(String(req.params.repo || ""));
+      if (!(await repositoryExists(repo))) {
+        res.status(404).json({ error: `Repository \`${repo}\` is not indexed.` });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const repoPath = String(body.repo_path || "");
+      const workers = Number(body.workers || 2);
+      const job = startIndexJob(repo, repoPath, workers);
+      res.status(202).json({ job });
+    } catch (error: any) {
+      console.error("Failed to start index job:", error);
+      res.status(400).json({ error: error?.message || "Failed to start index job." });
+    }
+  });
+
+  app.get("/ui/api/index-jobs/:jobId", (req: any, res: any) => {
+    const jobId = String(req.params.jobId || "");
+    const job = getIndexJobSnapshot(jobId);
+    if (!job) {
+      res.status(404).json({ error: `Index job \`${jobId}\` was not found.` });
+      return;
+    }
+    res.status(200).json({ job });
+  });
+
+  app.delete("/ui/api/index-jobs/:jobId", (req: any, res: any) => {
+    const jobId = String(req.params.jobId || "");
+    const job = cancelIndexJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: `Index job \`${jobId}\` was not found.` });
+      return;
+    }
+    res.status(200).json({ job });
   });
 
   app.get("/ui/api/repos/:repo/tables", async (req: any, res: any) => {

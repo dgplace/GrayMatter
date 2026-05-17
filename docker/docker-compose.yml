@@ -95,11 +95,14 @@ services:
         condition: service_healthy
       embed_proxy:
         condition: service_started
+      classifier_proxy:
+        condition: service_started
     environment:
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "3001"
       MCP_ALLOWED_HOSTS: localhost,127.0.0.1,[::1]
+      CODEBRAIN_REPO_ROOT: /workspace
       DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       EMBED_API_STYLE: ollama
       EMBED_BASE_URL: http://embed_proxy:11434
@@ -107,6 +110,9 @@ services:
       EMBED_DIMENSIONS: "768"
     init: true
     restart: unless-stopped
+    volumes:
+      - ..:/workspace:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     profiles:
       - tools
     networks:

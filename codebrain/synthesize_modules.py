@@ -556,7 +556,7 @@ def synthesize_logical_modules(conn, repo: str, min_files: int,
 @click.option("--repo", required=True, help="Repository name")
 @click.option("--mode", type=click.Choice(['directory', 'logical', 'all']),
               default='all', help="Synthesis mode")
-@click.option("--min-files", default=0, help="Minimum files per module")
+@click.option("--min-files", default=1, show_default=True, help="Minimum files per module")
 @click.option("--config", default="codebrain.toml", help="Config file path")
 @click.option("--machine", is_flag=True, default=False,
               help="Emit machine-readable progress lines (for desktop app)")

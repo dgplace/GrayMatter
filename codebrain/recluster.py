@@ -74,7 +74,7 @@ def _assert_repo_exists(conn, repo_name: str) -> None:
     show_default=True,
     help="Multiplier applied to configured clustering resolution when --resolution is omitted.",
 )
-@click.option("--min-files", default=3, show_default=True, help="Minimum files per logical module.")
+@click.option("--min-files", default=1, show_default=True, help="Minimum files per logical module.")
 @click.option(
     "--synthesize-logical/--no-synthesize-logical",
     default=True,

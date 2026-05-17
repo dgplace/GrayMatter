@@ -7,6 +7,7 @@ strict JSON parsing and conservative fallbacks for malformed model output.
 """
 
 import json
+import re
 import time
 from typing import Callable, Optional
 
@@ -57,6 +58,66 @@ Respond with ONLY this JSON object:
 {{"summary": "<1-2 sentences on what this file does and its key exports>", "role": "<architectural role, e.g. API controller, database model, React component, utility library, test suite, config, middleware, migration, service layer, CLI entry point>"}}"""
 
 _CHUNK_BATCH_SIZE = 8  # chunks per LLM call
+_CHUNK_RETRY_SPLIT_DEPTH = 1
+
+
+def normalize_architectural_role(role: object) -> str:
+    """@brief Canonicalize freeform architectural role labels.
+
+    @param role Raw role value returned by the classifier model.
+    @return Lowercase, whitespace-normalized role label, or `unknown`.
+    """
+    if not isinstance(role, str):
+        return "unknown"
+    normalized = re.sub(r"[-_]+", " ", role.strip().casefold())
+    normalized = " ".join(normalized.split())
+    return normalized or "unknown"
+
+
+def infer_architectural_role(file_path: str, code: str, language: str) -> str:
+    """@brief Infer a deterministic architectural role when model output fails.
+
+    @param file_path Source file path used for path/name conventions.
+    @param code File contents used for lightweight framework cues.
+    @param language Detected source language.
+    @return Canonical architectural role label.
+    """
+    path = file_path.replace("\\", "/").casefold()
+    name = path.rsplit("/", 1)[-1]
+    lang = (language or "").casefold()
+    sample = code[:4000].casefold()
+
+    if "/test" in path or name.startswith("test_") or name.endswith(("_test.py", ".test.ts", ".spec.ts", "tests.swift")):
+        return "test suite"
+    if name in {"dockerfile", "makefile"} or name.endswith((".toml", ".yaml", ".yml", ".json", ".ini", ".cfg")):
+        return "configuration"
+    if "migration" in path:
+        return "migration"
+    if name.endswith((".md", ".rst", ".txt")):
+        return "documentation"
+    if "controller" in path or "route" in path or "api" in path:
+        return "api controller"
+    if "parser" in path or "grammar" in path:
+        return "parser"
+    if "model" in path or "types" in path or "mtypes" in name:
+        return "data model"
+    if "service" in path:
+        return "service layer"
+    if "middleware" in path:
+        return "middleware"
+    if "cli" in path or name in {"main.py", "main.ts", "main.swift", "main.cpp"}:
+        return "cli entry point"
+    if lang in {"swift", "typescript", "javascript"}:
+        if (
+            name.endswith(("view.swift", ".tsx", ".jsx"))
+            or "swiftui" in sample
+            or ": view" in sample
+            or "react" in sample
+        ):
+            return "ui component"
+    if lang:
+        return normalize_architectural_role(f"{lang} module")
+    return "source file"
 
 
 class IntentClassifier:
@@ -252,13 +313,17 @@ class IntentClassifier:
         )
         try:
             data = self._parse_json(self._generate(prompt, max_tokens=150))
-            return data.get("summary", ""), data.get("role", "unknown")
+            inferred_role = infer_architectural_role(file_path, code, language)
+            role = normalize_architectural_role(data.get("role"))
+            if role == "unknown":
+                role = inferred_role
+            return data.get("summary", ""), role
         except Exception as exc:
             self._emit_warning(
                 on_warning,
                 f"Classifier file analysis fallback for {file_path}: {exc}",
             )
-            return "", "unknown"
+            return "", infer_architectural_role(file_path, code, language)
 
     def classify_chunks_batch(
         self,
@@ -297,6 +362,7 @@ class IntentClassifier:
         language: str,
         file_path: str,
         on_warning: Optional[Callable[[str], None]] = None,
+        retry_split_depth: int = _CHUNK_RETRY_SPLIT_DEPTH,
     ) -> list[tuple[str, str]]:
         """@brief Classify one chunk batch with fallback-safe parsing.
 
@@ -304,7 +370,46 @@ class IntentClassifier:
         @param language Detected file language.
         @param file_path Source file path for prompt context.
         @param on_warning Optional callback for model/parse failures.
+        @param retry_split_depth Remaining split retries for malformed batches.
         @return List of `(intent, description)` tuples for the batch.
+        """
+        try:
+            return self._classify_batch_once(chunks, language, file_path)
+        except Exception as exc:
+            if retry_split_depth > 0 and len(chunks) > 1:
+                split_at = max(1, len(chunks) // 2)
+                return self._classify_batch(
+                    chunks[:split_at],
+                    language,
+                    file_path,
+                    on_warning=on_warning,
+                    retry_split_depth=retry_split_depth - 1,
+                ) + self._classify_batch(
+                    chunks[split_at:],
+                    language,
+                    file_path,
+                    on_warning=on_warning,
+                    retry_split_depth=retry_split_depth - 1,
+                )
+            self._emit_warning(
+                on_warning,
+                f"Classifier chunk intent fallback for {file_path}: {exc}",
+            )
+            return [("utility", "")] * len(chunks)
+
+    def _classify_batch_once(
+        self,
+        chunks: list[dict],
+        language: str,
+        file_path: str,
+    ) -> list[tuple[str, str]]:
+        """@brief Classify one chunk batch without recursive fallback.
+
+        @param chunks Chunk dictionaries included in the batch.
+        @param language Detected file language.
+        @param file_path Source file path for prompt context.
+        @return List of `(intent, description)` tuples for the batch.
+        @raises ValueError When model output cannot be parsed as the expected list.
         """
         chunk_blocks = "\n\n".join(
             f"[{i}] Lines {c['start_line']}-{c['end_line']}:\n```\n{c['content'][:500]}\n```"
@@ -316,26 +421,19 @@ class IntentClassifier:
             chunks=chunk_blocks,
             count=len(chunks),
         )
-        try:
-            data = self._parse_json(self._generate(prompt, max_tokens=100 * len(chunks)))
-            if not isinstance(data, list):
-                raise ValueError("Expected list")
-            results = []
-            for item in data[: len(chunks)]:
-                intent = item.get("intent", "utility")
-                if intent not in INTENT_CATEGORIES:
-                    intent = "utility"
-                results.append((intent, item.get("description", "")))
-            # Pad if model returned fewer items than expected
-            while len(results) < len(chunks):
-                results.append(("utility", ""))
-            return results
-        except Exception as exc:
-            self._emit_warning(
-                on_warning,
-                f"Classifier chunk intent fallback for {file_path}: {exc}",
-            )
-            return [("utility", "")] * len(chunks)
+        data = self._parse_json(self._generate(prompt, max_tokens=100 * len(chunks)))
+        if not isinstance(data, list):
+            raise ValueError("Expected list")
+        results = []
+        for item in data[: len(chunks)]:
+            intent = item.get("intent", "utility")
+            if intent not in INTENT_CATEGORIES:
+                intent = "utility"
+            results.append((intent, item.get("description", "")))
+        # Pad if model returned fewer items than expected
+        while len(results) < len(chunks):
+            results.append(("utility", ""))
+        return results
 
     # ── Legacy single-call methods (used by watch mode / fallback) ──────────
 

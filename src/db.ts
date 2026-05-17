@@ -10,6 +10,33 @@ import { DATABASE_URL } from "./config.js";
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 const SCHEMA_PATCHES = [
+  `UPDATE files
+   SET role = COALESCE(
+     NULLIF(regexp_replace(regexp_replace(lower(btrim(role)), '[-_]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'), ''),
+     'unknown'
+   )
+   WHERE role IS NOT NULL
+     AND role IS DISTINCT FROM COALESCE(
+       NULLIF(regexp_replace(regexp_replace(lower(btrim(role)), '[-_]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'), ''),
+       'unknown'
+     )`,
+  `UPDATE files
+   SET role = CASE
+     WHEN lower(path) LIKE '%/test%' OR lower(path) LIKE 'test_%' OR lower(path) LIKE '%_test.py' OR lower(path) LIKE '%.test.ts' OR lower(path) LIKE '%.spec.ts' THEN 'test suite'
+     WHEN lower(path) LIKE '%.toml' OR lower(path) LIKE '%.yaml' OR lower(path) LIKE '%.yml' OR lower(path) LIKE '%.json' OR lower(path) LIKE '%.ini' OR lower(path) LIKE '%.cfg' THEN 'configuration'
+     WHEN lower(path) LIKE '%migration%' THEN 'migration'
+     WHEN lower(path) LIKE '%.md' OR lower(path) LIKE '%.rst' OR lower(path) LIKE '%.txt' THEN 'documentation'
+     WHEN lower(path) LIKE '%controller%' OR lower(path) LIKE '%route%' OR lower(path) LIKE '%api%' THEN 'api controller'
+     WHEN lower(path) LIKE '%parser%' OR lower(path) LIKE '%grammar%' THEN 'parser'
+     WHEN lower(path) LIKE '%model%' OR lower(path) LIKE '%types%' OR lower(path) LIKE '%mtypes%' THEN 'data model'
+     WHEN lower(path) LIKE '%service%' THEN 'service layer'
+     WHEN lower(path) LIKE '%middleware%' THEN 'middleware'
+     WHEN lower(path) LIKE '%cli%' OR lower(path) IN ('main.py', 'main.ts', 'main.swift', 'main.cpp') THEN 'cli entry point'
+     WHEN lower(path) LIKE '%view.swift' OR lower(path) LIKE '%.tsx' OR lower(path) LIKE '%.jsx' THEN 'ui component'
+     WHEN language IS NOT NULL AND btrim(language) <> '' THEN lower(btrim(language)) || ' module'
+     ELSE 'source file'
+   END
+   WHERE role IS NULL OR btrim(role) = '' OR lower(btrim(role)) = 'unknown'`,
   `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS container_symbol TEXT`,
   `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS declared_in_extension BOOLEAN NOT NULL DEFAULT FALSE`,
   `ALTER TABLE symbols ADD COLUMN IF NOT EXISTS is_primary_declaration BOOLEAN NOT NULL DEFAULT TRUE`,

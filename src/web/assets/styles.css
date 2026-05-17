@@ -155,8 +155,19 @@ main {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  /* Each panel takes a fair share of the sidebar height. */
-  flex: 1 1 0;
+  flex: 1 1 auto;
+}
+
+.repo-stats-panel {
+  flex: 1 1 auto;
+}
+
+.index-management-panel {
+  flex: 0 0 13rem;
+}
+
+.tool-calls-panel {
+  flex: 0 1 17rem;
 }
 
 .panel h2 {
@@ -283,12 +294,133 @@ main {
   box-shadow: var(--glow-warn);
 }
 
+#indexMgmtBody {
+  min-height: 9.75rem;
+}
+
 #indexMgmtBody button { width: 100%; }
+
+.index-actions {
+  display: grid;
+  gap: 0.65rem;
+}
 
 .btn-danger:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.btn-secondary {
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+  border: 1px solid var(--line-strong);
+  box-shadow: none;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  box-shadow: none;
+}
+
+.index-dialog-root {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.index-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 19, 32, 0.38);
+  backdrop-filter: blur(4px);
+}
+
+.index-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(880px, calc(100vw - 2rem));
+  max-height: min(760px, calc(100vh - 2rem));
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 22px 70px rgba(13, 19, 32, 0.24);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.index-dialog-header,
+.index-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.index-dialog-footer {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  justify-content: flex-end;
+}
+
+.index-dialog-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.index-dialog-header button,
+.index-dialog-footer button {
+  width: auto;
+  min-width: 5.5rem;
+}
+
+.index-dialog-body {
+  min-height: 0;
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.65rem;
+  overflow: auto;
+}
+
+.index-path-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.index-path-controls input[type="text"] {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.index-terminal {
+  min-height: 22rem;
+  max-height: 50vh;
+  margin: 0;
+  padding: 0.85rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #101724;
+  color: #d9fff5;
+  font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .size-note {
@@ -505,4 +637,11 @@ main {
   .panel { flex: none; }
   .panel .body { overflow: visible; }
   .workspace { min-height: 60vh; }
+  .index-path-controls { grid-template-columns: 1fr; }
+  .index-dialog-header,
+  .index-dialog-footer { align-items: stretch; }
+  .index-dialog-header { flex-direction: column; }
+  .index-dialog-footer { flex-direction: column-reverse; }
+  .index-dialog-header button,
+  .index-dialog-footer button { width: 100%; }
 }

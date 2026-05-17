@@ -47,6 +47,7 @@ Core modules:
 - `src/mcp/*` (tool/resource/logging/search formatting/graph algorithms)
 - `src/repositories/store.ts` (repo-scoped read model queries)
 - `src/web/routes.ts` + `src/web/ui.ts` (HTTP route registration and HTML shell for `/ui`)
+- `src/web/indexJobs.ts` (local web-triggered indexing job runner and log buffer)
 - `src/web/assets/styles.css` + `src/web/assets/app.ts` (browser-side neon-on-light design tokens and inline raw index-table browser + panel logic; bundled to `dist/src/web/assets/app.js` by `scripts/build-ui.mjs` via esbuild (minified) and served from `/ui/assets/*`)
 
 Responsibilities:
@@ -62,6 +63,7 @@ Responsibilities:
 - expose repository discovery and stats (`list_repositories`, repo-scoped `codebase_stats`)
 - provide refactoring analysis: coupling metrics, module interface extraction, cycle detection, and modularization seam planning
 - host `/ui` for raw index-table browsing and per-repo stats
+- let the local web UI enqueue Docker-backed indexing jobs for a selected repo and poll terminal-style job logs
 
 Design pattern:
 - transport layer (`src/server.ts`) delegates to tool and route modules
@@ -136,6 +138,7 @@ Design pattern:
 3. UI polls `/ui/api/tool-calls` for live MCP tool invocation counters.
 4. UI fetches `/ui/api/repos/:repo/stats`, `/ui/api/repos/:repo/modules`, `/ui/api/repos/:repo/tables`, and `/ui/api/repos/:repo/tables/:table`.
 5. Client renders tabbed table metadata and paginated raw table rows inline in the workspace.
+6. Index management can POST `/ui/api/repos/:repo/index-jobs` with an absolute local path. The server validates that the path basename matches `:repo`, starts the indexer container with `/target`, `--repo-name :repo`, and `--workers 2`, then exposes job snapshots through `/ui/api/index-jobs/:jobId`. When the web server runs in Docker, it uses the host Docker socket plus a read-only CodeBrain source mount; host repository existence is validated by the sibling indexer run rather than by the `mcp` container filesystem. The build helpers resolve `.env/codebrain.toml` into proxy sidecar upstream targets so web-triggered index jobs use the configured embedding and classifier endpoints.
 
 ## Core Design Patterns
 

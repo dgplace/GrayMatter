@@ -1,3 +1,11 @@
+2026-05-18 Added web UI index-job launch support: Index management now opens a terminal dialog, validates selected repo paths, starts Docker-backed indexer runs with `--workers 2`, and exposes job status/cancel APIs.
+2026-05-18 Fixed Dockerized web indexing startup: `mcp` now has Docker CLI/socket access and a read-only CodeBrain source mount, while containerized path validation defers host-path existence checks to the sibling indexer run.
+2026-05-18 Removed the Python endpoint-resolver dependency from Dockerized web index jobs by launching `codebrain-indexer:latest` directly on the active internal Docker network with host mount paths discovered from Docker inspect.
+2026-05-18 Updated build helpers to resolve `.env/codebrain.toml` endpoint settings and recreate embed/classifier proxy sidecars with the configured upstream targets for web-triggered indexing.
+2026-05-17 Changed module-intent synthesis defaults so logical modules are created for clusters covering at least one file by default.
+2026-05-17 Added deterministic architectural-role fallback, schema bootstrap repair for existing unknown file roles, and capped malformed chunk-batch split retries to avoid unknown file roles and excessive classifier pressure.
+2026-05-17 Hardened chunk intent classification so malformed multi-chunk classifier JSON is retried as smaller batches before falling back per chunk.
+2026-05-17 Normalized classifier architectural roles before storage and during schema bootstrap so case, whitespace, hyphen, and underscore variants such as `UI Component` and `ui-component` bundle under one canonical role.
 2026-05-15 Improved recluster progress granularity: `codebrain.ingestion.clusters.materialize_clusters` now reports cluster-by-cluster progress with a Rich bar, and `codebrain.recluster` now surfaces stage updates plus the existing logical-module synthesis progress bar.
 2026-05-15 Added ingest-style Rich progress UX to `codebrain.recluster` (cluster materialization + logical module refresh phases) and reverted `scripts/recluster-repo.bat` to direct Docker invocation to avoid PowerShell stream corruption.
 2026-05-11 Fixed MCP reachability after helper rebuilds: `scripts/build.sh` now recreates `mcp_frontdoor` alongside `mcp` (and with `--reset/--wipe`) so localhost port `127.0.0.1:3001` is consistently republished.

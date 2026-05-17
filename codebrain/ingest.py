@@ -29,7 +29,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from codebrain.chunker import ASTChunker
-from codebrain.classifier import IntentClassifier
+from codebrain.classifier import IntentClassifier, infer_architectural_role
 from codebrain.embedder import EmbeddingClient
 from codebrain.ingestion.clusters import (
     CLUSTER_SUMMARY_MAX_CHARS,
@@ -503,7 +503,7 @@ def process_file(
         processing_warnings: list[str] = []
 
         if no_classify:
-            file_summary, file_role = "", "unknown"
+            file_summary, file_role = "", infer_architectural_role(rel_path, content, language)
         else:
             file_summary, file_role = classifier.analyze_file(
                 rel_path,

@@ -547,7 +547,7 @@ def materialize_module_intents_for_repo(
     get_db_fn: Callable[[dict], object],
     synthesize_directory_fn: Callable[..., None],
     synthesize_logical_fn: Callable[..., None],
-    min_files: int = 3,
+    min_files: int = 1,
 ) -> bool:
     """@brief Run module-intent synthesis (directory + logical) inline.
 

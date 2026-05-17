@@ -23,7 +23,7 @@ export function renderWebUi(): string {
   <header>
     <div>
       <h1>CodeBrain <span class="accent">Raw</span> Index Browser</h1>
-      <p class="sub">Repo-scoped stats, modules, and raw table browsing.</p>
+      <p class="sub">Repo-scoped stats and raw table browsing.</p>
     </div>
     <div class="control">
       <label for="repoSelect">Repository</label>
@@ -33,28 +33,21 @@ export function renderWebUi(): string {
 
   <main>
     <div class="sidebar">
-      <section class="panel">
+      <section class="panel repo-stats-panel">
         <h2>Repository Stats</h2>
         <div class="body" id="statsBody">
           <p class="warn" id="status">Loading repositories...</p>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Module Intents</h2>
-        <div class="body" id="modulesBody">
-          <p class="warn" id="modulesStatus">Select a repository.</p>
-        </div>
-      </section>
-
-      <section class="panel">
+      <section class="panel index-management-panel">
         <h2>Index Management</h2>
         <div class="body" id="indexMgmtBody">
           <p class="warn" id="indexStatus">Select a repository.</p>
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel tool-calls-panel">
         <h2>MCP Tool Calls</h2>
         <div class="body" id="toolCallBody">
           <p class="warn">Waiting for tool calls...</p>
