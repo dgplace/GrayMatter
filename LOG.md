@@ -1,3 +1,5 @@
+2026-05-19 Changed `index-repo` remote database runs to start only embedding/classifier proxy sidecars and run the indexer with `--no-deps`, avoiding unnecessary local PostgreSQL startup when `--database-url` is supplied.
+2026-05-19 Changed the PostgreSQL frontdoor default publish target to `0.0.0.0:5432` so remote helper-script indexing works with `--database-url host:5432` after rebuild; env overrides remain available.
 2026-05-19 Made `.env/mcp.env` optional in Docker Compose so local MCP builds use localhost allowlist defaults without a private env file, and aligned compose policy tests with indexer host-access networking.
 2026-05-19 Made the PostgreSQL frontdoor bind/port configurable via `POSTGRES_FRONTDOOR_BIND` and `POSTGRES_FRONTDOOR_PORT`, and updated build helpers to recreate `postgres_frontdoor` so remote indexing hosts can connect when explicitly exposed.
 2026-05-19 Simplified remote DB helper behavior: removed `--add-host` from `index-repo` scripts; hostname `--database-url HOST:PORT` now resolves to IPv4 and rewrites `DATABASE_URL` directly.

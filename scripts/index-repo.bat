@@ -132,25 +132,29 @@ for /f "usebackq delims=" %%L in ("%resolver_out%") do (
 del "%resolver_out%" >nul 2>&1
 
 set "db_env_arg="
+set "deps_arg="
 if defined database_url (
+  docker compose -f "%compose_file%" --profile indexer up -d embed_proxy classifier_proxy
+  if errorlevel 1 exit /b %errorlevel%
   set "db_env_arg=-e DATABASE_URL=%database_url%"
+  set "deps_arg=--no-deps"
 )
 
 if /I "%has_repo_name_flag%"=="true" (
   if defined ingest_args (
-    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
+    call docker compose -f "%compose_file%" --profile indexer run --rm %deps_arg% %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
     exit /b %errorlevel%
   )
-  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
+  docker compose -f "%compose_file%" --profile indexer run --rm %deps_arg% %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
   exit /b %errorlevel%
 )
 
 if defined ingest_args (
-  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
+  call docker compose -f "%compose_file%" --profile indexer run --rm %deps_arg% %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
   exit /b %errorlevel%
 )
 
-docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
+docker compose -f "%compose_file%" --profile indexer run --rm %deps_arg% %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
 exit /b %errorlevel%
 
 :show_help

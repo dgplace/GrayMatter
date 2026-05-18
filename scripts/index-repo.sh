@@ -153,6 +153,8 @@ docker_compose_indexer=(
 )
 
 if [[ -n "$database_url" ]]; then
+  docker compose -f "$compose_file" --profile indexer up -d embed_proxy classifier_proxy
+  docker_compose_indexer+=(--no-deps)
   docker_compose_indexer+=(-e "DATABASE_URL=$database_url")
 fi
 
