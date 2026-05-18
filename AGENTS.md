@@ -71,18 +71,9 @@ Keep these files focused on distinct purposes.
 
 ## Tooling and Workflow
 
-- Use CodeBrain tooling first for repository discovery that benefits from intent, symbol, reference, and dependency context.
-- Use `rg` for exact text and filename discovery, validating index-backed findings, or when index coverage is stale or incomplete.
 - Keep ingestion and MCP workflow commands aligned with `README.md`; if operational commands change, update docs in the same change.
 - The canonical CodeBrain MCP usage guide lives in `src/mcp/resources.ts` as the `codebrain://usage` resource (with a short pointer in `CODEBRAIN_SERVER_INSTRUCTIONS`). When tools are added, removed, renamed, or change their parameter contracts, update `CODEBRAIN_USAGE_TEXT` in the same change so all MCP clients see consistent guidance. Do not create parallel usage docs (e.g., a Claude-only `SKILL.md`) that can drift from this source.
-
-### CodeBrain Self-Discovery Policy
-
-- Treat this repository as a self-hosted discovery environment: when working in CodeBrain, use CodeBrain MCP tools as the primary discovery path.
-- Start discovery with `list_repositories`, then scope subsequent MCP tool calls to the correct `repo` value.
-- Prefer MCP semantic/symbol/reference/dependency tools for architecture and impact analysis; use `rg` as a precision and verification complement.
-- If indexed results appear stale, incomplete, or inconsistent with the working tree, run local re-ingestion and continue with refreshed MCP results.
-- Do not bypass stale-index problems with ad-hoc per-tool heuristics; fix freshness at the ingestion/index layer first.
+- CodeBrain is a dogfooding environment: agents working in this repository may improve the MCP tools and guidance they are using when the tool behavior itself needs correction.
 
 ## Engineering Standards
 

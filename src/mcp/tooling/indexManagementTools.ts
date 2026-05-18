@@ -216,7 +216,7 @@ export function registerIndexManagementTools(server: McpServer): void {
 
   server.tool(
     "find_flows",
-    "Use to trace execution flows. Pass exactly one of `symbol` (flows containing it) or `flow` (members of that flow).",
+    "Use to trace execution flows. Exactly one selector must be set: `symbol` or `flow`. Pass `symbol` for flows containing it, or `flow` for members of that flow.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().min(1).optional().describe("Symbol selector: exact symbol name or qualified suffix."),

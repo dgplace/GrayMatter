@@ -48,7 +48,7 @@ export function registerRepoSearchTools(server: McpServer): void {
 
   server.tool(
     "semantic_search",
-    "Use ONLY when no identifier is known and the question is conceptual. If you know any part of a name, prefer `find_symbol` or `exact_symbol_search`. If two queries miss, switch tools -- do not rephrase.",
+    "Use ONLY when no identifier is known and the question is conceptual. If you know any part of a name, prefer `find_symbol` or `exact_symbol_search`. If top results are unrelated after two attempts, switch to scoped text search instead of rephrasing.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       query: z
@@ -136,7 +136,7 @@ export function registerRepoSearchTools(server: McpServer): void {
           content: [
             {
               type: "text",
-              text: "No results found. Try broadening your query, lowering the threshold, or using more specific symbol names.",
+              text: "No results found. Try broadening your query, lowering the threshold, using more specific symbol names, or switching to scoped text search when looking for an exact string/declaration.",
             },
           ],
         };
@@ -148,7 +148,7 @@ export function registerRepoSearchTools(server: McpServer): void {
 
   server.tool(
     "find_symbol",
-    "FIRST RESORT after `list_repositories`. Try this with the user's own nouns -- lowercase, English, partial all hit (case-insensitive, ranked). Do not pre-judge whether a word \"looks like\" an identifier: `polyline`, `canvas`, `auth`, `payment` all work and usually hit. Only fall through to `get_file_map`/`semantic_search` if this returns nothing.",
+    "FIRST RESORT after `list_repositories`. Try this with the user's own nouns -- lowercase, English, partial all hit (case-insensitive, ranked). Do not pre-judge whether a word \"looks like\" an identifier: `polyline`, `canvas`, `auth`, `payment` all work and usually hit. If this misses a known declaration, verify with scoped text search.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z
@@ -215,7 +215,7 @@ export function registerRepoSearchTools(server: McpServer): void {
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No symbols found matching "${name}" in repo \`${repo}\`. Try a different noun from the user's question, or fall back to \`semantic_search\` / \`get_file_map\` (no path_prefix).` }] };
+        return { content: [{ type: "text", text: `No symbols found matching "${name}" in repo \`${repo}\`. Try a different noun from the user's question, \`semantic_search\` / \`get_file_map\` (no path_prefix), or scoped text search when "${name}" is a known declaration or exact string.` }] };
       }
 
       return {
@@ -228,7 +228,7 @@ export function registerRepoSearchTools(server: McpServer): void {
 
   server.tool(
     "exact_symbol_search",
-    "Use when you know the exact identifier. Grep-like precision, unambiguous. Always prefer this over `semantic_search` when the name is known.",
+    "Use when you know the exact identifier. Grep-like precision, unambiguous. Prefer this over `semantic_search` when the name is known; if it misses a known declaration, verify with scoped text search.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol or method name to match."),
@@ -282,7 +282,7 @@ export function registerRepoSearchTools(server: McpServer): void {
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No exact symbol matches found for "${name}" in repo \`${repo}\`. Try \`find_symbol\` for partial matches.` }] };
+        return { content: [{ type: "text", text: `No exact symbol matches found for "${name}" in repo \`${repo}\`. Try \`find_symbol\` for partial matches, or scoped text search if "${name}" is a known declaration.` }] };
       }
 
       return {

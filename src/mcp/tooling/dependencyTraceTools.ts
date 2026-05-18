@@ -296,7 +296,7 @@ export function registerDependencyTraceTools(server: McpServer): void {
 
   server.tool(
     "get_file_map",
-    "FALLBACK orientation tool -- use ONLY after `find_symbol` and `semantic_search` returned nothing useful. File map is for mapping the territory, not for discovering code. Call with NO `path_prefix` first to see real top-level dirs; do not guess `src/`. NEXT STEP after this returns a relevant class/method name: call `exact_symbol_search` or `describe_node` on it -- do NOT jump to Grep/Read.",
+    "FALLBACK orientation tool -- use ONLY after `find_symbol` and `semantic_search` returned nothing useful. File map is for mapping the territory, not for discovering code. Call with NO `path_prefix` first to see real top-level dirs; do not guess `src/`. NEXT STEP after this returns a relevant class/method name: call `exact_symbol_search` or `describe_node` on it. If indexed paths contradict the visible repo, switch to scoped text search and refresh the index.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path_prefix: z.string().optional().describe("Directory or path prefix to inspect."),

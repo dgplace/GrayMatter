@@ -29,6 +29,14 @@ function readMcpToolSource(): string {
   return toolSourceFiles.map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
 }
 
+/**
+ * @brief Loads MCP resource source text for usage-guidance assertions.
+ * @returns Source text for MCP resource registration.
+ */
+function readMcpResourceSource(): string {
+  return readFileSync(new URL("../src/mcp/resources.ts", import.meta.url), "utf8");
+}
+
 test("extractKeywordTerms removes stopwords, deduplicates, and caps results", () => {
   const terms = extractKeywordTerms(
     "How to configure toolbar toolbar styling for swift navigation bar TrackService PhotoService MapKit Logger",
@@ -380,6 +388,18 @@ test("semantic_search exposes include_documentation and filters documentation-in
   assert.match(toolsSource, /include_documentation:\s*z\s*\.\s*boolean\(\)\s*\.\s*optional\(\)/);
   assert.match(toolsSource, /include_documentation = false/);
   assert.match(toolsSource, /row\.intent !== DOCUMENTATION_INTENT/);
+});
+
+test("MCP usage guidance explains scoped text-search fallback discipline", () => {
+  const resourcesSource = readMcpResourceSource();
+
+  assert.match(resourcesSource, /When to Switch to Scoped Text Search/);
+  assert.match(resourcesSource, /CodeBrain returns no result for a known declaration/);
+  assert.match(resourcesSource, /Do not run broad text search across the whole repo/);
+  assert.match(resourcesSource, /validateCloudSync/);
+  assert.ok(
+    resourcesSource.includes("^(final )?(class|struct|enum|protocol) TypeName\\\\b|extension TypeName\\\\b"),
+  );
 });
 
 test("formatSearchResults truncates oversized chunk content to keep MCP responses under the token cap", () => {

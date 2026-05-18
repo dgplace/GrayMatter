@@ -165,7 +165,8 @@ export async function getSecondLevelDirs(repo: string, topDir: string): Promise<
  * @brief Returns a "Next steps" footer to append to successful codebrain results.
  *
  * Embeds the next-tool suggestion in the result the agent just read, fighting the
- * habit of falling back to Grep/Read once a codebrain call succeeds.
+ * habit of falling back to broad text search or whole-file reads once a
+ * codebrain call succeeds.
  *
  * @param tool Name of the tool whose result is being annotated.
  * @returns Plain-text footer ready to concatenate after the main result body.
@@ -173,11 +174,11 @@ export async function getSecondLevelDirs(repo: string, topDir: string): Promise<
 export function nextStepFooter(tool: string): string {
   const footers: Record<string, string> = {
     find_symbol:
-      "Next: `find_references name=<symbol>` for callers/usages (NOT Grep), `describe_node kind=symbol id=<symbol>` for the gist (NOT Read the whole file), or `find_symbol kind=method file=<path>` to list a file's methods. Read only when you need specific implementation lines from a known range.",
+      "Next: `find_references name=<symbol>` for callers/usages, `describe_node kind=symbol id=<symbol>` for the gist, or `find_symbol kind=method file=<path>` to list a file's methods. Read only when you need specific implementation lines from a known range. If this missed a known declaration, verify with scoped text search by path and file type.",
     exact_symbol_search:
-      "Next: `find_references name=<symbol>` for callers (NOT Grep), `describe_node kind=symbol id=<symbol>` for the doc/summary, or `find_call_graph` for callers/callees. Read only the line range shown above.",
+      "Next: `find_references name=<symbol>` for callers, `describe_node kind=symbol id=<symbol>` for the doc/summary, or `find_call_graph` for callers/callees. Read only the line range shown above. If this missed a known declaration, verify with scoped text search by path and file type.",
     semantic_search:
-      "Next: if any result names a real symbol, switch to `find_symbol`/`exact_symbol_search` on that name -- the index resolves it precisely. Do NOT keep rephrasing this query.",
+      "Next: if any result names a real symbol, switch to `find_symbol`/`exact_symbol_search` on that name -- the index resolves it precisely. If top results are unrelated after two attempts, switch to scoped text search rather than rephrasing.",
     describe_node:
       "Next: `find_references` for usages, `find_call_graph` for callers/callees, `find_implementations`/`find_subtypes` for related types, or `extract_module_interface path_prefix=<dir>` for the module's public API. Read only specific line ranges, never the whole file.",
     get_file_map:
@@ -199,7 +200,7 @@ export function nextStepFooter(tool: string): string {
  * @brief Builds a self-correcting message for tools that took an unmatched `path_prefix`.
  *
  * Returns suggested top-level directories indexed for the repo so the caller can
- * retry with a valid prefix instead of bailing to Grep/Read.
+ * retry with a valid prefix instead of bailing to broad text search.
  *
  * @param repo Repository name.
  * @param badPrefix The path_prefix the caller passed that matched zero files.
@@ -240,7 +241,7 @@ export async function buildPathPrefixHint(
   lines.push("");
   lines.push(
     toolHint ??
-      "Retry with one of the listed prefixes, or call with no `path_prefix` to see the whole repo. Do NOT fall back to Grep/Read -- the guess was wrong, the index is fine.",
+      "Retry with one of the listed prefixes, or call with no `path_prefix` to see the indexed repo. If these indexed prefixes contradict the visible working tree, use scoped text search and refresh the index.",
   );
   return lines.join("\n");
 }
