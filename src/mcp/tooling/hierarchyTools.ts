@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import { query } from "../../db.js";
 import { logToolInvocation } from "../logging.js";
-import { formatRelationshipTarget, formatSymbolLocator, requireRepository } from "./shared.js";
+import { formatRelationshipTarget, formatSymbolLocator, nextStepFooter, requireRepository } from "./shared.js";
 
 /**
  * @brief Registers hierarchy and call-graph traversal tools.
@@ -18,7 +18,7 @@ import { formatRelationshipTarget, formatSymbolLocator, requireRepository } from
 export function registerHierarchyTools(server: McpServer): void {
   server.tool(
     "find_supertypes",
-    "Returns transitive parent types/interfaces for a symbol by walking symbol_relationships where kind is extends/implements. Repository scope is required.",
+    "Use to walk up a type hierarchy -- transitive parent classes/interfaces of a known symbol.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
@@ -142,7 +142,7 @@ export function registerHierarchyTools(server: McpServer): void {
 
   server.tool(
     "find_call_graph",
-    "Returns a bounded forward (callees) or reverse (callers) call graph for a symbol using resolved target_symbol_id edges. Repository scope is required.",
+    "Use to expand a function's callers (reverse) or callees (forward) into a bounded graph. For a single-hop caller list, `find_references` is lighter.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
@@ -416,13 +416,13 @@ export function registerHierarchyTools(server: McpServer): void {
         );
       }
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text", text: lines.join("\n") + nextStepFooter("find_call_graph") }] };
     },
   );
 
   server.tool(
     "find_subtypes",
-    "Returns transitive child types/interfaces for a symbol by walking symbol_relationships where kind is extends/implements. Repository scope is required.",
+    "Use to walk down a type hierarchy -- transitive child types of a known symbol. For interface implementers specifically, `find_implementations` is more direct.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Exact symbol name or qualified suffix to inspect."),
@@ -575,7 +575,7 @@ export function registerHierarchyTools(server: McpServer): void {
 
   server.tool(
     "find_instantiations",
-    "Returns all instantiation sites for a class symbol by filtering reference_kind_v2='instantiation'. Repository scope is required.",
+    "Use to find where a class/struct is actually constructed (new/instantiation sites). Distinct from `find_references`, which also includes type annotations and other reference kinds.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Class symbol name or qualified suffix to inspect."),
@@ -693,7 +693,7 @@ export function registerHierarchyTools(server: McpServer): void {
 
   server.tool(
     "find_implementations",
-    "Returns direct and transitive implementers/subclasses for a symbol by walking symbol_relationships with kind=implements/extends. Repository scope is required.",
+    "Use to find direct and transitive implementers/subclasses of an interface or abstract type.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().describe("Interface or abstract symbol name to inspect."),

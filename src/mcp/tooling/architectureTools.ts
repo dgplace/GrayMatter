@@ -11,10 +11,12 @@ import { formatCouplingAnalysis, formatModularizationSeams, formatModuleInterfac
 import { logToolInvocation } from "../logging.js";
 import type { CouplingEdgeRow, ModuleInterfaceRow, SeamRow } from "../types.js";
 import {
+  buildPathPrefixHint,
   getFirstPartyModuleNames,
   impactCategory,
   isFirstPartyModule,
   isStdlibModule,
+  nextStepFooter,
   requireRepository,
 } from "./shared.js";
 import { findCycles } from "../../repositories/store.js";
@@ -27,7 +29,7 @@ import { findCycles } from "../../repositories/store.js";
 export function registerArchitectureTools(server: McpServer): void {
   server.tool(
     "analyze_coupling",
-    "Quantifies how tightly coupled a subsystem is to the rest of the codebase. Reports afferent/efferent coupling, instability metric, and top cross-boundary file pairs. Repository scope is required.",
+    "Use when assessing refactor risk for a subsystem -- afferent/efferent coupling, instability metric, top cross-boundary file pairs.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().describe("Path prefix identifying the subsystem to analyze (e.g. 'src/payments/')."),
@@ -47,7 +49,8 @@ export function registerArchitectureTools(server: McpServer): void {
       const internalFileCount = Number((fileCountResult.rows[0] as Record<string, unknown>).cnt);
 
       if (internalFileCount === 0) {
-        return { content: [{ type: "text", text: `No files found under \`${path_prefix}\` in repo \`${repo}\`.` }] };
+        const hint = await buildPathPrefixHint(repo, path_prefix);
+        return { content: [{ type: "text", text: hint }] };
       }
 
       // Cross-boundary edges from dependencies + symbol_references
@@ -153,7 +156,7 @@ export function registerArchitectureTools(server: McpServer): void {
 
   server.tool(
     "extract_module_interface",
-    "Extracts the public surface of a subsystem -- the exported symbols that external code actually references. Shows what interface a replacement module must implement. Repository scope is required.",
+    "Use to learn the public API of a module -- exported symbols external code actually consumes. Pass `include_unused: true` to also list exported-but-unused symbols.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().describe("Path prefix of the module (e.g. 'src/auth/')."),
@@ -238,17 +241,22 @@ export function registerArchitectureTools(server: McpServer): void {
 
       const rows = result.rows as ModuleInterfaceRow[];
       if (rows.length === 0) {
-        return { content: [{ type: "text", text: `No exported symbols found in \`${path_prefix}\` in repo \`${repo}\`.` }] };
+        const hint = await buildPathPrefixHint(
+          repo,
+          path_prefix,
+          "Retry with one of the listed prefixes, or call with no `path_prefix` to extract a different module's interface.",
+        );
+        return { content: [{ type: "text", text: hint }] };
       }
 
       const text = formatModuleInterface(path_prefix, rows, include_unused);
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text: text + nextStepFooter("extract_module_interface") }] };
     },
   );
 
   server.tool(
     "find_cycles",
-    "Returns persisted dependency cycles for a repository from dependency_cycles materialization. Repository scope is required.",
+    "Use to find circular dependencies, optionally filtered by `path_prefix`.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().optional().describe("Optional path prefix to filter cycle members."),
@@ -298,7 +306,7 @@ export function registerArchitectureTools(server: McpServer): void {
 
   server.tool(
     "find_external_dependencies",
-    "Summarizes third-party package usage by module and version, and optionally lists consumers for a specific package. Repository scope is required.",
+    "Use to inspect third-party package usage. Pass `package_name` to drill into consumers. Stdlib excluded unless `include_stdlib: true`.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().optional().describe("Optional source-file path prefix filter."),
@@ -482,7 +490,7 @@ export function registerArchitectureTools(server: McpServer): void {
 
   server.tool(
     "find_impact",
-    "Answers what may break if a symbol changes by reverse-traversing confidence-scored edges. Repository scope is required.",
+    "Use to estimate blast radius of changing a symbol. Returns \"likely\" (>=0.75) and \"possible\" (>=`min_confidence`) bands grouped by edge category. For a plain caller list, use `find_references` instead.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       symbol: z.string().min(1).describe("Symbol identifier: numeric symbol id, exact name, or qualified name."),
@@ -673,7 +681,7 @@ export function registerArchitectureTools(server: McpServer): void {
 
   server.tool(
     "find_modularization_seams",
-    "Produces a comprehensive extraction plan for a subsystem: required interfaces, dependencies to inject, and cross-boundary seams to cut. Use this to plan modularizing a component so it can be replaced. Repository scope is required.",
+    "Use when planning an extraction/refactor -- required interfaces, dependencies to inject, and seam edges to cut.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
       path_prefix: z.string().describe("Path prefix of the module to extract (e.g. 'src/notifications/')."),
@@ -692,7 +700,8 @@ export function registerArchitectureTools(server: McpServer): void {
       const internalFileCount = Number((fileCountResult.rows[0] as Record<string, unknown>).cnt);
 
       if (internalFileCount === 0) {
-        return { content: [{ type: "text", text: `No files found under \`${path_prefix}\` in repo \`${repo}\`.` }] };
+        const hint = await buildPathPrefixHint(repo, path_prefix);
+        return { content: [{ type: "text", text: hint }] };
       }
 
       // Query A: Required interfaces (external code calling into this module)

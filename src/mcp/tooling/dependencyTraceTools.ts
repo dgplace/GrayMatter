@@ -9,7 +9,7 @@ import { z } from "zod";
 import { query } from "../../db.js";
 import { getRepositoryStats } from "../../repositories/store.js";
 import { logToolInvocation } from "../logging.js";
-import { repoNotFoundText, requireRepository } from "./shared.js";
+import { buildPathPrefixHint, nextStepFooter, repoNotFoundText, requireRepository } from "./shared.js";
 
 /**
  * @brief Registers dependency tracing and file-map/intent tools.
@@ -19,7 +19,7 @@ import { repoNotFoundText, requireRepository } from "./shared.js";
 export function registerDependencyTraceTools(server: McpServer): void {
   server.tool(
     "trace_dependencies",
-    "Follows dependency edges to answer what depends on X and what X depends on. Repository scope is required.",
+    "Use for cross-file dependency walks (inbound/outbound/both) up to `max_depth`. For symbol-level call relationships, use `find_call_graph` instead.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path: z.string().describe("File path or distinctive partial path to trace."),
@@ -296,7 +296,7 @@ export function registerDependencyTraceTools(server: McpServer): void {
 
   server.tool(
     "get_file_map",
-    "Gives an architectural map of a directory or subsystem. Repository scope is required.",
+    "FALLBACK orientation tool -- use ONLY after `find_symbol` and `semantic_search` returned nothing useful. File map is for mapping the territory, not for discovering code. Call with NO `path_prefix` first to see real top-level dirs; do not guess `src/`. NEXT STEP after this returns a relevant class/method name: call `exact_symbol_search` or `describe_node` on it -- do NOT jump to Grep/Read.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path_prefix: z.string().optional().describe("Directory or path prefix to inspect."),
@@ -329,14 +329,8 @@ export function registerDependencyTraceTools(server: McpServer): void {
       );
 
       if (result.rows.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No files found in repo \`${repo}\` under \`${path_prefix || "(root)"}\`.`,
-            },
-          ],
-        };
+        const hint = await buildPathPrefixHint(repo, path_prefix);
+        return { content: [{ type: "text", text: hint }] };
       }
 
       const formatted = result.rows
@@ -353,13 +347,13 @@ export function registerDependencyTraceTools(server: McpServer): void {
         })
         .join("\n\n");
 
-      return { content: [{ type: "text", text: formatted }] };
+      return { content: [{ type: "text", text: formatted + nextStepFooter("get_file_map") }] };
     },
   );
 
   server.tool(
     "get_intent",
-    "Summarizes what a file is for and what its indexed code sections are doing. Repository scope is required.",
+    "Use before editing a file you haven't read -- returns the file summary plus per-chunk intent labels and line ranges.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path: z.string().describe("File path or distinctive partial path to inspect before editing."),
@@ -436,7 +430,7 @@ export function registerDependencyTraceTools(server: McpServer): void {
 
   server.tool(
     "codebase_stats",
-    "Returns high-level metrics for a selected repository. Repository scope is required.",
+    "Use for repo-wide totals -- file/line counts, language mix, intent distribution, symbol-kind counts. Diagnostic, not for code lookup.",
     {
       repo: z.string().min(1).describe("Repository name to summarize. Required."),
     },

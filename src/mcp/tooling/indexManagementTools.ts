@@ -17,7 +17,7 @@ import {
   getClusterMembers,
 } from "../../repositories/store.js";
 import { logToolInvocation } from "../logging.js";
-import { getNodeDocLinks, repoNotFoundText, requireRepository } from "./shared.js";
+import { buildPathPrefixHint, getNodeDocLinks, nextStepFooter, repoNotFoundText, requireRepository } from "./shared.js";
 
 /**
  * @brief Registers index, cluster, and flow management tools.
@@ -27,7 +27,7 @@ import { getNodeDocLinks, repoNotFoundText, requireRepository } from "./shared.j
 export function registerIndexManagementTools(server: McpServer): void {
   server.tool(
     "get_index_size",
-    "Reports the estimated storage size and row counts for a repository's index in the database. Useful for understanding how much data is indexed.",
+    "Use to check index storage and row counts. Diagnostic only -- not for code lookup.",
     {
       repo: z.string().min(1).describe("Repository name. Required."),
     },
@@ -68,7 +68,7 @@ export function registerIndexManagementTools(server: McpServer): void {
 
   server.tool(
     "get_module_map",
-    "Returns a repository-scoped module map, detailing directory-based and logical modules and their roles.",
+    "Use to orient at the module level -- directory-based and logical modules with role, dominant intent, and counts. Filter by `kind` (directory/logical/all) or `path_prefix`.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       path_prefix: z.string().optional().describe("Optional path prefix to filter modules."),
@@ -82,6 +82,10 @@ export function registerIndexManagementTools(server: McpServer): void {
 
       const modules = await getModuleIntents(repo, kind, path_prefix);
       if (modules.length === 0) {
+        if (path_prefix) {
+          const hint = await buildPathPrefixHint(repo, path_prefix);
+          return { content: [{ type: "text", text: hint }] };
+        }
         return { content: [{ type: "text", text: `No modules found in \`${repo}\`. You may need to run module synthesis first.` }] };
       }
 
@@ -93,13 +97,13 @@ export function registerIndexManagementTools(server: McpServer): void {
                `Summary: ${m.summary}\n`;
       }).join("\n");
 
-      return { content: [{ type: "text", text: formatted }] };
+      return { content: [{ type: "text", text: formatted + nextStepFooter("get_module_map") }] };
     },
   );
 
   server.tool(
     "clusters",
-    "Lists repository clusters with name, summary, member count, modularity, and granularity. Repository scope is required.",
+    "Use to discover semantic groupings (symbol or file granularity). For members of a specific cluster, follow up with `cluster_members`.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       granularity: z.enum(["symbol", "file"]).optional().describe("Optional cluster granularity filter."),
@@ -139,7 +143,7 @@ export function registerIndexManagementTools(server: McpServer): void {
 
   server.tool(
     "cluster_members",
-    "Lists weighted members of a repository cluster. Member shape follows the cluster granularity (symbol or file). Repository scope is required.",
+    "Use to expand a cluster (by id, `cluster_key`, or name) into its weighted members.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       cluster: z.string().min(1).describe("Cluster selector: id, cluster_key, or cluster name."),
@@ -212,7 +216,7 @@ export function registerIndexManagementTools(server: McpServer): void {
 
   server.tool(
     "find_flows",
-    "Finds execution-flow memberships by symbol or lists member symbols for a selected flow. Exactly one selector must be set: `symbol` or `flow`. Repository scope is required.",
+    "Use to trace execution flows. Pass exactly one of `symbol` (flows containing it) or `flow` (members of that flow).",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       symbol: z.string().min(1).optional().describe("Symbol selector: exact symbol name or qualified suffix."),
@@ -406,7 +410,7 @@ export function registerIndexManagementTools(server: McpServer): void {
 
   server.tool(
     "describe_node",
-    "Returns a unified description for a file, symbol, or cluster and includes all linked doc_links prose rows. Repository scope is required.",
+    "Use to get a unified description of a file, symbol, or cluster (with linked doc_links prose). Cheaper than opening the file when you just need the gist.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       kind: z.enum(["file", "symbol", "cluster"]).describe("Node kind to describe."),
@@ -579,13 +583,13 @@ export function registerIndexManagementTools(server: McpServer): void {
         lines.splice(3, 0, `- resolved_from_id: ${id}`);
       }
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text", text: lines.join("\n") + nextStepFooter("describe_node") }] };
     },
   );
 
   server.tool(
     "delete_index",
-    "Permanently deletes all indexed data for a repository from the database (files, chunks, embeddings, symbols, references). This cannot be undone. Pass confirm=true to proceed.",
+    "DESTRUCTIVE -- permanently removes all indexed data for a repo. Requires `confirm: true`. Never call without explicit user instruction.",
     {
       repo: z.string().min(1).describe("Repository name to delete. Required."),
       confirm: z

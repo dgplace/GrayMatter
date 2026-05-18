@@ -116,6 +116,136 @@ export async function requireRepository(repo: string): Promise<TextToolResponse 
 }
 
 /**
+ * @brief Returns the distinct first-segment top-level directories indexed for a repo.
+ * @param repo Repository name.
+ * @returns Sorted list of top-level directory names (e.g. ["codebrain", "desktop", "src"]).
+ */
+export async function getTopLevelDirs(repo: string): Promise<string[]> {
+  const result = await query(
+    `
+    SELECT DISTINCT split_part(path, '/', 1) AS seg
+    FROM files
+    WHERE repo = $1
+      AND path LIKE '%/%'
+    ORDER BY seg
+    `,
+    [repo],
+  );
+  return result.rows
+    .map((row: Record<string, unknown>) => String(row.seg || ""))
+    .filter((seg) => seg.length > 0);
+}
+
+/**
+ * @brief Returns the distinct second-segment sub-directories under a given top-level dir.
+ * @param repo Repository name.
+ * @param topDir First-segment directory (without trailing slash).
+ * @returns Sorted list of "topDir/sub" entries that exist in the index.
+ */
+export async function getSecondLevelDirs(repo: string, topDir: string): Promise<string[]> {
+  if (!topDir) {
+    return [];
+  }
+  const result = await query(
+    `
+    SELECT DISTINCT split_part(substring(path FROM length($2) + 2), '/', 1) AS seg
+    FROM files
+    WHERE repo = $1
+      AND path LIKE $2 || '/%/%'
+    ORDER BY seg
+    `,
+    [repo, topDir],
+  );
+  return result.rows
+    .map((row: Record<string, unknown>) => `${topDir}/${String(row.seg || "")}`)
+    .filter((entry) => !entry.endsWith("/"));
+}
+
+/**
+ * @brief Returns a "Next steps" footer to append to successful codebrain results.
+ *
+ * Embeds the next-tool suggestion in the result the agent just read, fighting the
+ * habit of falling back to Grep/Read once a codebrain call succeeds.
+ *
+ * @param tool Name of the tool whose result is being annotated.
+ * @returns Plain-text footer ready to concatenate after the main result body.
+ */
+export function nextStepFooter(tool: string): string {
+  const footers: Record<string, string> = {
+    find_symbol:
+      "Next: `find_references name=<symbol>` for callers/usages (NOT Grep), `describe_node kind=symbol id=<symbol>` for the gist (NOT Read the whole file), or `find_symbol kind=method file=<path>` to list a file's methods. Read only when you need specific implementation lines from a known range.",
+    exact_symbol_search:
+      "Next: `find_references name=<symbol>` for callers (NOT Grep), `describe_node kind=symbol id=<symbol>` for the doc/summary, or `find_call_graph` for callers/callees. Read only the line range shown above.",
+    semantic_search:
+      "Next: if any result names a real symbol, switch to `find_symbol`/`exact_symbol_search` on that name -- the index resolves it precisely. Do NOT keep rephrasing this query.",
+    describe_node:
+      "Next: `find_references` for usages, `find_call_graph` for callers/callees, `find_implementations`/`find_subtypes` for related types, or `extract_module_interface path_prefix=<dir>` for the module's public API. Read only specific line ranges, never the whole file.",
+    get_file_map:
+      "Next: `find_symbol kind=class file=<path>` or `find_symbol kind=method file=<path>` to list a file's symbols (NOT Read the whole file), or `describe_node kind=file id=<path>` for its gist. Use `extract_module_interface path_prefix=<dir>` for the module's public API.",
+    get_module_map:
+      "Next: `find_symbol`/`extract_module_interface` for a specific module, or `get_file_map path_prefix=<module>` to drill into its files.",
+    find_references:
+      "Next: `describe_node kind=symbol id=<caller>` for any caller you want to understand. Read only the cited line range -- callers are usually short.",
+    find_call_graph:
+      "Next: `describe_node` or `find_references` on any node of interest. Read only specific line ranges.",
+    extract_module_interface:
+      "Next: `describe_node kind=symbol id=<exported>` for any symbol, or `find_references` to see who consumes the API.",
+  };
+  const body = footers[tool];
+  return body ? `\n\n---\nNEXT STEP: ${body}` : "";
+}
+
+/**
+ * @brief Builds a self-correcting message for tools that took an unmatched `path_prefix`.
+ *
+ * Returns suggested top-level directories indexed for the repo so the caller can
+ * retry with a valid prefix instead of bailing to Grep/Read.
+ *
+ * @param repo Repository name.
+ * @param badPrefix The path_prefix the caller passed that matched zero files.
+ * @param toolHint Optional next-step hint specific to the calling tool.
+ * @returns Human-readable text payload listing valid prefixes.
+ */
+export async function buildPathPrefixHint(
+  repo: string,
+  badPrefix: string,
+  toolHint?: string,
+): Promise<string> {
+  const topDirs = await getTopLevelDirs(repo);
+  const lines: string[] = [];
+  lines.push(
+    `No files matched \`path_prefix=${badPrefix || "(empty)"}\` in repo \`${repo}\`.`,
+  );
+
+  if (topDirs.length === 0) {
+    lines.push("Repository has no indexed directories. The index may be empty or stale -- consider re-ingesting.");
+    return lines.join("\n");
+  }
+
+  lines.push("");
+  lines.push("Indexed top-level directories:");
+  for (const dir of topDirs) {
+    lines.push(`  - \`${dir}/\``);
+  }
+
+  if (badPrefix) {
+    const guess = badPrefix.split("/")[0] ?? "";
+    const matches = topDirs.filter((d) => d.toLowerCase().includes(guess.toLowerCase()));
+    if (matches.length > 0 && !topDirs.includes(guess)) {
+      lines.push("");
+      lines.push(`Closest matches to your prefix: ${matches.map((m) => `\`${m}/\``).join(", ")}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(
+    toolHint ??
+      "Retry with one of the listed prefixes, or call with no `path_prefix` to see the whole repo. Do NOT fall back to Grep/Read -- the guess was wrong, the index is fine.",
+  );
+  return lines.join("\n");
+}
+
+/**
  * @brief Render resolved or unresolved relationship targets as readable labels.
  * @param row Relationship row with optional resolved file/location columns.
  * @returns Display label for a structural target symbol.

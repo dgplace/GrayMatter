@@ -28,11 +28,15 @@ import { registerWebRoutes } from "./web/routes.js";
  * @returns New MCP server.
  */
 export function createServer(): McpServer {
-  const server = new McpServer({
-    name: "codebrain",
-    version: "1.1.0",
-    description: CODEBRAIN_SERVER_INSTRUCTIONS,
-  });
+  const server = new McpServer(
+    {
+      name: "codebrain",
+      version: "1.1.0",
+    },
+    {
+      instructions: CODEBRAIN_SERVER_INSTRUCTIONS,
+    },
+  );
 
   registerResources(server);
   registerTools(server);

@@ -14,7 +14,7 @@ import { logToolInvocation } from "../logging.js";
 import { keywordSearch } from "../search.js";
 import { SYMBOL_KIND_VALUES } from "../types.js";
 import type { ReferenceRow, SearchRow, SymbolRow } from "../types.js";
-import { DOCUMENTATION_INTENT, INTENT_VALUES, requireRepository } from "./shared.js";
+import { DOCUMENTATION_INTENT, INTENT_VALUES, nextStepFooter, requireRepository } from "./shared.js";
 
 /**
  * @brief Registers repository/symbol search tools.
@@ -24,7 +24,7 @@ import { DOCUMENTATION_INTENT, INTENT_VALUES, requireRepository } from "./shared
 export function registerRepoSearchTools(server: McpServer): void {
   server.tool(
     "list_repositories",
-    "Lists indexed repositories and top-level counts so callers can select a repo for mandatory repo-scoped query tools.",
+    "Call first to discover the exact `repo` string -- never guess it from the working directory. All other tools require `repo`.",
     {},
     async () => {
       logToolInvocation("list_repositories");
@@ -48,7 +48,7 @@ export function registerRepoSearchTools(server: McpServer): void {
 
   server.tool(
     "semantic_search",
-    "Use for concept-based discovery when the exact symbol name is unknown. Repository scope is required.",
+    "Use ONLY when no identifier is known and the question is conceptual. If you know any part of a name, prefer `find_symbol` or `exact_symbol_search`. If two queries miss, switch tools -- do not rephrase.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       query: z
@@ -142,13 +142,13 @@ export function registerRepoSearchTools(server: McpServer): void {
         };
       }
 
-      return { content: [{ type: "text", text: formatSearchResults(rows) }] };
+      return { content: [{ type: "text", text: formatSearchResults(rows) + nextStepFooter("semantic_search") }] };
     },
   );
 
   server.tool(
     "find_symbol",
-    "Use first when you know part of a symbol name. Repository scope is required.",
+    "FIRST RESORT after `list_repositories`. Try this with the user's own nouns -- lowercase, English, partial all hit (case-insensitive, ranked). Do not pre-judge whether a word \"looks like\" an identifier: `polyline`, `canvas`, `auth`, `payment` all work and usually hit. Only fall through to `get_file_map`/`semantic_search` if this returns nothing.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z
@@ -215,16 +215,20 @@ export function registerRepoSearchTools(server: McpServer): void {
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No symbols found matching "${name}" in repo \`${repo}\`.` }] };
+        return { content: [{ type: "text", text: `No symbols found matching "${name}" in repo \`${repo}\`. Try a different noun from the user's question, or fall back to \`semantic_search\` / \`get_file_map\` (no path_prefix).` }] };
       }
 
-      return { content: [{ type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) }] };
+      return {
+        content: [
+          { type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) + nextStepFooter("find_symbol") },
+        ],
+      };
     },
   );
 
   server.tool(
     "exact_symbol_search",
-    "Use for exact identifier lookups when you need grep-like precision. Repository scope is required.",
+    "Use when you know the exact identifier. Grep-like precision, unambiguous. Always prefer this over `semantic_search` when the name is known.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol or method name to match."),
@@ -278,16 +282,20 @@ export function registerRepoSearchTools(server: McpServer): void {
       );
 
       if (result.rows.length === 0) {
-        return { content: [{ type: "text", text: `No exact symbol matches found for "${name}" in repo \`${repo}\`.` }] };
+        return { content: [{ type: "text", text: `No exact symbol matches found for "${name}" in repo \`${repo}\`. Try \`find_symbol\` for partial matches.` }] };
       }
 
-      return { content: [{ type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) }] };
+      return {
+        content: [
+          { type: "text", text: formatSymbolResults(result.rows as SymbolRow[]) + nextStepFooter("exact_symbol_search") },
+        ],
+      };
     },
   );
 
   server.tool(
     "find_references",
-    "Finds indexed lexical and call references to an exact symbol name. Repository scope is required. Resolved (target_symbol_id-backed) edges are preferred; results below the confidence threshold are filtered out unless include_unresolved is set.",
+    "Use when you need callers/usages of a known symbol. Returns resolved high-confidence edges by default; pass `include_unresolved: true` for heuristic matches, or `reference_kind` to filter call/member_call/type_reference/instantiation.",
     {
       repo: z.string().min(1).describe("Repository name to search in. Required."),
       name: z.string().describe("Exact symbol name to find references for."),
@@ -361,7 +369,11 @@ export function registerRepoSearchTools(server: McpServer): void {
         return { content: [{ type: "text", text: `No references found for "${name}" in repo \`${repo}\`${hint}.` }] };
       }
 
-      return { content: [{ type: "text", text: formatReferenceResults(result.rows as ReferenceRow[], name) }] };
+      return {
+        content: [
+          { type: "text", text: formatReferenceResults(result.rows as ReferenceRow[], name) + nextStepFooter("find_references") },
+        ],
+      };
     },
   );
 
