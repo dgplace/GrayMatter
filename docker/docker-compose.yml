@@ -92,7 +92,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.mcp
     env_file:
-      - ../.env/mcp.env
+      - path: ../.env/mcp.env
+        required: false
     depends_on:
       postgres:
         condition: service_healthy

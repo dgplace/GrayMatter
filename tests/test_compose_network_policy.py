@@ -30,29 +30,31 @@ def _service_block(source: str, service_name: str, next_section_name: str) -> st
     return source[start_index:end_index]
 
 
-def test_indexer_uses_internal_network_only() -> None:
-    """@brief Verify indexer remains isolated on the internal-only network."""
+def test_indexer_uses_internal_and_host_access_networks() -> None:
+    """@brief Verify indexer can reach internal services and remote DB hosts."""
     source = _compose_source()
     indexer_block = _service_block(source, "indexer", "mcp")
 
     assert "networks:\n      - codebrain_internal" in indexer_block
-    assert "codebrain_host_access" not in indexer_block
+    assert "codebrain_host_access" in indexer_block
 
 
-def test_only_frontdoor_proxy_services_attach_to_host_access_network() -> None:
-    """@brief Verify only frontdoor/proxy sidecars bridge to host-access network."""
+def test_expected_services_attach_to_host_access_network() -> None:
+    """@brief Verify only expected services bridge to host-access network."""
     source = _compose_source()
 
     embed_proxy_block = _service_block(source, "embed_proxy", "classifier_proxy")
     classifier_proxy_block = _service_block(source, "classifier_proxy", "postgres_frontdoor")
     postgres_frontdoor_block = _service_block(source, "postgres_frontdoor", "postgres")
     postgres_block = _service_block(source, "postgres", "indexer")
+    indexer_block = _service_block(source, "indexer", "mcp")
     mcp_block = _service_block(source, "mcp", "mcp_frontdoor")
     mcp_frontdoor_block = _service_block(source, "mcp_frontdoor", "volumes")
 
     assert "codebrain_host_access" in embed_proxy_block
     assert "codebrain_host_access" in classifier_proxy_block
     assert "codebrain_host_access" in postgres_frontdoor_block
+    assert "codebrain_host_access" in indexer_block
     assert "codebrain_host_access" in mcp_frontdoor_block
     assert "codebrain_host_access" not in postgres_block
     assert "codebrain_host_access" not in mcp_block
@@ -63,3 +65,12 @@ def test_internal_network_is_marked_internal_true() -> None:
     source = _compose_source()
     assert "codebrain_internal:" in source
     assert "internal: true" in source
+
+
+def test_mcp_env_file_is_optional() -> None:
+    """@brief Verify local MCP builds do not require a private env file."""
+    source = _compose_source()
+    mcp_block = _service_block(source, "mcp", "mcp_frontdoor")
+
+    assert "path: ../.env/mcp.env" in mcp_block
+    assert "required: false" in mcp_block
