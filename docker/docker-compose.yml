@@ -38,7 +38,7 @@ services:
       postgres:
         condition: service_started
     ports:
-      - "127.0.0.1:5433:5432"
+      - "${POSTGRES_FRONTDOOR_BIND:-127.0.0.1}:${POSTGRES_FRONTDOOR_PORT:-5433}:5432"
     networks:
       - codebrain_internal
       - codebrain_host_access

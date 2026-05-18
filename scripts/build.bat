@@ -4,8 +4,8 @@ rem /**
 rem  * @file build.bat
 rem  * @brief Rebuild the CodeBrain Docker images and recreate the affected containers.
 rem  *
-rem  * Default mode rebuilds every image and recreates the proxy sidecars plus
-rem  * `mcp`/`mcp_frontdoor`, which is the common case when iterating on MCP
+rem  * Default mode rebuilds every image and recreates the proxy/frontdoor
+rem  * sidecars plus `mcp`, which is the common case when iterating on MCP
 rem  * server code. Pass --reset to also recreate `postgres` (the named
 rem  * `postgres_data` volume is preserved).
 rem  * Pass --wipe to drop the named volume before recreating, which forces
@@ -95,7 +95,7 @@ if /I "%mode%"=="wipe" (
   )
 
   echo Stopping postgres + mcp...
-  docker compose -f "%compose_file%" --profile indexer --profile tools rm -sf postgres embed_proxy classifier_proxy mcp mcp_frontdoor
+  docker compose -f "%compose_file%" --profile indexer --profile tools rm -sf postgres embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor
   if errorlevel 1 exit /b %errorlevel%
 
   echo Removing volume %POSTGRES_VOLUME%...
@@ -112,22 +112,22 @@ docker compose -f "%compose_file%" --profile indexer --profile tools build
 if errorlevel 1 exit /b %errorlevel%
 
 if /I "%mode%"=="reset" (
-  docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate postgres embed_proxy classifier_proxy mcp mcp_frontdoor
+  docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate postgres embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor
   exit /b %errorlevel%
 )
 
 if /I "%mode%"=="wipe" (
-  docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate postgres embed_proxy classifier_proxy mcp mcp_frontdoor
+  docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate postgres embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor
   exit /b %errorlevel%
 )
 
-docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate embed_proxy classifier_proxy mcp mcp_frontdoor
+docker compose -f "%compose_file%" --profile indexer --profile tools up -d --force-recreate embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor
 exit /b %errorlevel%
 
 :show_help
 echo Usage:
-echo   scripts\build.bat             Rebuild images and recreate proxy sidecars, `mcp`, and `mcp_frontdoor`.
-echo   scripts\build.bat --reset     Rebuild images and recreate `postgres`, proxy sidecars, `mcp`, and `mcp_frontdoor`.
+echo   scripts\build.bat             Rebuild images and recreate proxy/frontdoor sidecars and `mcp`.
+echo   scripts\build.bat --reset     Rebuild images and recreate `postgres`, proxy/frontdoor sidecars, and `mcp`.
 echo                                  Indexed data is preserved.
 echo   scripts\build.bat --wipe      Drop the `%POSTGRES_VOLUME%` named volume,
 echo                                  then rebuild images and recreate `postgres`

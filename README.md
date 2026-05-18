@@ -83,6 +83,18 @@ the hostname to an IPv4 and rewrite `DATABASE_URL` to use the IP directly.
 If remote DB connects fail with `Network is unreachable`, rebuild/recreate the
 indexer service after pulling latest changes so it joins the host-access
 network (`scripts/build.sh` or `scripts\build.bat`).
+If remote DB connects fail with `Connection refused`, expose the database
+frontdoor on the remote CodeBrain host and then retry from the indexing host:
+
+```bash
+POSTGRES_FRONTDOOR_BIND=0.0.0.0 POSTGRES_FRONTDOOR_PORT=5432 ./scripts/build.sh --reset
+```
+
+```bat
+set POSTGRES_FRONTDOOR_BIND=0.0.0.0
+set POSTGRES_FRONTDOOR_PORT=5432
+scripts\build.bat --reset
+```
 
 Equivalent raw Docker commands:
 
