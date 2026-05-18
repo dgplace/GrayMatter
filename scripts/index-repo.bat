@@ -25,7 +25,6 @@ set "compose_file=%repo_root%\docker\docker-compose.yml"
 set "target_repo=%CD%"
 set "target_repo_set=false"
 set "database_url="
-set "docker_add_host_args="
 set "ingest_args="
 
 :collect_args
@@ -41,29 +40,12 @@ if /I "%arg%"=="--database-url" (
   shift
   goto collect_args
 )
-if /I "%arg%"=="--add-host" (
-  if "%~2"=="" (
-    echo Missing value for --add-host 1>&2
-    exit /b 1
-  )
-  set "docker_add_host_args=%docker_add_host_args% --add-host %~2"
-  shift
-  shift
-  goto collect_args
-)
 echo(%arg%| findstr /B /I /C:"--database-url=" >nul
 if not errorlevel 1 (
   set "database_url=%arg:~15%"
   shift
   goto collect_args
 )
-echo(%arg%| findstr /B /I /C:"--add-host=" >nul
-if not errorlevel 1 (
-  set "docker_add_host_args=%docker_add_host_args% --add-host %arg:~11%"
-  shift
-  goto collect_args
-)
-
 set "first_char=%arg:~0,1%"
 if /I "%target_repo_set%"=="false" if not "%first_char%"=="-" (
   set "target_repo=%~1"
@@ -81,6 +63,42 @@ shift
 goto collect_args
 
 :args_done
+
+if defined database_url (
+  echo(%database_url%| findstr /C:"://" >nul
+  if errorlevel 1 (
+    for /f "tokens=1,2 delims=:" %%A in ("%database_url%") do (
+      set "db_host=%%A"
+      set "db_port=%%B"
+    )
+    if not defined db_host (
+      echo Invalid --database-url value. Use full DSN or HOST:PORT. 1>&2
+      exit /b 1
+    )
+    if not defined db_port (
+      echo Invalid --database-url value. Use full DSN or HOST:PORT. 1>&2
+      exit /b 1
+    )
+    echo(%db_port%| findstr /R "^[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+      echo Invalid --database-url value. Use full DSN or HOST:PORT. 1>&2
+      exit /b 1
+    )
+    set "resolved_host=%db_host%"
+    echo(%db_host%| findstr /R "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+      for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "$h='%db_host%'; try { ([System.Net.Dns]::GetHostAddresses($h) ^| Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } ^| Select-Object -First 1).IPAddressToString } catch { '' }"`) do (
+        if not "%%H"=="" set "resolved_host=%%H"
+      )
+      if "%resolved_host%"=="%db_host%" (
+        echo Failed to resolve database host in --database-url: %db_host% 1>&2
+        exit /b 1
+      )
+    )
+    set "database_url=postgresql://codebrain:codebrain_local@%resolved_host%:%db_port%/codebrain"
+  )
+)
+
 for %%I in ("%target_repo%") do set "target_repo=%%~fI"
 if not exist "%target_repo%\" (
   echo Repository path does not exist: %target_repo% 1>&2
@@ -120,24 +138,24 @@ if defined database_url (
 
 if /I "%has_repo_name_flag%"=="true" (
   if defined ingest_args (
-    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
+    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
     exit /b %errorlevel%
   )
-  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
+  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
   exit /b %errorlevel%
 )
 
 if defined ingest_args (
-  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
+  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
   exit /b %errorlevel%
 )
 
-docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
+docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
 exit /b %errorlevel%
 
 :show_help
 echo Usage:
-echo   scripts\index-repo.bat [REPO_PATH] [--database-url URL] [--add-host HOST:IP] [INGEST_ARGS...]
+echo   scripts\index-repo.bat [REPO_PATH] [--database-url URL] [INGEST_ARGS...]
 echo.
 echo Examples:
 echo   scripts\index-repo.bat
@@ -147,8 +165,9 @@ echo   scripts\index-repo.bat C:\absolute\path\to\repo --force --synthesize
 echo.
 echo Notes:
 echo   - REPO_PATH defaults to the current working directory.
-echo   - --database-url overrides the target PostgreSQL DSN for this run only.
-echo   - --add-host adds a container host mapping and may be passed multiple times.
+echo   - --database-url accepts either a full DSN or HOST:PORT.
+echo   - HOST:PORT expands to postgresql://codebrain:codebrain_local@HOST:PORT/codebrain.
+echo   - Hostnames are resolved to IPv4 and rewritten into DATABASE_URL directly.
 echo   - Remaining arguments are passed through to `python -m codebrain.ingest`.
 echo   - Pass `--synthesize` to overlay narrative module_intents inline.
 echo   - The target repo is mounted at /target inside the container.
