@@ -84,7 +84,7 @@ test("index management wires web-initiated indexing jobs", () => {
   assert.match(composeFile, /classifier_proxy:\n\s+condition: service_started/);
   assert.match(buildSh, /resolve-container-endpoints\.py/);
   assert.match(buildSh, /export "\$line"/);
-  assert.match(buildSh, /embed_proxy classifier_proxy mcp mcp_frontdoor/);
+  assert.match(buildSh, /recreate_targets=\(embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor\)/);
   assert.match(buildBat, /resolve-container-endpoints\.ps1/);
-  assert.match(buildBat, /embed_proxy classifier_proxy mcp mcp_frontdoor/);
+  assert.match(buildBat, /embed_proxy classifier_proxy postgres_frontdoor mcp mcp_frontdoor/);
 });

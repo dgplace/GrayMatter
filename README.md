@@ -118,22 +118,6 @@ Notes:
 - `.gitignore` is respected during ingestion
 - The `indexer` profile keeps the service from auto-starting with plain `docker compose up`
 
-### Desktop Application (Windows / macOS / Linux)
-
-```bash
-pip install -r requirements-gui.txt
-python -m desktop
-```
-
-The desktop app provides:
-- A GUI for all `codebrain/ingest.py` options (force, no-classify, worker count)
-- Multi-repo management — add, remove, and index any number of repos
-- Concurrent file watching across multiple repos simultaneously
-- Live progress bars and a scrolling file log during ingestion
-- Per-repo statistics and ingestion history views
-- Settings dialog for database, embedding, and classifier configuration
-- System tray integration — close the window while watchers continue running
-
 ## Synthesize Module Intents
 
 Module-intent synthesis overlays narrative LLM intents on directories and on the existing
@@ -183,8 +167,7 @@ in `codebrain.toml` under `[clustering]` and re-ingest.
 The indexer runtime includes local Leiden dependencies (`igraph` + `leidenalg`) so
 cluster materialization stays in-process and does not require external network calls.
 
-Synthesis is LLM-driven, so it is silently skipped when `--no-classify` is set. The
-desktop app runs synthesis from the repo panel with a deterministic progress bar.
+Synthesis is LLM-driven, so it is silently skipped when `--no-classify` is set.
 
 ## Run the MCP Server
 

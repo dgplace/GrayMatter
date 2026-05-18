@@ -1,3 +1,6 @@
+2026-05-19 Fixed post-cleanup regressions by updating `web-ui` build-script expectations for `postgres_frontdoor` recreation targets and making the ingest modularity-ordering test robust against floating-point tie noise.
+2026-05-19 Removed the retired Python desktop UI frontend (`desktop/` package and `requirements-gui.txt`) and deleted remaining desktop-launcher/docs references from active repository documentation.
+2026-05-19 Removed the unused `codebrain/desktop.py` desktop-launcher shim now that the desktop UI front-end entrypoint is retired.
 2026-05-19 Changed `index-repo` remote database runs to start only embedding/classifier proxy sidecars and run the indexer with `--no-deps`, avoiding unnecessary local PostgreSQL startup when `--database-url` is supplied.
 2026-05-19 Changed the PostgreSQL frontdoor default publish target to `0.0.0.0:5432` so remote helper-script indexing works with `--database-url host:5432` after rebuild; env overrides remain available.
 2026-05-19 Made `.env/mcp.env` optional in Docker Compose so local MCP builds use localhost allowlist defaults without a private env file, and aligned compose policy tests with indexer host-access networking.
