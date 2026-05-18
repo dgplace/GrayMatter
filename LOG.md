@@ -1,3 +1,4 @@
+2026-05-19 Attached the `indexer` service to `codebrain_host_access` in `docker/docker-compose.yml` so helper-script ingestion can reach remote/LAN PostgreSQL hosts while preserving existing internal-network behavior.
 2026-05-19 Added remote-ingest DB targeting in helper scripts: `scripts/index-repo.sh` and `scripts/index-repo.bat` now accept `--database-url <postgres-dsn>` and pass it as a one-run `DATABASE_URL` override to the indexer container while preserving existing default local-container behavior.
 2026-05-18 Added web UI index-job launch support: Index management now opens a terminal dialog, validates selected repo paths, starts Docker-backed indexer runs with `--workers 2`, and exposes job status/cancel APIs.
 2026-05-18 Fixed Dockerized web indexing startup: `mcp` now has Docker CLI/socket access and a read-only CodeBrain source mount, while containerized path validation defers host-path existence checks to the sibling indexer run.

@@ -49,6 +49,7 @@ Helper scripts:
 ./scripts/build.sh
 ./scripts/index-repo.sh /absolute/path/to/repo --force
 ./scripts/index-repo.sh /absolute/path/to/repo --database-url postgresql://codebrain:codebrain_local@10.0.0.25:5432/codebrain --force
+./scripts/index-repo.sh /absolute/path/to/repo --database-url postgresql://codebrain:codebrain_local@applepi3:5432/codebrain --add-host applepi3:192.168.0.151 --force
 ./scripts/watch-repo.sh /absolute/path/to/repo
 ```
 
@@ -56,6 +57,7 @@ Helper scripts:
 scripts\build.bat
 scripts\index-repo.bat C:\absolute\path\to\repo --force
 scripts\index-repo.bat C:\absolute\path\to\repo --database-url postgresql://codebrain:codebrain_local@10.0.0.25:5432/codebrain --force
+scripts\index-repo.bat C:\absolute\path\to\repo --database-url postgresql://codebrain:codebrain_local@applepi3:5432/codebrain --add-host applepi3:192.168.0.151 --force
 scripts\watch-repo.bat C:\absolute\path\to\repo
 ```
 
@@ -73,6 +75,11 @@ indexed repository names remain stable instead of becoming `target`.
 Use `--database-url <postgres-dsn>` to index into a remote CodeBrain PostgreSQL
 instance for a single run; when omitted, the scripts keep using the local
 Compose `postgres` container default.
+If the database hostname is not resolvable from inside Docker, add
+`--add-host <host>:<ip>` (repeatable) so the indexer container can resolve it.
+If remote DB connects fail with `Network is unreachable`, rebuild/recreate the
+indexer service after pulling latest changes so it joins the host-access
+network (`scripts/build.sh` or `scripts\build.bat`).
 
 Equivalent raw Docker commands:
 

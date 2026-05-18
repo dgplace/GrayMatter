@@ -17,7 +17,7 @@ set -euo pipefail
 show_help() {
   cat <<'EOF_HELP'
 Usage:
-  scripts/index-repo.sh [REPO_PATH] [--database-url URL] [INGEST_ARGS...]
+  scripts/index-repo.sh [REPO_PATH] [--database-url URL] [--add-host HOST:IP] [INGEST_ARGS...]
 
 Examples:
   scripts/index-repo.sh
@@ -28,6 +28,7 @@ Examples:
 Notes:
   - REPO_PATH defaults to the current working directory.
   - `--database-url` overrides the target PostgreSQL DSN for this run only.
+  - `--add-host` adds a container host mapping (repeatable).
   - Remaining arguments are passed through to `python -m codebrain.ingest`.
   - Pass `--synthesize` to overlay narrative module_intents inline (single container run).
   - The target repo is mounted at /target inside the container.
@@ -47,6 +48,7 @@ compose_file="$repo_root/docker/docker-compose.yml"
 target_repo="$PWD"
 target_repo_set=false
 database_url=""
+docker_add_hosts=()
 ingest_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -62,6 +64,18 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       database_url="$2"
+      shift 2
+      ;;
+    --add-host=*)
+      docker_add_hosts+=("${arg#*=}")
+      shift
+      ;;
+    --add-host)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --add-host" >&2
+        exit 1
+      fi
+      docker_add_hosts+=("$2")
       shift 2
       ;;
     *)
@@ -114,6 +128,10 @@ docker_compose_indexer=(
 if [[ -n "$database_url" ]]; then
   docker_compose_indexer+=(-e "DATABASE_URL=$database_url")
 fi
+
+for add_host_value in "${docker_add_hosts[@]}"; do
+  docker_compose_indexer+=(--add-host "$add_host_value")
+done
 
 docker_compose_indexer+=(
   -v "$target_repo:/target"

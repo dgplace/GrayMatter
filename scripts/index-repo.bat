@@ -25,6 +25,7 @@ set "compose_file=%repo_root%\docker\docker-compose.yml"
 set "target_repo=%CD%"
 set "target_repo_set=false"
 set "database_url="
+set "docker_add_host_args="
 set "ingest_args="
 
 :collect_args
@@ -40,9 +41,25 @@ if /I "%arg%"=="--database-url" (
   shift
   goto collect_args
 )
+if /I "%arg%"=="--add-host" (
+  if "%~2"=="" (
+    echo Missing value for --add-host 1>&2
+    exit /b 1
+  )
+  set "docker_add_host_args=%docker_add_host_args% --add-host %~2"
+  shift
+  shift
+  goto collect_args
+)
 echo(%arg%| findstr /B /I /C:"--database-url=" >nul
 if not errorlevel 1 (
   set "database_url=%arg:~15%"
+  shift
+  goto collect_args
+)
+echo(%arg%| findstr /B /I /C:"--add-host=" >nul
+if not errorlevel 1 (
+  set "docker_add_host_args=%docker_add_host_args% --add-host %arg:~11%"
   shift
   goto collect_args
 )
@@ -103,24 +120,24 @@ if defined database_url (
 
 if /I "%has_repo_name_flag%"=="true" (
   if defined ingest_args (
-    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
+    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
     exit /b %errorlevel%
   )
-  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
+  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
   exit /b %errorlevel%
 )
 
 if defined ingest_args (
-  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
+  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
   exit /b %errorlevel%
 )
 
-docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
+docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% %docker_add_host_args% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
 exit /b %errorlevel%
 
 :show_help
 echo Usage:
-echo   scripts\index-repo.bat [REPO_PATH] [--database-url URL] [INGEST_ARGS...]
+echo   scripts\index-repo.bat [REPO_PATH] [--database-url URL] [--add-host HOST:IP] [INGEST_ARGS...]
 echo.
 echo Examples:
 echo   scripts\index-repo.bat
@@ -131,6 +148,7 @@ echo.
 echo Notes:
 echo   - REPO_PATH defaults to the current working directory.
 echo   - --database-url overrides the target PostgreSQL DSN for this run only.
+echo   - --add-host adds a container host mapping and may be passed multiple times.
 echo   - Remaining arguments are passed through to `python -m codebrain.ingest`.
 echo   - Pass `--synthesize` to overlay narrative module_intents inline.
 echo   - The target repo is mounted at /target inside the container.
