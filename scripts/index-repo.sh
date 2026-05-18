@@ -17,7 +17,7 @@ set -euo pipefail
 show_help() {
   cat <<'EOF_HELP'
 Usage:
-  scripts/index-repo.sh [REPO_PATH] [INGEST_ARGS...]
+  scripts/index-repo.sh [REPO_PATH] [--database-url URL] [INGEST_ARGS...]
 
 Examples:
   scripts/index-repo.sh
@@ -27,6 +27,7 @@ Examples:
 
 Notes:
   - REPO_PATH defaults to the current working directory.
+  - `--database-url` overrides the target PostgreSQL DSN for this run only.
   - Remaining arguments are passed through to `python -m codebrain.ingest`.
   - Pass `--synthesize` to overlay narrative module_intents inline (single container run).
   - The target repo is mounted at /target inside the container.
@@ -43,10 +44,37 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 compose_file="$repo_root/docker/docker-compose.yml"
 
-target_repo="${1:-$PWD}"
-if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
-  shift
-fi
+target_repo="$PWD"
+target_repo_set=false
+database_url=""
+ingest_args=()
+
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  case "$arg" in
+    --database-url=*)
+      database_url="${arg#*=}"
+      shift
+      ;;
+    --database-url)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --database-url" >&2
+        exit 1
+      fi
+      database_url="$2"
+      shift 2
+      ;;
+    *)
+      if [[ "$target_repo_set" == false && "${arg:0:1}" != "-" ]]; then
+        target_repo="$arg"
+        target_repo_set=true
+      else
+        ingest_args+=("$arg")
+      fi
+      shift
+      ;;
+  esac
+done
 
 target_repo="$(cd "$target_repo" && pwd)"
 target_repo_name="$(basename "$target_repo")"
@@ -55,8 +83,6 @@ if [[ ! -d "$target_repo" ]]; then
   echo "Repository path does not exist: $target_repo" >&2
   exit 1
 fi
-
-ingest_args=("$@")
 
 has_repo_name_flag=false
 for ((i = 0; i < ${#ingest_args[@]}; i++)); do
@@ -83,6 +109,13 @@ docker_compose_indexer=(
   -f "$compose_file"
   --profile indexer
   run --rm
+)
+
+if [[ -n "$database_url" ]]; then
+  docker_compose_indexer+=(-e "DATABASE_URL=$database_url")
+fi
+
+docker_compose_indexer+=(
   -v "$target_repo:/target"
   indexer
 )

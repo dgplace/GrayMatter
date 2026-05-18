@@ -37,6 +37,10 @@ export const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "0.0.0.0";
 export const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3001");
 
 /** @brief Optional host allowlist passed through to the MCP express transport app. */
+const MCP_DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+const MCP_ALLOWED_HOSTS_EXTRA = process.env.MCP_ALLOWED_HOSTS_EXTRA
+  ? process.env.MCP_ALLOWED_HOSTS_EXTRA.split(",").map((host) => host.trim()).filter(Boolean)
+  : [];
 export const MCP_ALLOWED_HOSTS = process.env.MCP_ALLOWED_HOSTS
   ? process.env.MCP_ALLOWED_HOSTS.split(",").map((host) => host.trim()).filter(Boolean)
-  : undefined;
+  : [...MCP_DEFAULT_ALLOWED_HOSTS, ...MCP_ALLOWED_HOSTS_EXTRA];

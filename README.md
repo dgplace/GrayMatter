@@ -48,12 +48,14 @@ Helper scripts:
 ```bash
 ./scripts/build.sh
 ./scripts/index-repo.sh /absolute/path/to/repo --force
+./scripts/index-repo.sh /absolute/path/to/repo --database-url postgresql://codebrain:codebrain_local@10.0.0.25:5432/codebrain --force
 ./scripts/watch-repo.sh /absolute/path/to/repo
 ```
 
 ```bat
 scripts\build.bat
 scripts\index-repo.bat C:\absolute\path\to\repo --force
+scripts\index-repo.bat C:\absolute\path\to\repo --database-url postgresql://codebrain:codebrain_local@10.0.0.25:5432/codebrain --force
 scripts\watch-repo.bat C:\absolute\path\to\repo
 ```
 
@@ -68,6 +70,9 @@ The helper scripts mount the target repository at `/target` inside the
 container so they do not conflict with the CodeBrain source mount at
 `/workspace`. They also pass `--repo-name` using the host folder basename, so
 indexed repository names remain stable instead of becoming `target`.
+Use `--database-url <postgres-dsn>` to index into a remote CodeBrain PostgreSQL
+instance for a single run; when omitted, the scripts keep using the local
+Compose `postgres` container default.
 
 Equivalent raw Docker commands:
 

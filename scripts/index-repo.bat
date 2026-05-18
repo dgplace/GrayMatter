@@ -23,26 +23,45 @@ for %%I in ("%script_dir%..") do set "repo_root=%%~fI"
 set "compose_file=%repo_root%\docker\docker-compose.yml"
 
 set "target_repo=%CD%"
+set "target_repo_set=false"
+set "database_url="
 set "ingest_args="
 
-if not "%~1"=="" (
-  set "candidate=%~1"
-  set "first_char=!candidate:~0,1!"
-  if not "!first_char!"=="-" (
-    set "target_repo=%~1"
-    shift
+:collect_args
+if "%~1"=="" goto args_done
+set "arg=%~1"
+if /I "%arg%"=="--database-url" (
+  if "%~2"=="" (
+    echo Missing value for --database-url 1>&2
+    exit /b 1
   )
+  set "database_url=%~2"
+  shift
+  shift
+  goto collect_args
+)
+echo(%arg%| findstr /B /I /C:"--database-url=" >nul
+if not errorlevel 1 (
+  set "database_url=%arg:~15%"
+  shift
+  goto collect_args
 )
 
-:collect_ingest_args
-if "%~1"=="" goto args_done
+set "first_char=%arg:~0,1%"
+if /I "%target_repo_set%"=="false" if not "%first_char%"=="-" (
+  set "target_repo=%~1"
+  set "target_repo_set=true"
+  shift
+  goto collect_args
+)
+
 if defined ingest_args (
   set "ingest_args=!ingest_args! %1"
 ) else (
   set "ingest_args=%1"
 )
 shift
-goto collect_ingest_args
+goto collect_args
 
 :args_done
 for %%I in ("%target_repo%") do set "target_repo=%%~fI"
@@ -77,26 +96,31 @@ for /f "usebackq delims=" %%L in ("%resolver_out%") do (
 )
 del "%resolver_out%" >nul 2>&1
 
+set "db_env_arg="
+if defined database_url (
+  set "db_env_arg=-e DATABASE_URL=%database_url%"
+)
+
 if /I "%has_repo_name_flag%"=="true" (
   if defined ingest_args (
-    call docker compose -f "%compose_file%" --profile indexer run --rm -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
+    call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target !ingest_args!
     exit /b %errorlevel%
   )
-  docker compose -f "%compose_file%" --profile indexer run --rm -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
+  docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target
   exit /b %errorlevel%
 )
 
 if defined ingest_args (
-  call docker compose -f "%compose_file%" --profile indexer run --rm -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
+  call docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%" !ingest_args!
   exit /b %errorlevel%
 )
 
-docker compose -f "%compose_file%" --profile indexer run --rm -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
+docker compose -f "%compose_file%" --profile indexer run --rm %db_env_arg% -v "%target_repo%:/target" indexer python -m codebrain.ingest /target --repo-name "%target_repo_name%"
 exit /b %errorlevel%
 
 :show_help
 echo Usage:
-echo   scripts\index-repo.bat [REPO_PATH] [INGEST_ARGS...]
+echo   scripts\index-repo.bat [REPO_PATH] [--database-url URL] [INGEST_ARGS...]
 echo.
 echo Examples:
 echo   scripts\index-repo.bat
@@ -106,6 +130,7 @@ echo   scripts\index-repo.bat C:\absolute\path\to\repo --force --synthesize
 echo.
 echo Notes:
 echo   - REPO_PATH defaults to the current working directory.
+echo   - --database-url overrides the target PostgreSQL DSN for this run only.
 echo   - Remaining arguments are passed through to `python -m codebrain.ingest`.
 echo   - Pass `--synthesize` to overlay narrative module_intents inline.
 echo   - The target repo is mounted at /target inside the container.
