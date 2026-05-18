@@ -147,3 +147,4 @@
 2026-05-15 Changed logical module synthesis to include single-directory and small clusters by default (removed the >=2-directory gate and set `synthesize_modules --min-files` default to 0), with docs updated in README/ARCHITECTURE.
 2026-05-15 Added raw-index categorical table filters (exclude key/id columns), with server-side filter application, distinct-value filter options in table-page payloads, and UI dropdown/clear controls in `/ui`.
 2026-05-15 Fixed raw-index table filter paging for alias-ordered queries (e.g., `cluster_members`) by keeping original SQL for unfiltered loads and using safe outer-column ordering only when filters are active.
+2026-05-18 Fixed `/ui` index-job dialog live console updates by forcing Rich terminal output, treating carriage-return frames as mutable console lines, removed folder-picker controls, added per-repo persisted full path prefill, and exposed a worker-count override in the dialog.

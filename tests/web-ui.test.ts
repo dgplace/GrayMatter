@@ -59,9 +59,18 @@ test("client app source owns inline raw index table browsing", () => {
 test("index management wires web-initiated indexing jobs", () => {
   assert.match(appSrc, /id="indexRepoBtn"/);
   assert.match(appSrc, /startIndexFromDialog/);
+  assert.match(appSrc, /localStorage\.getItem/);
+  assert.match(appSrc, /localStorage\.setItem/);
+  assert.match(appSrc, /id="indexWorkersInput"/);
+  assert.match(appSrc, /getIndexWorkerCount/);
+  assert.doesNotMatch(appSrc, /indexChooseBtn/);
+  assert.doesNotMatch(appSrc, /indexFolderInput/);
   assert.match(routeSrc, /\/ui\/api\/repos\/:repo\/index-jobs/);
   assert.match(routeSrc, /startIndexJob/);
   assert.match(indexJobsSrc, /codebrain\.ingest/);
+  assert.match(indexJobsSrc, /TTY_INTERACTIVE=1/);
+  assert.match(indexJobsSrc, /writeMutableLogLine/);
+  assert.match(indexJobsSrc, /stripAnsi/);
   assert.match(indexJobsSrc, /"--workers"/);
   assert.match(indexJobsSrc, /String\(workerCount\)/);
   assert.match(indexJobsSrc, /CODEBRAIN_REPO_ROOT/);

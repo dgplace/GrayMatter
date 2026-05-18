@@ -67,6 +67,9 @@ let activeRepo = "";
 let activeIndexTable = "";
 const tableFiltersByTable = new Map<string, Record<string, string>>();
 const UI_BASE_PATH = "/ui";
+const INDEX_PATH_STORAGE_PREFIX = "codebrain:index-path:";
+const DEFAULT_INDEX_WORKERS = 2;
+const INDEX_JOB_POLL_INTERVAL_MS = 250;
 
 /** @brief Escape a value for safe HTML interpolation. */
 function esc(value: unknown): string {
@@ -106,6 +109,56 @@ function clearIndexJobPolling(): void {
     window.clearInterval(indexJobPollId);
     indexJobPollId = null;
   }
+}
+
+/**
+ * @brief Return localStorage key used to persist index-path input per repo.
+ * @param repo Repository name.
+ * @returns Browser storage key.
+ */
+function getIndexPathStorageKey(repo: string): string {
+  return INDEX_PATH_STORAGE_PREFIX + repo;
+}
+
+/**
+ * @brief Load the previously saved index path for a repository.
+ * @param repo Repository name.
+ * @returns Stored absolute path, or empty string when missing/unavailable.
+ */
+function loadRememberedIndexPath(repo: string): string {
+  try {
+    return String(window.localStorage.getItem(getIndexPathStorageKey(repo)) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * @brief Persist the index path for a repository in localStorage.
+ * @param repo Repository name.
+ * @param repoPath Absolute repository path.
+ */
+function rememberIndexPath(repo: string, repoPath: string): void {
+  const normalizedPath = repoPath.trim();
+  if (!normalizedPath) return;
+  try {
+    window.localStorage.setItem(getIndexPathStorageKey(repo), normalizedPath);
+  } catch {
+    // Ignore storage failures (private mode / quota).
+  }
+}
+
+/**
+ * @brief Read and normalize the worker-count override from the index dialog.
+ * @returns Positive worker count, defaulting to the standard indexer value.
+ */
+function getIndexWorkerCount(): number {
+  const workerInput = document.getElementById("indexWorkersInput") as HTMLInputElement | null;
+  const workerCount = Number(workerInput?.value || DEFAULT_INDEX_WORKERS);
+  if (!Number.isFinite(workerCount) || workerCount < 1) {
+    return DEFAULT_INDEX_WORKERS;
+  }
+  return Math.floor(workerCount);
 }
 
 /**
@@ -255,7 +308,7 @@ async function refreshIndexJob(jobId: string): Promise<void> {
 function pollIndexJob(jobId: string): void {
   clearIndexJobPolling();
   void refreshIndexJob(jobId);
-  indexJobPollId = window.setInterval(() => { void refreshIndexJob(jobId); }, 1000);
+  indexJobPollId = window.setInterval(() => { void refreshIndexJob(jobId); }, INDEX_JOB_POLL_INTERVAL_MS);
 }
 
 /**
@@ -267,41 +320,21 @@ function closeIndexDialog(): void {
 }
 
 /**
- * @brief Return the chosen folder name from a directory input when available.
- * @param input Directory input element.
- * @returns Selected top-level folder name, or an empty string.
- */
-function getSelectedDirectoryName(input: HTMLInputElement): string {
-  const firstFile = input.files?.item(0);
-  if (!firstFile) return "";
-  const relativePath = String((firstFile as any).webkitRelativePath || "");
-  if (relativePath) {
-    return relativePath.split("/")[0] || "";
-  }
-  return firstFile.name || "";
-}
-
-/**
  * @brief Start an index job from the modal form.
  * @param repo Repository name selected in the UI.
  */
 async function startIndexFromDialog(repo: string): Promise<void> {
   const pathInput = document.getElementById("indexPathInput") as HTMLInputElement | null;
-  const folderInput = document.getElementById("indexFolderInput") as HTMLInputElement | null;
   const startBtn = document.getElementById("indexStartBtn") as HTMLButtonElement | null;
   const terminal = document.getElementById("indexTerminal") as HTMLElement | null;
   const repoPath = String(pathInput?.value || "").trim();
-  const selectedFolderName = folderInput ? getSelectedDirectoryName(folderInput) : "";
-
-  if (selectedFolderName && selectedFolderName !== repo) {
-    if (terminal) terminal.textContent = 'Selected folder "' + selectedFolderName + '" does not match repository "' + repo + '".';
-    return;
-  }
+  const workerCount = getIndexWorkerCount();
   const pathFolderName = basenameFromPath(repoPath);
   if (pathFolderName && pathFolderName !== repo) {
     if (terminal) terminal.textContent = 'Repository path folder "' + pathFolderName + '" does not match repository "' + repo + '".';
     return;
   }
+  rememberIndexPath(repo, repoPath);
   if (startBtn) startBtn.disabled = true;
   if (terminal) terminal.textContent = "Starting index job...";
 
@@ -309,7 +342,7 @@ async function startIndexFromDialog(repo: string): Promise<void> {
     const response = await fetch("/ui/api/repos/" + encodeURIComponent(repo) + "/index-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo_path: repoPath, workers: 2 }),
+      body: JSON.stringify({ repo_path: repoPath, workers: workerCount }),
     });
     const data: any = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -346,6 +379,7 @@ async function cancelDisplayedIndexJob(): Promise<void> {
  */
 function showIndexDialog(repo: string): void {
   closeIndexDialog();
+  const savedPath = loadRememberedIndexPath(repo);
   document.body.insertAdjacentHTML("beforeend", [
     '<div id="indexDialogRoot" class="index-dialog-root">',
     '  <div class="index-dialog-backdrop"></div>',
@@ -356,12 +390,11 @@ function showIndexDialog(repo: string): void {
     "    </div>",
     '    <div class="index-dialog-body">',
     '      <div class="index-path-controls">',
-    '        <input id="indexPathInput" type="text" placeholder="/absolute/path/to/' + esc(repo) + '" autocomplete="off">',
-    '        <button id="indexChooseBtn" class="btn-secondary" type="button">Choose Folder</button>',
-    '        <input id="indexFolderInput" type="file" webkitdirectory directory multiple hidden>',
+    '        <label class="index-control-field" for="indexPathInput"><span>Full Path</span><input id="indexPathInput" type="text" placeholder="/absolute/path/to/' + esc(repo) + '" autocomplete="off"></label>',
+    '        <label class="index-control-field index-workers-field" for="indexWorkersInput"><span>Workers</span><input id="indexWorkersInput" type="number" min="1" step="1" value="' + DEFAULT_INDEX_WORKERS + '"></label>',
     "      </div>",
     '      <p id="indexDialogStatus" class="size-note">Ready.</p>',
-    '      <pre id="indexTerminal" class="index-terminal">Waiting for repository path...</pre>',
+    '      <pre id="indexTerminal" class="index-terminal">Waiting for index job start...</pre>',
     "    </div>",
     '    <div class="index-dialog-footer">',
     '      <button id="indexCancelBtn" class="btn-secondary" type="button">Cancel</button>',
@@ -371,20 +404,15 @@ function showIndexDialog(repo: string): void {
     "</div>",
   ].join(""));
 
-  const chooseBtn = document.getElementById("indexChooseBtn") as HTMLButtonElement;
-  const folderInput = document.getElementById("indexFolderInput") as HTMLInputElement;
+  const pathInput = document.getElementById("indexPathInput") as HTMLInputElement;
   const closeBtn = document.getElementById("indexCloseBtn") as HTMLButtonElement;
   const startBtn = document.getElementById("indexStartBtn") as HTMLButtonElement;
   const cancelBtn = document.getElementById("indexCancelBtn") as HTMLButtonElement;
-  const status = document.getElementById("indexDialogStatus") as HTMLElement;
-
-  chooseBtn.addEventListener("click", () => folderInput.click());
-  folderInput.addEventListener("change", () => {
-    const selectedFolderName = getSelectedDirectoryName(folderInput);
-    status.textContent = selectedFolderName
-      ? "Selected folder: " + selectedFolderName
-      : "Folder selected.";
+  pathInput.value = savedPath;
+  pathInput.addEventListener("input", () => {
+    rememberIndexPath(repo, String(pathInput.value || ""));
   });
+
   closeBtn.addEventListener("click", closeIndexDialog);
   startBtn.addEventListener("click", () => { void startIndexFromDialog(repo); });
   cancelBtn.addEventListener("click", () => { void cancelDisplayedIndexJob(); });

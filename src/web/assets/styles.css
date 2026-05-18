@@ -394,18 +394,29 @@ main {
 
 .index-path-controls {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) 8rem;
   gap: 0.55rem;
-  align-items: center;
+  align-items: end;
 }
 
-.index-path-controls input[type="text"] {
+.index-control-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.index-path-controls input[type="text"],
+.index-path-controls input[type="number"] {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.55rem 0.7rem;
   font: inherit;
   color: var(--ink);
   min-width: 0;
+}
+
+.index-workers-field input {
+  text-align: right;
 }
 
 .index-terminal {
