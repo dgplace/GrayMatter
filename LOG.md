@@ -1,3 +1,4 @@
+2026-05-19 Added case-insensitive resolver lookup indexes for symbols and file languages so Postgres avoids repeated CPU-heavy scans during ingestion/reference resolution.
 2026-05-19 Fixed post-cleanup regressions by updating `web-ui` build-script expectations for `postgres_frontdoor` recreation targets and making the ingest modularity-ordering test robust against floating-point tie noise.
 2026-05-19 Removed the retired Python desktop UI frontend (`desktop/` package and `requirements-gui.txt`) and deleted remaining desktop-launcher/docs references from active repository documentation.
 2026-05-19 Removed the unused `codebrain/desktop.py` desktop-launcher shim now that the desktop UI front-end entrypoint is retired.

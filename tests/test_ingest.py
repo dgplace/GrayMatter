@@ -696,6 +696,9 @@ def test_schema_patches_add_resolved_reference_columns_and_indexes() -> None:
     assert "WHERE reference_kind_v2 IS NULL" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbols_lower_name" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_symbols_file_lower_name_primary" in patch_blob
+    assert "CREATE INDEX IF NOT EXISTS idx_files_lower_language" in patch_blob
     assert "CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name" in patch_blob
     assert "CREATE TABLE IF NOT EXISTS symbol_relationships" in patch_blob
     assert "REFERENCES symbols(id) ON DELETE CASCADE" in patch_blob

@@ -98,6 +98,10 @@ scripts\build.bat --reset
 By default the database frontdoor publishes `0.0.0.0:5432`; override
 `POSTGRES_FRONTDOOR_BIND` or `POSTGRES_FRONTDOOR_PORT` if a host needs a
 different exposure policy.
+The Compose `postgres` service does not impose a CPU limit; if Postgres appears
+capped below available host capacity, increase Docker Desktop/WSL CPU allocation.
+High CPU during ingestion is usually query/index related, so schema patches add
+case-insensitive symbol and language indexes used by resolver lookups.
 
 Equivalent raw Docker commands:
 

@@ -24,6 +24,7 @@ CREATE TABLE files (
 CREATE INDEX idx_files_repo ON files(repo);
 CREATE INDEX idx_files_repo_path ON files(repo, path);
 CREATE INDEX idx_files_language ON files(language);
+CREATE INDEX idx_files_lower_language ON files((lower(COALESCE(language, ''))));
 CREATE INDEX idx_files_role ON files(role);
 CREATE INDEX idx_files_embedding ON files USING ivfflat (embedding vector_cosine_ops) WITH (lists = 50);
 
@@ -79,6 +80,7 @@ CREATE TABLE symbols (
 
 CREATE INDEX idx_symbols_file ON symbols(file_id);
 CREATE INDEX idx_symbols_name ON symbols(name);
+CREATE INDEX idx_symbols_lower_name ON symbols((lower(name)));
 CREATE INDEX idx_symbols_kind ON symbols(kind);
 CREATE INDEX idx_symbols_qualified ON symbols(qualified_name) WHERE qualified_name IS NOT NULL;
 CREATE INDEX idx_symbols_container ON symbols(container_symbol) WHERE container_symbol IS NOT NULL;
@@ -112,6 +114,7 @@ CREATE INDEX idx_symbol_refs_reverse_lookup ON symbol_references(target_symbol_i
     WHERE target_symbol_id IS NOT NULL;
 CREATE INDEX idx_symbol_refs_target_name_kind ON symbol_references(target_name, reference_kind);
 CREATE INDEX idx_symbols_file_primary_name ON symbols(file_id, is_primary_declaration, name);
+CREATE INDEX idx_symbols_file_lower_name_primary ON symbols(file_id, (lower(name)), is_primary_declaration, start_line);
 
 -- ============================================================
 -- Symbol relationships: structural edges between declarations

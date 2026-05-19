@@ -95,6 +95,18 @@ SCHEMA_PATCHES = [
     ON symbols(is_primary_declaration)
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_symbols_lower_name
+    ON symbols((lower(name)))
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_symbols_file_lower_name_primary
+    ON symbols(file_id, (lower(name)), is_primary_declaration, start_line)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_files_lower_language
+    ON files((lower(COALESCE(language, ''))))
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_file
     ON symbol_references(source_file_id)
     """,

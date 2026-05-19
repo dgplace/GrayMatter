@@ -260,6 +260,9 @@ test("db schema patches include resolved reference migration columns and indexes
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_symbol/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_reverse_lookup/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbol_refs_target_name_kind/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbols_lower_name/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbols_file_lower_name_primary/);
+  assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_files_lower_language/);
   assert.match(dbSource, /CREATE INDEX IF NOT EXISTS idx_symbols_file_primary_name/);
   assert.match(dbSource, /CREATE TABLE IF NOT EXISTS symbol_relationships/);
   assert.match(dbSource, /source_symbol_id INTEGER NOT NULL REFERENCES symbols\(id\) ON DELETE CASCADE/);
