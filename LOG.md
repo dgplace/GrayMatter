@@ -1,5 +1,9 @@
 # LOG
 
+## 2026-10-12
+
+- Passed embedding model and API style from local config through Unix/Windows container endpoint resolvers to MCP search, keeping query embeddings aligned when ingestion uses LM Studio.
+
 ## 2026-05-19
 
 - Added case-insensitive resolver lookup indexes for symbols and file languages so Postgres avoids repeated CPU-heavy scans during ingestion/reference resolution.

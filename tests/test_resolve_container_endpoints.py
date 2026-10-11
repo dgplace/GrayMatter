@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -75,3 +76,23 @@ def test_resolve_container_proxy_values_uses_default_https_port_when_omitted() -
         "CLASSIFIER_BASE_URL": "http://classifier_proxy:3000",
         "CLASSIFIER_PROXY_TARGET": "models.example.internal:443",
     }
+
+
+def test_resolver_passes_embedding_model_and_style_to_mcp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """@brief Keep MCP query embeddings aligned with local ingestion settings."""
+    resolver = _load_resolver_module()
+    local_config = tmp_path / ".env"
+    local_config.mkdir()
+    (local_config / "codebrain.toml").write_text(
+        '[embeddings]\nmodel = "text-embedding-nomic-embed-text-v1.5"\n'
+        'api_style = "openai"\nbase_url = "http://127.0.0.1:11435"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["resolve-container-endpoints.py", str(tmp_path)])
+    assert resolver.main() == 0
+    output = capsys.readouterr().out.splitlines()
+    assert "EMBED_MODEL=text-embedding-nomic-embed-text-v1.5" in output
+    assert "EMBED_API_STYLE=openai" in output
+    assert "EMBED_PROXY_TARGET=host.docker.internal:11435" in output

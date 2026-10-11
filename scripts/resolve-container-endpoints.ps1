@@ -4,7 +4,7 @@ Resolves container-safe endpoint environment overrides for CodeBrain helper scri
 
 .DESCRIPTION
 Reads `codebrain.toml` from `.env/codebrain.toml` and `codebrain.toml` at repo root,
-and emits KEY=VALUE lines for EMBED_BASE_URL and CLASSIFIER_BASE_URL plus proxy
+and emits KEY=VALUE lines for embedding settings, endpoint URLs, and proxy
 upstream target values. Endpoint hosts are always reached through in-stack proxy
 sidecars. Non-local hosts are only allowed when they match configured
 embedding/classifier endpoint values.
@@ -18,7 +18,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Get-SectionBaseUrlMap {
+function Get-SectionConfigMap {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
@@ -33,12 +33,11 @@ function Get-SectionBaseUrlMap {
             continue
         }
 
-        if ($line -match '^\s*base_url\s*=\s*"([^"]*)"\s*$') {
-            $value = $matches[1]
-            if ($currentSection -eq "embeddings") {
-                $map["embeddings"] = $value
-            } elseif ($currentSection -eq "classifier") {
-                $map["classifier"] = $value
+        if ($line -match '^\s*(base_url|model|api_style)\s*=\s*"([^"]*)"\s*$') {
+            $fieldName = $matches[1]
+            $value = $matches[2]
+            if ($currentSection -in @("embeddings", "classifier")) {
+                $map["$currentSection`_$fieldName"] = $value
             }
         }
     }
@@ -144,10 +143,19 @@ $candidatePaths = @(
 $configMap = @{}
 foreach ($candidatePath in $candidatePaths) {
     if (Test-Path -LiteralPath $candidatePath) {
-        $pathMap = Get-SectionBaseUrlMap -Path $candidatePath
+        $pathMap = Get-SectionConfigMap -Path $candidatePath
         foreach ($key in $pathMap.Keys) {
             $configMap[$key] = $pathMap[$key]
         }
+    }
+}
+
+foreach ($item in @(
+    @{ Key = "embeddings_model"; Env = "EMBED_MODEL" },
+    @{ Key = "embeddings_api_style"; Env = "EMBED_API_STYLE" }
+)) {
+    if ($configMap.ContainsKey($item.Key) -and -not [string]::IsNullOrWhiteSpace($configMap[$item.Key])) {
+        Write-Output "$($item.Env)=$($configMap[$item.Key])"
     }
 }
 
@@ -160,8 +168,9 @@ foreach ($item in @(
 
     $existing = [Environment]::GetEnvironmentVariable($envName)
     $configured = ""
-    if ($configMap.ContainsKey($section)) {
-        $configured = $configMap[$section]
+    $configKey = "${section}_base_url"
+    if ($configMap.ContainsKey($configKey)) {
+        $configured = $configMap[$configKey]
     }
 
     if (-not [string]::IsNullOrWhiteSpace($existing)) {

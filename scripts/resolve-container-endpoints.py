@@ -5,7 +5,7 @@
  * @brief Emit container-safe endpoint environment overrides for ingestion runs.
  *
  * Reads candidate CodeBrain config files and prints KEY=VALUE lines for
- * EMBED_BASE_URL and CLASSIFIER_BASE_URL plus proxy-upstream target values.
+ * embedding settings, endpoint URLs, and proxy-upstream target values.
  * Endpoint hosts are reached through in-stack proxy sidecars. Non-local hosts
  * are only allowed when they match configured embedding/classifier values.
  */
@@ -52,12 +52,12 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-def load_config_base_urls(repo_root: Path) -> dict[str, str]:
+def load_config_values(repo_root: Path) -> dict[str, dict[str, str]]:
     """
     /**
      * @brief Load endpoint base URLs from repository config files.
      * @param repo_root Absolute repository root path.
-     * @return Mapping keyed by config section (`embeddings`/`classifier`).
+     * @return String settings keyed by config section and field name.
      */
     """
     local_config_path = repo_root / ".env" / "codebrain.toml"
@@ -67,7 +67,7 @@ def load_config_base_urls(repo_root: Path) -> dict[str, str]:
             "to .env/codebrain.toml and configure it."
         )
 
-    config_base_urls: dict[str, str] = {}
+    config_values: dict[str, dict[str, str]] = {}
     for path in (repo_root / "codebrain.toml", local_config_path):
         if not path.is_file():
             continue
@@ -77,10 +77,11 @@ def load_config_base_urls(repo_root: Path) -> dict[str, str]:
             section = data.get(section_name)
             if not isinstance(section, dict):
                 continue
-            base_url = section.get("base_url", "")
-            if isinstance(base_url, str):
-                config_base_urls[section_name] = base_url
-    return config_base_urls
+            for field_name in ("base_url", "model", "api_style"):
+                value = section.get(field_name)
+                if isinstance(value, str):
+                    config_values.setdefault(section_name, {})[field_name] = value
+    return config_values
 
 
 def _default_port_for_scheme(scheme: str) -> int | None:
@@ -174,24 +175,31 @@ def main() -> int:
         fail("Usage: resolve-container-endpoints.py <repo_root>")
 
     repo_root = Path(sys.argv[1])
-    config_base_urls = load_config_base_urls(repo_root)
+    config_values = load_config_values(repo_root)
+
+    embedding_config = config_values.get("embeddings", {})
+    for field_name, env_name in (("model", "EMBED_MODEL"), ("api_style", "EMBED_API_STYLE")):
+        value = embedding_config.get(field_name, "").strip()
+        if value:
+            print(f"{env_name}={value}")
 
     for env_name, section_name in (
         ("EMBED_BASE_URL", "embeddings"),
         ("CLASSIFIER_BASE_URL", "classifier"),
     ):
+        configured_url = config_values.get(section_name, {}).get("base_url", "")
         existing = os.environ.get(env_name, "").strip()
         if existing:
             for output_key, output_value in resolve_container_proxy_values(
-                env_name, existing, config_base_urls.get(section_name, "")
+                env_name, existing, configured_url
             ).items():
                 print(f"{output_key}={output_value}")
             continue
 
         resolved_values = resolve_container_proxy_values(
             env_name,
-            config_base_urls.get(section_name, ""),
-            config_base_urls.get(section_name, ""),
+            configured_url,
+            configured_url,
         )
         for output_key, output_value in resolved_values.items():
             print(f"{output_key}={output_value}")
