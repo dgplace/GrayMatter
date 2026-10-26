@@ -1,5 +1,9 @@
 # LOG
 
+## 2026-10-26
+
+- Moved the live PostgreSQL credential out of Compose into an untracked `docker/.env` file and changed the database frontdoor default bind from all interfaces to loopback only.
+
 ## 2026-10-12
 
 - Passed embedding model and API style from local config through Unix/Windows container endpoint resolvers to MCP search, keeping query embeddings aligned when ingestion uses LM Studio.

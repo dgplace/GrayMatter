@@ -20,6 +20,10 @@ Runtime defaults live in:
 - `codebrain.toml` for ingestion defaults (chunking, language list, exclusions)
 - `schema.sql` for first-time database initialization
 
+Before the first Compose start, copy `docker/.env.example` to `docker/.env`
+and replace both password placeholders with the same strong, URL-safe value.
+The local `docker/.env` is ignored by Git and should remain owner-readable only.
+
 By default, ingestion includes Markdown (`.md`), TOML (`.toml`), YAML
 (`.yml`/`.yaml`), HTML (`.html`), and CSS (`.css`) files, with a non-code
 per-file size cap controlled by `ingestion.non_code_max_bytes` in
@@ -30,7 +34,7 @@ Callback/event edge extractors are configured by
 `dom_add_event_listener`, `http_route`, `event_emit`) so noisy patterns can be
 disabled per repo.
 
-Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. All are set in `docker/docker-compose.yml`; override per-run with `-e VAR=value` if needed.
+Container runs honor three environment overrides for endpoint values: `DATABASE_URL`, `EMBED_BASE_URL`, and `CLASSIFIER_BASE_URL`. The required Postgres credential and `DATABASE_URL` live in the untracked `docker/.env`; endpoint defaults remain in `docker/docker-compose.yml`. Override per-run with `-e VAR=value` if needed.
 The build helpers also pass `[embeddings].model` and `[embeddings].api_style` from `.env/codebrain.toml` to the MCP search service, so query embeddings use the same provider as ingestion. After changing the embedding model or provider, rebuild/recreate the MCP service and re-index repositories with `--force`.
 The MCP HTTP host allowlist defaults to localhost (`localhost`, `127.0.0.1`, `[::1]`). To allow additional Host headers for the MCP container, set `MCP_ALLOWED_HOSTS` or `MCP_ALLOWED_HOSTS_EXTRA` in the optional `.env/mcp.env` file.
 Compose host-exposed ports are bound to `127.0.0.1`. Runtime services use an `internal: true` network, and helper scripts route embedding/classifier traffic through fixed in-stack proxy services (`embed_proxy`, `classifier_proxy`). Localhost/loopback URLs are normalized to `host.docker.internal`; non-local targets are allowed only when they exactly match the configured embedding/classifier endpoint values.
@@ -96,9 +100,9 @@ indexing host:
 scripts\build.bat --reset
 ```
 
-By default the database frontdoor publishes `0.0.0.0:5432`; override
-`POSTGRES_FRONTDOOR_BIND` or `POSTGRES_FRONTDOOR_PORT` if a host needs a
-different exposure policy.
+By default the database frontdoor publishes only on `127.0.0.1:5432`; set
+`POSTGRES_FRONTDOOR_BIND` explicitly only when a trusted remote indexing host
+requires access, and use `POSTGRES_FRONTDOOR_PORT` to change the host port.
 The Compose `postgres` service does not impose a CPU limit; if Postgres appears
 capped below available host capacity, increase Docker Desktop/WSL CPU allocation.
 High CPU during ingestion is usually query/index related, so schema patches add

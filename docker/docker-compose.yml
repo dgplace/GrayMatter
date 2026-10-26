@@ -38,17 +38,19 @@ services:
       postgres:
         condition: service_started
     ports:
-      - "${POSTGRES_FRONTDOOR_BIND:-0.0.0.0}:${POSTGRES_FRONTDOOR_PORT:-5432}:5432"
+      - "${POSTGRES_FRONTDOOR_BIND:-127.0.0.1}:${POSTGRES_FRONTDOOR_PORT:-5432}:5432"
     networks:
       - codebrain_internal
       - codebrain_host_access
 
   postgres:
     image: pgvector/pgvector:pg16
+    env_file:
+      - path: ./.env
+        required: true
     environment:
       POSTGRES_DB: codebrain
       POSTGRES_USER: codebrain
-      POSTGRES_PASSWORD: codebrain_local
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -72,8 +74,10 @@ services:
         condition: service_started
       classifier_proxy:
         condition: service_started
+    env_file:
+      - path: ./.env
+        required: true
     environment:
-      DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       # Endpoint resolver scripts enforce local-only host model policy and emit
       # proxy service URLs for container-safe access.
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://embed_proxy:11434}
@@ -92,6 +96,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.mcp
     env_file:
+      - path: ./.env
+        required: true
       - path: ../.env/mcp.env
         required: false
     depends_on:
@@ -106,7 +112,6 @@ services:
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "3001"
       CODEBRAIN_REPO_ROOT: /workspace
-      DATABASE_URL: postgresql://codebrain:codebrain_local@postgres:5432/codebrain
       EMBED_API_STYLE: ${EMBED_API_STYLE:-ollama}
       EMBED_BASE_URL: http://embed_proxy:11434
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}

@@ -45,7 +45,9 @@ def test_expected_services_attach_to_host_access_network() -> None:
 
     embed_proxy_block = _service_block(source, "embed_proxy", "classifier_proxy")
     classifier_proxy_block = _service_block(source, "classifier_proxy", "postgres_frontdoor")
-    postgres_frontdoor_block = _service_block(source, "postgres_frontdoor", "postgres")
+    postgres_frontdoor_block = _service_block(
+        source, "postgres_frontdoor", "postgres"
+    )
     postgres_block = _service_block(source, "postgres", "indexer")
     indexer_block = _service_block(source, "indexer", "mcp")
     mcp_block = _service_block(source, "mcp", "mcp_frontdoor")
@@ -65,6 +67,29 @@ def test_internal_network_is_marked_internal_true() -> None:
     source = _compose_source()
     assert "codebrain_internal:" in source
     assert "internal: true" in source
+
+
+def test_postgres_frontdoor_defaults_to_loopback() -> None:
+    """@brief Verify PostgreSQL is not published on every host interface."""
+    source = _compose_source()
+    postgres_frontdoor_block = _service_block(source, "postgres_frontdoor", "postgres")
+
+    assert "${POSTGRES_FRONTDOOR_BIND:-127.0.0.1}" in postgres_frontdoor_block
+    assert "${POSTGRES_FRONTDOOR_BIND:-0.0.0.0}" not in postgres_frontdoor_block
+
+
+def test_database_credentials_are_loaded_from_untracked_env() -> None:
+    """@brief Verify Compose does not contain inline PostgreSQL credentials."""
+    source = _compose_source()
+    postgres_block = _service_block(source, "postgres", "indexer")
+    indexer_block = _service_block(source, "indexer", "mcp")
+    mcp_block = _service_block(source, "mcp", "mcp_frontdoor")
+
+    assert "path: ./.env" in postgres_block
+    assert "path: ./.env" in indexer_block
+    assert "path: ./.env" in mcp_block
+    assert "POSTGRES_PASSWORD:" not in source
+    assert "DATABASE_URL: postgresql://" not in source
 
 
 def test_mcp_env_file_is_optional() -> None:
